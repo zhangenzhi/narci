@@ -9,7 +9,7 @@ import json
 
 # 导入校验工具
 try:
-    from validator import BinanceDataValidator
+    from data.validator import BinanceDataValidator
 except ImportError:
     print("Warning: validator.py not found. Validation will be skipped.")
     BinanceDataValidator = None

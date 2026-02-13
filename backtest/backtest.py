@@ -93,7 +93,7 @@ class BacktestEngine:
 if __name__ == "__main__":
     # 使用你下载好的其中一个文件进行回测
     data_file = "./data/parquet/ETHUSDT-2026-01-20.parquet"
-    from strategy import MyTrendStrategy
+    from backtest.strategy import MyTrendStrategy
     
     if os.path.exists(data_file):
         # 初始化策略
