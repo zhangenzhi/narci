@@ -8,11 +8,8 @@ import sys
 import json
 
 # 导入校验工具
-try:
-    from data.validator import BinanceDataValidator
-except ImportError:
-    print("Warning: validator.py not found. Validation will be skipped.")
-    BinanceDataValidator = None
+from data.validator import BinanceDataValidator
+
 
 class BinanceDownloader:
     def __init__(self, symbol="ETHUSDT", data_type="aggTrades", base_url="https://data.binance.vision"):
@@ -24,7 +21,7 @@ class BinanceDownloader:
         self.symbol = symbol
         self.data_type = data_type
         self.base_url = base_url
-        self.save_dir = f"./data/parquet/{data_type}"
+        self.save_dir = f"./replay_buffer/parquet/{data_type}"
         self.validator = BinanceDataValidator() if BinanceDataValidator else None
         os.makedirs(self.save_dir, exist_ok=True)
 
