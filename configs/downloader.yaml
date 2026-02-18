@@ -1,0 +1,37 @@
+# config.yaml
+downloader:
+  # 数据存储根目录
+  base_dir: "./data/parquet"
+  
+  # 并发控制 (L2数据极大，建议降低线程数以防内存溢出)
+  max_workers: 2
+  
+  # 任务列表
+  symbols:
+    - "ETHUSDT"
+    - "BTCUSDT"
+    # - "BNBUSDT"
+    # - "SOLUSDT"
+    
+  # 数据类型: 
+  # - aggTrades (成交数据, 较小)
+  # - depth (深度数据, 极大, 必须流式下载)
+  data_types:
+    - "aggTrades"
+    # - "depth" 
+    
+  # 时间范围
+  date_range:
+    # 追溯起始日期
+    start_date: "2026-01-01"
+    
+    # 结束日期: 
+    # - "auto": 自动下载到昨天 (适合每日定时任务)
+    # - "2026-02-01": 指定具体日期
+    end_date: "auto" 
+
+  # 稳定性配置
+  retry:
+    max_retries: 5
+    backoff_factor: 2  # 等待时间: 2s, 4s, 8s...
+    timeout: 30        # 单次请求超时秒数
