@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# 尝试导入校验器，如果不存在则忽略
 from data.validator import BinanceDataValidator
 
 

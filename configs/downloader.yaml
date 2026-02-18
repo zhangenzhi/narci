@@ -1,7 +1,6 @@
-# config.yaml
 downloader:
   # 数据存储根目录
-  base_dir: "./data/parquet"
+  base_dir: "./replay_buffer/parquet"
   
   # 并发控制 (L2数据极大，建议降低线程数以防内存溢出)
   max_workers: 2
