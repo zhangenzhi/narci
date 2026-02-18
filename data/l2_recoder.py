@@ -2,34 +2,73 @@ import asyncio
 import json
 import os
 import time
+import sys
+import yaml
 import pandas as pd
 import aiohttp
 import websockets
 from datetime import datetime
 
 class BinanceL2Recorder:
-    def __init__(self, symbol="ETHUSDT", interval_ms=100, save_dir="./data/realtime/l2"):
-        self.symbol = symbol.lower()
-        self.interval = interval_ms
-        self.save_dir = save_dir
+    def __init__(self, config_path="configs/recorder.yaml", symbol=None):
+        """
+        初始化录制器
+        :param config_path: 配置文件路径
+        :param symbol: 命令行参数覆盖配置文件的 symbol
+        """
+        # 兼容性处理：如果找不到 config，尝试当前目录或上级目录查找
+        if not os.path.exists(config_path):
+            if os.path.exists("recorder.yaml"):
+                config_path = "recorder.yaml"
+            elif os.path.exists("../configs/recorder.yaml"):
+                config_path = "../configs/recorder.yaml"
+        
+        self.config = self._load_config(config_path)
+        
+        # 配置参数提取
+        # 优先使用 override 参数，否则使用配置文件，最后使用默认值
+        self.symbol = (symbol or self.config.get('symbol', 'ETHUSDT')).lower()
+        self.interval = self.config.get('interval_ms', 100)
+        self.save_dir = self.config.get('save_dir', './data/realtime/l2')
+        self.save_interval = self.config.get('save_interval_sec', 60)
+        self.retry_wait = self.config.get('retry', {}).get('wait_seconds', 5)
+        
         # 组合流：深度增量 + 实时成交
         self.ws_url = f"wss://stream.binance.com:9443/stream?streams={self.symbol}@depth@{self.interval}ms/{self.symbol}@aggTrade"
-        self.snapshot_url = f"https://api.binance.com/api/v3/depth?symbol={symbol.upper()}&limit=1000"
+        self.snapshot_url = f"https://api.binance.com/api/v3/depth?symbol={self.symbol.upper()}&limit=1000"
         
         self.buffer = []
         self.last_update_id = 0
         self.is_initialized = False
+        self.stream_aligned = False # 标记流是否已对齐
         self.running = True
         
         os.makedirs(self.save_dir, exist_ok=True)
+        print(f"🔧 配置加载完成 | 配置文件: {config_path}")
+        print(f"🎯 目标: {self.symbol.upper()} | 频率: {self.interval}ms | 落盘间隔: {self.save_interval}s")
+        print(f"📂 存储路径: {self.save_dir}")
+
+    def _load_config(self, path):
+        if not os.path.exists(path):
+            print(f"⚠️ 配置文件 {path} 不存在，将使用默认参数。")
+            return {}
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return yaml.safe_load(f).get('recorder', {})
+        except Exception as e:
+            print(f"❌ 读取配置文件失败: {e}，将使用默认参数。")
+            return {}
 
     async def fetch_snapshot(self):
         """获取初始深度快照"""
         async with aiohttp.ClientSession() as session:
             async with session.get(self.snapshot_url) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise Exception(f"Snapshot request failed: {resp.status} {text}")
                 data = await resp.json()
                 self.last_update_id = data['lastUpdateId']
-                print(f"[{datetime.now()}] 初始快照获取成功，LastUpdateId: {self.last_update_id}")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 初始快照获取成功，LastUpdateId: {self.last_update_id}")
                 return data
 
     def standardize_event(self, event_type, data):
@@ -69,46 +108,59 @@ class BinanceL2Recorder:
             
         return records
 
-    async def save_loop(self, interval_sec=60):
+    async def save_loop(self):
         """滚动写盘逻辑"""
+        print(f"💾 存储循环已就绪 (每 {self.save_interval} 秒落盘一次)")
         while self.running:
-            await asyncio.sleep(interval_sec)
+            await asyncio.sleep(self.save_interval)
             if not self.buffer:
+                # 如果長時間沒有數據，打印提示
+                if self.is_initialized and not self.stream_aligned:
+                     print(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ 正在等待数据流对齐...")
                 continue
             
+            # 原子操作：取出当前 buffer，置空原 buffer
             current_data = self.buffer
             self.buffer = []
             
-            df = pd.DataFrame(current_data, columns=['timestamp', 'side', 'price', 'quantity'])
-            
-            filename = f"{self.symbol}_RAW_{datetime.now().strftime('%Y%m%d_%H%M')}.parquet"
-            path = os.path.join(self.save_dir, filename)
-            
             try:
+                df = pd.DataFrame(current_data, columns=['timestamp', 'side', 'price', 'quantity'])
+                
+                # 文件名带时间戳
+                filename = f"{self.symbol}_RAW_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+                path = os.path.join(self.save_dir, filename)
+                
+                # 异步写文件通常比较复杂，这里用同步写，量大时可考虑 run_in_executor
                 df_to_save = df.copy()
+                # 兼容不同精度的 timestamp (ms)
                 df_to_save['timestamp_dt'] = pd.to_datetime(df_to_save['timestamp'], unit='ms')
                 df_to_save.to_parquet(path, engine='pyarrow', compression='snappy', index=False)
-                print(f"[{datetime.now()}] 原始数据已固化: {filename} ({len(df)} rows)")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 数据固化完成: {filename} ({len(df)} rows)")
             except Exception as e:
-                print(f"写入失败: {e}")
+                print(f"❌ 写入失败: {e}")
+                # 写入失败尝试保留数据，避免丢失
+                # self.buffer.extend(current_data) 
 
     async def record_stream(self):
         """主录制循环"""
         while self.running:
             try:
                 async with websockets.connect(self.ws_url) as ws:
-                    print(f"[{datetime.now()}] 建立 WebSocket 链接...")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket 连接成功: {self.ws_url}")
                     
-                    # 1. 获取快照
+                    # 1. 获取快照 (REST API)
+                    # 必须在建立 WS 连接后尽快获取，减少 gap
                     snapshot_data = await self.fetch_snapshot()
-                    # 修正：快照逻辑使用 'snapshot' 类型
                     snapshot_records = self.standardize_event('snapshot', snapshot_data)
                     self.buffer.extend(snapshot_records)
                     
                     self.is_initialized = True
+                    self.stream_aligned = False
                     
                     async for message in ws:
                         raw_data = json.loads(message)
+                        if 'stream' not in raw_data: continue
+                        
                         stream_name = raw_data['stream']
                         data = raw_data['data']
                         
@@ -116,16 +168,21 @@ class BinanceL2Recorder:
                             u, U = data['u'], data['U']
                             # 顺序校验逻辑
                             if self.is_initialized:
-                                if u <= self.last_update_id: continue
+                                if u <= self.last_update_id: 
+                                    # 过期数据丢弃 (静默处理)
+                                    continue
+                                
+                                # 检查是否衔接上了
                                 if U <= self.last_update_id + 1 <= u:
-                                    print(f"[{datetime.now()}] 深度流已与快照完成对齐。")
-                                    self.is_initialized = False
+                                    # 正常衔接 (U <= last_update_id + 1 且 u >= last_update_id + 1)
+                                    if not self.stream_aligned:
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 深度流已与快照无缝对齐，开始实时缓冲数据...")
+                                        self.stream_aligned = True
+                                    pass
                                 else:
-                                    print(f"同步偏移，尝试重连...")
+                                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 深度流同步偏移! Local Last ID: {self.last_update_id}, Stream U: {U}, u: {u}")
+                                    # 出现 GAP，必须重置
                                     break
-                            elif U != self.last_update_id + 1:
-                                print(f"数据序列中断!")
-                                break
                             
                             records = self.standardize_event('depthUpdate', data)
                             self.buffer.extend(records)
@@ -136,20 +193,27 @@ class BinanceL2Recorder:
                             self.buffer.extend(records)
                         
             except Exception as e:
-                print(f"网络异常: {e}, 5秒后重试...")
-                await asyncio.sleep(5)
+                print(f"❌ 连接断开或发生错误: {e}")
+                print(f"⏳ {self.retry_wait}秒后重试...")
+                self.is_initialized = False
+                await asyncio.sleep(self.retry_wait)
 
     async def start(self):
         """启动录制器"""
-        print(f"--- 启动 Binance 原始数据捕获器 ({self.symbol}) ---")
+        print(f"--- 启动 Binance 原始数据捕获器 ---")
         await asyncio.gather(
             self.record_stream(),
             self.save_loop()
         )
 
 if __name__ == "__main__":
-    recorder = BinanceL2Recorder(symbol="ETHUSDT")
+    # 支持命令行参数覆盖 symbol
+    # 用法: python data/l2_recoder.py [SYMBOL]
+    import sys
+    symbol_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    
+    recorder = BinanceL2Recorder(symbol=symbol_arg)
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
-        print("录制已停止")
+        print("\n🛑 用户手动停止录制")

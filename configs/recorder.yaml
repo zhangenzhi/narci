@@ -1,0 +1,16 @@
+recorder:
+  # 交易对名称 (默认)
+  symbol: "ETHUSDT"
+  
+  # 深度更新推送频率 (100ms or 1000ms)
+  interval_ms: 100
+  
+  # 数据存储根目录
+  save_dir: "./replay_buffer/realtime/l2"
+  
+  # 多少秒将内存数据落盘一次 (生成一个 parquet 文件)
+  save_interval_sec: 60
+  
+  # 错误重试配置
+  retry:
+    wait_seconds: 5

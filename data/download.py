@@ -15,9 +15,15 @@ from data.validator import BinanceDataValidator
 
 
 class BinanceDownloader:
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self, config_path="configs/downloader.yaml"):
+        # 修正：默认路径指正，防止找不到文件
+        if not os.path.exists(config_path):
+             # 尝试在当前目录下找
+             if os.path.exists("downloader.yaml"):
+                 config_path = "downloader.yaml"
+                 
         self.config = self._load_config(config_path)
-        self.base_dir = self.config.get('base_dir', './data/parquet')
+        self.base_dir = self.config.get('base_dir', './replay_buffer/parquet')
         self.retry_cfg = self.config.get('retry', {})
         
         # 初始化 session，配置全局重试策略
@@ -50,7 +56,7 @@ class BinanceDownloader:
 
     def _get_target_path(self, symbol, date_str, data_type):
         """生成目标文件路径，按类型和币种分目录存储"""
-        # 结构: ./data/parquet/aggTrades/ETHUSDT/ETHUSDT-2026-01-01.parquet
+        # 结构: ./replay_buffer/parquet/aggTrades/ETHUSDT/ETHUSDT-2026-01-01.parquet
         dir_path = os.path.join(self.base_dir, data_type, symbol)
         os.makedirs(dir_path, exist_ok=True)
         filename = f"{symbol}-{date_str}.parquet"
@@ -59,14 +65,20 @@ class BinanceDownloader:
     def download_file(self, url, local_path):
         """流式下载文件到本地临时路径 (内存安全)"""
         timeout = self.retry_cfg.get('timeout', 30)
-        with self.session.get(url, stream=True, timeout=timeout) as r:
-            if r.status_code == 404:
-                return False # 文件不存在
-            r.raise_for_status()
-            with open(local_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        return True
+        try:
+            with self.session.get(url, stream=True, timeout=timeout) as r:
+                if r.status_code == 404:
+                    return False # 文件不存在
+                r.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            return True
+        except Exception as e:
+            # 下载中断或网络错误，清理残余文件
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            raise e
 
     def process_task(self, task):
         """单个下载任务的处理逻辑"""
@@ -95,19 +107,40 @@ class BinanceDownloader:
                 with z.open(csv_name) as f:
                     if data_type == 'aggTrades':
                         # L1 标准化
+                        # 显式指定 dtype 防止首行被误判
                         df = pd.read_csv(f, header=None, names=[
                             'agg_trade_id', 'price', 'quantity', 'first_trade_id', 
                             'last_trade_id', 'timestamp', 'is_buyer_maker', 'is_best_match'
                         ])
-                        # 时间戳统一
+                        
+                        # 时间戳统一 (修复: 增加微秒 us 支持)
                         if not df.empty:
-                            unit = 'ms' if df['timestamp'].iloc[0] > 1e11 else 's'
-                            df['timestamp'] = pd.to_datetime(df['timestamp'], unit=unit)
+                            ts_sample = df['timestamp'].max()
+                            
+                            if ts_sample < 1e11:
+                                unit = 's'
+                            elif ts_sample < 1e14:
+                                unit = 'ms'
+                            else:
+                                unit = 'us'
+
+                            # 安全转换，防止溢出
+                            try:
+                                df['timestamp'] = pd.to_datetime(df['timestamp'], unit=unit)
+                            except pd.errors.OutOfBoundsDatetime:
+                                return f"❌ [错误] {symbol} {date_str}: 时间戳溢出 (Sample: {ts_sample}, Unit: {unit})"
+
                     else:
                         # L2 深度或其他
                         df = pd.read_csv(f)
                         if 'timestamp' in df.columns and not df.empty:
-                            unit = 'ms' if df['timestamp'].iloc[0] > 1e11 else 's'
+                            ts_sample = df['timestamp'].max()
+                            if ts_sample < 1e11:
+                                unit = 's'
+                            elif ts_sample < 1e14:
+                                unit = 'ms'
+                            else:
+                                unit = 'us'
                             df['timestamp'] = pd.to_datetime(df['timestamp'], unit=unit)
 
             # 4. (可选) 数据校验
@@ -131,19 +164,27 @@ class BinanceDownloader:
     def generate_tasks(self):
         """生成任务队列"""
         tasks = []
+        if not self.config.get('date_range'):
+            print("❌ 配置错误: date_range 缺失")
+            return []
+
         start_str = self.config['date_range']['start_date']
         end_str = self.config['date_range']['end_date']
         
-        start = datetime.strptime(start_str, "%Y-%m-%d")
-        if end_str == "auto":
-            end = datetime.now() - timedelta(days=1)
-        else:
-            end = datetime.strptime(end_str, "%Y-%m-%d")
-            
-        date_list = [
-            (start + timedelta(days=x)).strftime("%Y-%m-%d") 
-            for x in range((end - start).days + 1)
-        ]
+        try:
+            start = datetime.strptime(start_str, "%Y-%m-%d")
+            if end_str == "auto":
+                end = datetime.now() - timedelta(days=1)
+            else:
+                end = datetime.strptime(end_str, "%Y-%m-%d")
+                
+            date_list = [
+                (start + timedelta(days=x)).strftime("%Y-%m-%d") 
+                for x in range((end - start).days + 1)
+            ]
+        except ValueError as e:
+            print(f"❌ 日期格式错误: {e}")
+            return []
 
         for date_str in date_list:
             for symbol in self.config['symbols']:
