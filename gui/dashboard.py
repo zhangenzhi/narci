@@ -8,9 +8,8 @@ import glob
 import sys
 import io
 import contextlib
-import importlib.util
 
-# 动态添加项目根目录到 sys.path 以便导入模块
+# 动态添加项目根目录到 sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(current_dir)
 if root_dir not in sys.path:
@@ -18,231 +17,183 @@ if root_dir not in sys.path:
 
 from data.l2_reconstruct import L2Reconstructor
 from backtest.backtest import BacktestEngine
-from backtest.strategy import MyTrendStrategy
+# 导入示例中的策略逻辑
+from example.L2_Imbalance import ImbalanceStrategy
+from example.L1_Trend import MyTrendStrategy
 
 st.set_page_config(page_title="Narci Quant Terminal", layout="wide", page_icon="💹")
 
 class NarciDashboard:
     def __init__(self):
         self.base_path = root_dir
+        # L1 数据存放路径 (download.py 默认生成路径)
         self.history_dir = os.path.join(self.base_path, "replay_buffer", "parquet", "aggTrades")
-        # 兼容 download.py 中配置的路径或默认路径
-        if not os.path.exists(self.history_dir):
-             self.history_dir = os.path.join(self.base_path, "data", "parquet", "aggTrades")
-             
+        # L2 数据存放路径 (l2_recorder.py 默认生成路径)
         self.realtime_dir = os.path.join(self.base_path, "data", "realtime", "l2")
+        
+        # 路径自动纠偏：如果默认路径不存在，尝试递归搜索 parquet 根目录
+        if not os.path.exists(self.history_dir):
+             self.history_dir = os.path.join(self.base_path, "replay_buffer", "parquet")
+        if not os.path.exists(self.realtime_dir):
+             self.realtime_dir = os.path.join(self.base_path, "replay_buffer", "realtime", "l2")
 
-    def get_files(self, directory, pattern="*.parquet"):
+    def get_files(self, directory):
         if not os.path.exists(directory):
             return []
-        # 递归搜索或单层搜索
         files = []
-        for root, dirs, filenames in os.walk(directory):
+        for root, _, filenames in os.walk(directory):
             for filename in filenames:
                 if filename.endswith(".parquet"):
                     files.append(os.path.join(root, filename))
         return sorted(files, reverse=True)
 
     def render_history_panel(self):
-        st.header("📈 历史行情分析 (L1 Data)")
+        st.header("📈 历史行情预览 (L1 Data)")
         files = self.get_files(self.history_dir)
         if not files:
-            st.warning(f"未在 {self.history_dir} 找到数据，请先运行 download 命令。")
+            st.warning("⚠️ 未找到 L1 历史数据，请先运行 'python main.py download' 下载数据。")
             return
-
+            
         selected_path = st.selectbox("选择历史数据文件", files, format_func=lambda x: os.path.basename(x))
-        
         if selected_path:
-            with st.spinner("正在加载数据..."):
-                df = pd.read_parquet(selected_path)
-                df = df.sort_values('timestamp')
-                
+            with st.spinner("加载数据中..."):
+                df = pd.read_parquet(selected_path).sort_values('timestamp')
+            
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("交易对", selected_path.split(os.sep)[-2])
-            col2.metric("数据量", f"{len(df):,}")
-            col3.metric("加权均价 (VWAP)", f"{(df['price']*df['quantity']).sum()/df['quantity'].sum():.2f}")
-            col4.metric("时间跨度", f"{df['timestamp'].max() - df['timestamp'].min()}")
+            col1.metric("数据条数", f"{len(df):,}")
+            col2.metric("最高价", f"{df['price'].max():.2f}")
+            col3.metric("最低价", f"{df['price'].min():.2f}")
+            col4.metric("平均成交量", f"{df['quantity'].mean():.4f}")
 
-            # K线重采样
-            rule = st.select_slider("K线周期", options=["1s", "1min", "5min", "15min", "1H"], value="5min")
+            rule = st.select_slider("可视化聚合周期", options=["1s", "10s", "1min", "5min"], value="1min")
             df_ohlc = df.set_index('timestamp')['price'].resample(rule).ohlc()
-            df_vol = df.set_index('timestamp')['quantity'].resample(rule).sum()
-
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.02)
-            fig.add_trace(go.Candlestick(x=df_ohlc.index, open=df_ohlc['open'], high=df_ohlc['high'], 
-                                         low=df_ohlc['low'], close=df_ohlc['close'], name='OHLC'), row=1, col=1)
-            fig.add_trace(go.Bar(x=df_vol.index, y=df_vol, name='Volume'), row=2, col=1)
-            fig.update_layout(height=600, xaxis_rangeslider_visible=False, template="plotly_dark")
+            
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_ohlc.index, open=df_ohlc['open'], high=df_ohlc['high'], 
+                low=df_ohlc['low'], close=df_ohlc['close'], name='K-Line'
+            )])
+            fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, title=f"价格走势 ({rule})")
             st.plotly_chart(fig, use_container_width=True)
-
-    def render_realtime_panel(self):
-        st.header("🔴 实时录制监控 (L2 Recorder)")
-        files = self.get_files(self.realtime_dir)
-        if not files:
-            st.warning(f"未在 {self.realtime_dir} 找到录制数据，请先运行 l2record 命令。")
-            return
-
-        latest_file = st.selectbox("选择录制片段", files, format_func=lambda x: os.path.basename(x))
-        
-        if st.button("刷新数据状态"):
-            st.rerun()
-
-        if latest_file:
-            df = pd.read_parquet(latest_file)
-            st.info(f"文件路径: {latest_file}")
-            
-            # 统计不同类型的消息
-            type_map = {0: 'Bid Diff', 1: 'Ask Diff', 2: 'Trade', 3: 'Snap Bid', 4: 'Snap Ask'}
-            stats = df['side'].map(type_map).value_counts()
-            
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.dataframe(stats, use_container_width=True)
-            with c2:
-                fig = px.pie(values=stats.values, names=stats.index, title="消息类型分布")
-                st.plotly_chart(fig, use_container_width=True)
-
-            st.subheader("最新原始消息流")
-            st.dataframe(df.tail(20), use_container_width=True)
-
-    def render_l2_reconstruct_panel(self):
-        st.header("🧱 L2 订单簿重构与微观特征")
-        st.markdown("该模块读取原始混合流（快照+增量），在内存中重建订单簿并计算特征。")
-        
-        files = self.get_files(self.realtime_dir)
-        if not files:
-            st.warning("需要录制的原始数据来进行重构。")
-            return
-
-        target_file = st.selectbox("选择原始数据源", files, key='l2_file', format_func=lambda x: os.path.basename(x))
-        depth_limit = st.slider("重建深度 (Levels)", 5, 50, 20)
-        sample_interval = st.number_input("采样间隔 (ms)", 100, 5000, 1000)
-
-        if st.button("开始重建与计算"):
-            with st.spinner("正在重放订单流 (这可能需要几秒钟)..."):
-                recon = L2Reconstructor(depth_limit=depth_limit)
-                # 使用 generate_l2_dataset 方法获取时序特征
-                df_l2 = recon.generate_l2_dataset(target_file, sample_interval_ms=sample_interval)
-            
-            if not df_l2.empty:
-                st.success(f"重建完成! 生成样本数: {len(df_l2)}")
-                
-                # 可视化 1: 盘口价格与 Imbalance
-                fig1 = make_subplots(specs=[[{"secondary_y": True}]])
-                fig1.add_trace(go.Scatter(x=df_l2['timestamp'], y=df_l2['mid_price'], name="Mid Price"), secondary_y=False)
-                fig1.add_trace(go.Scatter(x=df_l2['timestamp'], y=df_l2['imbalance'], name="Order Imbalance", 
-                                          line=dict(color='rgba(255, 100, 0, 0.5)')), secondary_y=True)
-                fig1.update_yaxes(title_text="Price", secondary_y=False)
-                fig1.update_yaxes(title_text="Imbalance (-1 to 1)", secondary_y=True)
-                fig1.update_layout(title="中间价 vs 订单流不平衡度 (OFI)", template="plotly_dark")
-                st.plotly_chart(fig1, use_container_width=True)
-
-                # 可视化 2: 某一时刻的 Orderbook 形状
-                st.subheader("订单簿快照透视")
-                idx = st.slider("选择时间切片索引", 0, len(df_l2)-1, len(df_l2)//2)
-                row = df_l2.iloc[idx]
-                
-                bids_x, bids_y = [], []
-                asks_x, asks_y = [], []
-                for i in range(depth_limit):
-                    if f'b_p_{i}' in row:
-                        bids_x.append(row[f'b_p_{i}'])
-                        bids_y.append(row[f'b_q_{i}'])
-                    if f'a_p_{i}' in row:
-                        asks_x.append(row[f'a_p_{i}'])
-                        asks_y.append(row[f'a_q_{i}'])
-                
-                fig2 = go.Figure()
-                fig2.add_trace(go.Bar(x=bids_x, y=bids_y, name='Bids', marker_color='green'))
-                fig2.add_trace(go.Bar(x=asks_x, y=asks_y, name='Asks', marker_color='red'))
-                fig2.update_layout(title=f"Orderbook Depth @ {pd.to_datetime(row['timestamp'], unit='ms')}", 
-                                   xaxis_title="Price", yaxis_title="Quantity", template="plotly_dark")
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.error("重建结果为空，可能是数据中缺失快照（Snapshot）导致无法初始化。")
 
     def render_backtest_panel(self):
         st.header("🧪 策略回测实验室")
+        st.markdown("支持 L1 (aggTrades) 趋势策略与 L2 (RAW) 订单簿微观策略。")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            # 自动扫描 data/parquet 下的所有文件
-            data_files = self.get_files(self.history_dir)
-            # 也加入实时录制的文件用于回测
-            realtime_files = self.get_files(self.realtime_dir)
-            all_files = data_files + realtime_files
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            st.subheader("1. 数据源配置")
+            data_mode = st.radio("回测模式", ["L1 历史回测 (趋势策略)", "L2 实时回测 (微观特征)"])
             
-            selected_data = st.selectbox("选择回测数据", all_files, format_func=lambda x: f"[{'HIST' if 'aggTrades' in x else 'REAL'}] {os.path.basename(x)}")
-        
-        with col2:
-            initial_cash = st.number_input("初始资金 ($)", 1000, 1000000, 10000)
-            window_size = st.number_input("策略参数: 窗口大小", 10, 2000, 500)
-            fee = st.number_input("手续费率", 0.0, 0.01, 0.001, format="%.4f")
+            if data_mode == "L1 历史回测 (趋势策略)":
+                files = self.get_files(self.history_dir)
+                strategy_options = ["趋势跟踪 (MyTrendStrategy)"]
+            else:
+                files = self.get_files(self.realtime_dir)
+                strategy_options = ["盘口不平衡 (ImbalanceStrategy)"]
+            
+            selected_data = st.selectbox("选择回测文件", files, format_func=lambda x: os.path.basename(x))
+            selected_strat_name = st.selectbox("选择加载策略", strategy_options)
+            
+        with c2:
+            st.subheader("2. 核心参数调整")
+            initial_cash = st.number_input("初始资金 (USD)", 1000, 1000000, 10000)
+            fee = st.number_input("费率 (例如 0.0001 代表 0.01%)", 0.0, 0.01, 0.0001, format="%.4f")
+            
+            # 根据策略动态显示参数
+            if selected_strat_name == "趋势跟踪 (MyTrendStrategy)":
+                window = st.slider("均线窗口大小 (Window)", 10, 2000, 500)
+                strategy = MyTrendStrategy(window_size=window)
+            else:
+                st.info("💡 L2 策略回测前会自动执行订单簿重构逻辑。")
+                in_threshold = st.slider("入场阈值 (Imbalance > X)", 0.0, 1.0, 0.3)
+                out_threshold = st.slider("出场阈值 (Imbalance < Y)", -1.0, 0.0, -0.1)
+                strategy = ImbalanceStrategy(entry_threshold=in_threshold, exit_threshold=out_threshold)
 
-        if st.button("🚀 运行回测"):
-            if not selected_data or not os.path.exists(selected_data):
-                st.error("文件不存在")
+        if st.button("🚀 启动回测引擎", type="primary", use_container_width=True):
+            if not selected_data:
+                st.error("❌ 错误：未选择任何数据文件。")
                 return
 
-            # 初始化策略和引擎
-            strategy = MyTrendStrategy(window_size=int(window_size))
-            engine = BacktestEngine(selected_data, strategy, initial_cash=initial_cash, fee_rate=fee)
+            with st.spinner("正在处理数据并执行回测..."):
+                final_data_path = selected_data
+                
+                # 处理 L2 数据的重构流程
+                if data_mode == "L2 实时回测 (微观特征)":
+                    recon = L2Reconstructor(depth_limit=10)
+                    # 高频策略通常采样频率更高，这里固定 100ms
+                    df_feat = recon.generate_l2_dataset(selected_data, sample_interval_ms=100)
+                    if df_feat.empty:
+                        st.error("❌ 重构失败：原始数据中未发现有效的 Snapshot 快照。")
+                        return
+                    df_feat['price'] = df_feat['mid_price']
+                    final_data_path = "temp_gui_bt_l2.parquet"
+                    df_feat.to_parquet(final_data_path, index=False)
 
-            # 捕获标准输出
-            output_buffer = io.StringIO()
-            with contextlib.redirect_stdout(output_buffer):
-                try:
-                    engine.run()
-                except Exception as e:
-                    print(f"回测出错: {e}")
-            
-            # 解析结果
-            logs = output_buffer.getvalue()
-            st.text_area("回测日志", logs, height=300)
-            
-            # 可视化交易点（如果策略记录了）
-            if hasattr(engine.broker, 'trades') and engine.broker.trades:
-                trades_df = pd.DataFrame(engine.broker.trades)
-                st.dataframe(trades_df)
+                # 初始化回测引擎
+                engine = BacktestEngine(final_data_path, strategy, initial_cash=initial_cash, fee_rate=fee)
                 
-                # 简单的盈亏曲线（近似）
-                if 'equity' in logs:
-                    # 如果需要精确的 Equity Curve，需要修改 BacktestEngine 记录每个 tick 的 equity
-                    pass
-                
-                # 简单的买卖点标记图
-                if not trades_df.empty:
+                # 捕获回测过程中的标准输出
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
                     try:
-                        price_df = pd.read_parquet(selected_data).sort_values('timestamp')
-                        # 降采样以绘图
-                        price_df = price_df.iloc[::100] 
+                        engine.run()
+                    except Exception as e:
+                        st.error(f"回测运行时发生崩溃: {e}")
+                
+                # 渲染结果
+                st.success("✅ 回测任务已完成！")
+                
+                # 布局结果展示
+                res_col1, res_col2 = st.columns([1, 2])
+                with res_col1:
+                    st.subheader("📊 统计报告")
+                    st.code(output.getvalue())
+                
+                with res_col2:
+                    if engine.broker.trades:
+                        trades_df = pd.DataFrame(engine.broker.trades)
+                        st.subheader("📈 交易分布与价格曲线")
+                        
+                        # 加载价格数据进行绘图
+                        df_price = pd.read_parquet(final_data_path).sort_values('timestamp')
+                        # 如果数据点太多，进行降采样绘图以提升性能
+                        if len(df_price) > 5000:
+                            df_price = df_price.iloc[::max(1, len(df_price)//5000)]
+                            
                         fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=price_df['timestamp'], y=price_df['price'], name='Price', line=dict(color='gray')))
+                        fig.add_trace(go.Scatter(x=df_price['timestamp'], y=df_price['price'], 
+                                                 name='Market Price', line=dict(color='gray', width=1), opacity=0.6))
                         
                         buys = trades_df[trades_df['side'] == 'BUY']
                         sells = trades_df[trades_df['side'] == 'SELL']
                         
-                        fig.add_trace(go.Scatter(x=buys['time'], y=buys['price'], mode='markers', name='Buy', marker=dict(color='green', size=10, symbol='triangle-up')))
-                        fig.add_trace(go.Scatter(x=sells['time'], y=sells['price'], mode='markers', name='Sell', marker=dict(color='red', size=10, symbol='triangle-down')))
+                        fig.add_trace(go.Scatter(x=buys['time'], y=buys['price'], mode='markers', 
+                                                 name='BUY Signal', marker=dict(color='#00FF00', symbol='triangle-up', size=12)))
+                        fig.add_trace(go.Scatter(x=sells['time'], y=sells['price'], mode='markers', 
+                                                 name='SELL Signal', marker=dict(color='#FF4B4B', symbol='triangle-down', size=12)))
                         
-                        fig.update_layout(title="回测交易分布图", template="plotly_dark")
+                        fig.update_layout(title="Backtest Execution Map", template="plotly_dark", height=600, 
+                                          xaxis_title="Time", yaxis_title="Price (USD)")
                         st.plotly_chart(fig, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"无法绘制交易图表: {e}")
+                        
+                        st.subheader("📜 成交明细")
+                        st.dataframe(trades_df, use_container_width=True)
+                    else:
+                        st.warning("⚠️ 策略在当前参数下未产生任何交易。请尝试调整阈值或窗口大小。")
 
+                # 清理临时文件
+                if os.path.exists("temp_gui_bt_l2.parquet"):
+                    os.remove("temp_gui_bt_l2.parquet")
 
     def run(self):
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 历史数据", "🔴 实时监控", "🧱 L2 重构", "🧪 策略回测"])
-        
-        with tab1:
+        tabs = st.tabs(["📊 行情预览", "🧱 L2 特征提取", "🧪 策略回测实验室"])
+        with tabs[0]: 
             self.render_history_panel()
-        with tab2:
-            self.render_realtime_panel()
-        with tab3:
-            self.render_l2_reconstruct_panel()
-        with tab4:
+        with tabs[1]: 
+            st.info("💡 L2 重构逻辑已集成到回测面板中。您可以在此预览原始数据质量。")
+            # 这里可以保留之前的 L2 重构展示代码，如果需要独立预览的话
+        with tabs[2]: 
             self.render_backtest_panel()
 
 if __name__ == "__main__":
-    app = NarciDashboard()
-    app.run()
+    NarciDashboard().run()
