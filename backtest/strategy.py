@@ -1,3 +1,5 @@
+import numpy as np
+
 class BaseStrategy:
     """
     策略基类，用户需继承此类并实现抽象方法
