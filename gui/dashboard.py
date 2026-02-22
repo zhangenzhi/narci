@@ -8,6 +8,8 @@ import glob
 import sys
 import io
 import contextlib
+import re
+from datetime import datetime, date
 
 # 动态添加项目根目录到 sys.path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -27,34 +29,75 @@ class NarciDashboard:
     def __init__(self):
         self.base_path = root_dir
         # L1 数据存放路径 (download.py 默认生成路径)
-        self.history_dir = os.path.join(self.base_path, "replay_buffer", "parquet", "aggTrades")
+        self.history_dir = os.path.join(self.base_path, "replay_buffer", "parquet")
         # L2 数据存放路径 (l2_recorder.py 默认生成路径)
         self.realtime_dir = os.path.join(self.base_path, "data", "realtime", "l2")
         
-        # 路径自动纠偏：如果默认路径不存在，尝试递归搜索 parquet 根目录
+        # 路径自动纠偏：确保能找到数据
         if not os.path.exists(self.history_dir):
-             self.history_dir = os.path.join(self.base_path, "replay_buffer", "parquet")
-        if not os.path.exists(self.realtime_dir):
-             self.realtime_dir = os.path.join(self.base_path, "replay_buffer", "realtime", "l2")
+             self.history_dir = os.path.join(self.base_path, "replay_buffer")
+        
+        # 为 L2 录制目录增加纠偏，优先查找 replay_buffer 下的录制目录
+        alt_realtime_dir = os.path.join(self.base_path, "replay_buffer", "realtime", "l2")
+        if os.path.exists(alt_realtime_dir):
+            self.realtime_dir = alt_realtime_dir
 
-    def get_files(self, directory):
+    def get_all_parquet_files(self, directory):
+        """递归获取目录下所有 parquet 文件及其完整路径"""
         if not os.path.exists(directory):
             return []
-        files = []
+        
+        parquet_files = []
         for root, _, filenames in os.walk(directory):
             for filename in filenames:
                 if filename.endswith(".parquet"):
-                    files.append(os.path.join(root, filename))
-        return sorted(files, reverse=True)
+                    parquet_files.append(os.path.join(root, filename))
+        return parquet_files
+
+    def get_filtered_files(self, directory, start_date, end_date, symbol=None):
+        """根据日期范围和币种筛选 Parquet 文件"""
+        all_paths = self.get_all_parquet_files(directory)
+        filtered = []
+        
+        for f_path in all_paths:
+            filename = os.path.basename(f_path)
+            
+            # 1. 币种过滤 (如果指定了 symbol)
+            if symbol and symbol.upper() not in filename.upper() and symbol.upper() not in f_path.upper():
+                continue
+                
+            try:
+                # 2. 日期过滤: 
+                # 匹配 YYYY-MM-DD (L1) 或 YYYYMMDD (L2 RAW)
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+                if date_match:
+                    file_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").date()
+                else:
+                    # 尝试匹配无横线的格式 20260222
+                    date_match_raw = re.search(r'(\d{8})', filename)
+                    if date_match_raw:
+                        file_date = datetime.strptime(date_match_raw.group(1), "%Y%m%d").date()
+                    else:
+                        continue
+
+                if start_date <= file_date <= end_date:
+                    filtered.append(f_path)
+            except Exception:
+                continue
+                
+        # 按文件名排序，确保回测时间顺序
+        return sorted(filtered)
 
     def render_history_panel(self):
         st.header("📈 历史行情预览 (L1 Data)")
-        files = self.get_files(self.history_dir)
-        if not files:
-            st.warning("⚠️ 未找到 L1 历史数据，请先运行 'python main.py download' 下载数据。")
+        all_files = self.get_all_parquet_files(self.history_dir)
+        
+        if not all_files:
+            st.warning(f"⚠️ 文件夹 {self.history_dir} 中未找到任何数据。")
             return
             
-        selected_path = st.selectbox("选择历史数据文件", files, format_func=lambda x: os.path.basename(x))
+        selected_path = st.selectbox("选择预览文件", all_files, format_func=lambda x: os.path.relpath(x, self.base_path))
+        
         if selected_path:
             with st.spinner("加载数据中..."):
                 df = pd.read_parquet(selected_path).sort_values('timestamp')
@@ -76,124 +119,143 @@ class NarciDashboard:
             st.plotly_chart(fig, use_container_width=True)
 
     def render_backtest_panel(self):
-        st.header("🧪 策略回测实验室")
-        st.markdown("支持 L1 (aggTrades) 趋势策略与 L2 (RAW) 订单簿微观策略。")
+        st.header("🧪 强化版策略回测实验室")
         
         c1, c2 = st.columns([1, 1])
         with c1:
-            st.subheader("1. 数据源配置")
-            data_mode = st.radio("回测模式", ["L1 历史回测 (趋势策略)", "L2 实时回测 (微观特征)"])
+            st.subheader("1. 数据源与范围配置")
+            data_mode = st.radio("回测模式", ["L1 历史趋势 (aggTrades)", "L2 微观特征 (Realtime RAW)"])
             
-            if data_mode == "L1 历史回测 (趋势策略)":
-                files = self.get_files(self.history_dir)
-                strategy_options = ["趋势跟踪 (MyTrendStrategy)"]
-            else:
-                files = self.get_files(self.realtime_dir)
-                strategy_options = ["盘口不平衡 (ImbalanceStrategy)"]
+            # 新增：币种选择，用于精准过滤路径
+            symbol_input = st.text_input("交易对筛选 (例如 ETHUSDT)", value="ETHUSDT").strip().upper()
             
-            selected_data = st.selectbox("选择回测文件", files, format_func=lambda x: os.path.basename(x))
+            # 日期范围选择
+            today = date.today()
+            # 默认范围设为包含你数据的日期
+            d_range = st.date_input("选择回测日期范围", [date(2026, 2, 1), date(2026, 2, 28)])
+            
+            selected_files = []
+            if len(d_range) == 2:
+                start, end = d_range
+                target_dir = self.history_dir if "L1" in data_mode else self.realtime_dir
+                selected_files = self.get_filtered_files(target_dir, start, end, symbol=symbol_input)
+                
+                if selected_files:
+                    st.success(f"📂 匹配到 {len(selected_files)} 个 {symbol_input} 数据文件")
+                    with st.expander("查看待处理文件列表"):
+                        for f in selected_files:
+                            st.text(f"- {os.path.relpath(f, self.base_path)}")
+                else:
+                    st.error(f"📍 在 {target_dir} 下未找到 {symbol_input} 的匹配数据")
+                    st.info("提示：请检查文件名是否包含 YYYY-MM-DD 或 YYYYMMDD 格式。")
+
+            strategy_options = ["趋势跟踪 (MyTrendStrategy)"] if "L1" in data_mode else ["盘口不平衡 (ImbalanceStrategy)"]
             selected_strat_name = st.selectbox("选择加载策略", strategy_options)
             
         with c2:
-            st.subheader("2. 核心参数调整")
+            st.subheader("2. 交易参数设置")
             initial_cash = st.number_input("初始资金 (USD)", 1000, 1000000, 10000)
             fee = st.number_input("费率 (例如 0.0001 代表 0.01%)", 0.0, 0.01, 0.0001, format="%.4f")
             
-            # 根据策略动态显示参数
-            if selected_strat_name == "趋势跟踪 (MyTrendStrategy)":
-                window = st.slider("均线窗口大小 (Window)", 10, 2000, 500)
+            st.divider()
+            if "MyTrendStrategy" in selected_strat_name:
+                window = st.slider("均线窗口大小", 10, 2000, 500)
                 strategy = MyTrendStrategy(window_size=window)
             else:
-                st.info("💡 L2 策略回测前会自动执行订单簿重构逻辑。")
                 in_threshold = st.slider("入场阈值 (Imbalance > X)", 0.0, 1.0, 0.3)
                 out_threshold = st.slider("出场阈值 (Imbalance < Y)", -1.0, 0.0, -0.1)
                 strategy = ImbalanceStrategy(entry_threshold=in_threshold, exit_threshold=out_threshold)
 
-        if st.button("🚀 启动回测引擎", type="primary", use_container_width=True):
-            if not selected_data:
-                st.error("❌ 错误：未选择任何数据文件。")
+        if st.button("🚀 启动跨文件回测引擎", type="primary", use_container_width=True):
+            if not selected_files:
+                st.error("❌ 无法开始：未选中任何有效文件。")
                 return
+            
+            self.run_process(selected_files, strategy, data_mode, initial_cash, fee)
 
-            with st.spinner("正在处理数据并执行回测..."):
-                final_data_path = selected_data
+    def run_process(self, files, strategy, mode, initial_cash, fee):
+        """执行回测处理流"""
+        with st.spinner("正在串联数据并执行回测..."):
+            final_data_source = files
+            
+            if "L2" in mode:
+                recon = L2Reconstructor(depth_limit=10)
+                all_feats = []
+                progress_text = "正在重构 L2 特征..."
+                my_bar = st.progress(0, text=progress_text)
                 
-                # 处理 L2 数据的重构流程
-                if data_mode == "L2 实时回测 (微观特征)":
-                    recon = L2Reconstructor(depth_limit=10)
-                    # 高频策略通常采样频率更高，这里固定 100ms
-                    df_feat = recon.generate_l2_dataset(selected_data, sample_interval_ms=100)
-                    if df_feat.empty:
-                        st.error("❌ 重构失败：原始数据中未发现有效的 Snapshot 快照。")
-                        return
-                    df_feat['price'] = df_feat['mid_price']
-                    final_data_path = "temp_gui_bt_l2.parquet"
-                    df_feat.to_parquet(final_data_path, index=False)
+                for i, f_path in enumerate(files):
+                    df_feat = recon.generate_l2_dataset(f_path, sample_interval_ms=100)
+                    if not df_feat.empty:
+                        all_feats.append(df_feat)
+                    my_bar.progress((i + 1) / len(files), text=f"{progress_text} ({i+1}/{len(files)})")
+                
+                if not all_feats:
+                    st.error("❌ 重构失败：所选文件中未发现有效的订单簿快照数据。")
+                    return
+                
+                combined_df = pd.concat(all_feats).sort_values('timestamp')
+                combined_df['price'] = combined_df['mid_price']
+                
+                final_data_source = "temp_multi_bt_l2.parquet"
+                combined_df.to_parquet(final_data_source, index=False)
 
-                # 初始化回测引擎
-                engine = BacktestEngine(final_data_path, strategy, initial_cash=initial_cash, fee_rate=fee)
-                
-                # 捕获回测过程中的标准输出
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    try:
-                        engine.run()
-                    except Exception as e:
-                        st.error(f"回测运行时发生崩溃: {e}")
-                
-                # 渲染结果
-                st.success("✅ 回测任务已完成！")
-                
-                # 布局结果展示
-                res_col1, res_col2 = st.columns([1, 2])
-                with res_col1:
-                    st.subheader("📊 统计报告")
-                    st.code(output.getvalue())
-                
-                with res_col2:
-                    if engine.broker.trades:
-                        trades_df = pd.DataFrame(engine.broker.trades)
-                        st.subheader("📈 交易分布与价格曲线")
-                        
-                        # 加载价格数据进行绘图
-                        df_price = pd.read_parquet(final_data_path).sort_values('timestamp')
-                        # 如果数据点太多，进行降采样绘图以提升性能
-                        if len(df_price) > 5000:
-                            df_price = df_price.iloc[::max(1, len(df_price)//5000)]
-                            
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(x=df_price['timestamp'], y=df_price['price'], 
-                                                 name='Market Price', line=dict(color='gray', width=1), opacity=0.6))
-                        
-                        buys = trades_df[trades_df['side'] == 'BUY']
-                        sells = trades_df[trades_df['side'] == 'SELL']
-                        
-                        fig.add_trace(go.Scatter(x=buys['time'], y=buys['price'], mode='markers', 
-                                                 name='BUY Signal', marker=dict(color='#00FF00', symbol='triangle-up', size=12)))
-                        fig.add_trace(go.Scatter(x=sells['time'], y=sells['price'], mode='markers', 
-                                                 name='SELL Signal', marker=dict(color='#FF4B4B', symbol='triangle-down', size=12)))
-                        
-                        fig.update_layout(title="Backtest Execution Map", template="plotly_dark", height=600, 
-                                          xaxis_title="Time", yaxis_title="Price (USD)")
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        st.subheader("📜 成交明细")
-                        st.dataframe(trades_df, use_container_width=True)
-                    else:
-                        st.warning("⚠️ 策略在当前参数下未产生任何交易。请尝试调整阈值或窗口大小。")
+            # 初始化回测引擎
+            engine = BacktestEngine(final_data_source, strategy, initial_cash=initial_cash, fee_rate=fee)
+            
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                try:
+                    engine.run()
+                except Exception as e:
+                    st.error(f"回测运行时发生崩溃: {e}")
+            
+            st.success(f"✅ 回测完成！处理了 {len(files)} 个文件。")
+            
+            res_col1, res_col2 = st.columns([1, 2])
+            with res_col1:
+                st.subheader("📊 统计报告")
+                st.code(output.getvalue())
+            
+            with res_col2:
+                if engine.broker.trades:
+                    trades_df = pd.DataFrame(engine.broker.trades)
+                    st.subheader("📈 交易分布预览")
+                    
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=trades_df['time'], y=trades_df['price'], mode='markers+lines',
+                                             name='Price At Trade', line=dict(color='gold', width=1)))
+                    
+                    buys = trades_df[trades_df['side'] == 'BUY']
+                    sells = trades_df[trades_df['side'] == 'SELL']
+                    
+                    fig.add_trace(go.Scatter(x=buys['time'], y=buys['price'], mode='markers', 
+                                             name='BUY', marker=dict(color='#00FF00', symbol='triangle-up', size=10)))
+                    fig.add_trace(go.Scatter(x=sells['time'], y=sells['price'], mode='markers', 
+                                             name='SELL', marker=dict(color='#FF4B4B', symbol='triangle-down', size=10)))
+                    
+                    fig.update_layout(template="plotly_dark", height=500, title="Trade Execution Timeline")
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    st.subheader("📜 最近成交明细")
+                    st.dataframe(trades_df.tail(100), use_container_width=True)
+                else:
+                    st.warning("⚠️ 策略在当前日期范围内未产生任何交易。")
 
-                # 清理临时文件
-                if os.path.exists("temp_gui_bt_l2.parquet"):
-                    os.remove("temp_gui_bt_l2.parquet")
+            if os.path.exists("temp_multi_bt_l2.parquet"):
+                os.remove("temp_multi_bt_l2.parquet")
 
     def run(self):
-        tabs = st.tabs(["📊 行情预览", "🧱 L2 特征提取", "🧪 策略回测实验室"])
+        tabs = st.tabs(["📊 行情预览", "🧪 强化版回测室", "🔧 系统设置"])
         with tabs[0]: 
             self.render_history_panel()
         with tabs[1]: 
-            st.info("💡 L2 重构逻辑已集成到回测面板中。您可以在此预览原始数据质量。")
-            # 这里可以保留之前的 L2 重构展示代码，如果需要独立预览的话
-        with tabs[2]: 
             self.render_backtest_panel()
+        with tabs[2]:
+            st.subheader("📁 目录配置")
+            st.text(f"项目根目录: {root_dir}")
+            st.text(f"L1 搜索路径: {self.history_dir}")
+            st.text(f"L2 搜索路径: {self.realtime_dir}")
 
 if __name__ == "__main__":
     NarciDashboard().run()
