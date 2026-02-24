@@ -7,7 +7,14 @@ import yaml
 import pandas as pd
 import aiohttp
 import websockets
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# 动态引入每日聚合器，解决可能存在的路径问题
+try:
+    from data.daily_compactor import DailyCompactor
+except ImportError:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from data.daily_compactor import DailyCompactor
 
 class BinanceL2Recorder:
     def __init__(self, config_path="configs/recorder.yaml", symbol=None):
@@ -141,6 +148,49 @@ class BinanceL2Recorder:
                 # 写入失败尝试保留数据，避免丢失
                 # self.buffer.extend(current_data) 
 
+    async def _daily_compaction_task(self):
+        """后台驻留协程：每天凌晨 00:05 自动触发对'昨天'的数据聚合与校验"""
+        print(f"🕒 每日聚合与自动验证后台任务已启动...")
+        while self.running:
+            now = datetime.utcnow()
+            # 计算距离明天 00:05:00 UTC 还有多少秒 (留出 5 分钟给官方生成归档文件的时间)
+            tomorrow = now.date() + timedelta(days=1)
+            next_run_time = datetime.combine(tomorrow, datetime.min.time()) + timedelta(minutes=5)
+            sleep_seconds = (next_run_time - now).total_seconds()
+            
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ 自动聚合与校验挂起中，将于 {sleep_seconds/3600:.1f} 小时后 (UTC 00:05) 触发...")
+            
+            try:
+                # 采用分段 sleep 以便能够快速响应 self.running = False 的退出信号
+                # 这里为了简化，直接 sleep，由 asyncio 的 cancellation 机制在外部结束它
+                await asyncio.sleep(sleep_seconds)
+            except asyncio.CancelledError:
+                break
+                
+            if not self.running:
+                break
+                
+            # 时间到，执行昨日数据的聚合
+            yesterday = datetime.utcnow().date() - timedelta(days=1)
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔄 开始执行后台归档与交叉验证任务，目标日期: {yesterday}")
+            
+            # 定位官方数据存放的目录 (如 ./replay_buffer/official_validation)
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            official_dir = os.path.join(base_dir, "replay_buffer", "official_validation")
+            
+            try:
+                compactor = DailyCompactor(
+                    symbol=self.symbol, 
+                    target_date=yesterday,
+                    raw_dir=self.save_dir,
+                    official_dir=official_dir
+                )
+                
+                # 【极其重要】使用 to_thread 将阻塞的 I/O 运算丢入底层线程池，绝对不能阻塞这里的 WS 异步事件循环！
+                await asyncio.to_thread(compactor.run)
+            except Exception as e:
+                print(f"❌ 后台归档任务发生严重异常: {e}")
+
     async def record_stream(self):
         """主录制循环"""
         while self.running:
@@ -201,10 +251,18 @@ class BinanceL2Recorder:
     async def start(self):
         """启动录制器"""
         print(f"--- 启动 Binance 原始数据捕获器 ---")
-        await asyncio.gather(
-            self.record_stream(),
-            self.save_loop()
-        )
+        
+        # 将每日压缩校验任务抛到后台，并保留句柄以便优雅退出
+        compaction_task = asyncio.create_task(self._daily_compaction_task())
+        
+        try:
+            await asyncio.gather(
+                self.record_stream(),
+                self.save_loop()
+            )
+        finally:
+            # 当主协程被 KeyboardInterrupt 打断时，取消后台任务
+            compaction_task.cancel()
 
 if __name__ == "__main__":
     # 支持命令行参数覆盖 symbol
@@ -216,4 +274,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
-        print("\n🛑 用户手动停止录制")
+        print("\n🛑 用户手动停止录制，正在进行安全关闭...")
+        recorder.running = False
