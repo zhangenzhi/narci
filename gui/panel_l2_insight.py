@@ -78,10 +78,18 @@ def render(base_path, realtime_dir):
         if st.button("📑 全选并导入全部", type="secondary", use_container_width=True):
             st.session_state.insight_selected_paths = tuple(df_files["_path"].tolist())
 
-    # 缓存 L2 重建结果 (使用分块处理 Chunking 来破解千万行数据的 UI 假死问题)
+    # 缓存 L2 重建结果 (修复点：进度条在缓存函数内部初始化，避免 CacheReplayClosureError)
     @st.cache_data(show_spinner=False)
-    def process_l2_data(filepaths, interval, limit, _progress_bar=None, _status_text=None):
+    def process_l2_data(filepaths, interval, limit):
         if not filepaths: return pd.DataFrame()
+        
+        # 内部创建 UI 占位符，执行完毕后清空，完美适配 Streamlit 缓存机制
+        ui_box = st.empty()
+        with ui_box.container():
+            st.markdown("##### ⚙️ L2 盘口特征流重构引擎")
+            c_text, c_prog = st.columns([2, 3])
+            _status_text = c_text.empty()
+            _progress_bar = c_prog.progress(0.0)
         
         chunk_size_files = 50
         total_file_chunks = (len(filepaths) + chunk_size_files - 1) // chunk_size_files
@@ -95,19 +103,18 @@ def render(base_path, realtime_dir):
             tables.append(chunk_ds.to_table())
             
             # 读取阶段分配 30% 的进度
-            if _progress_bar is not None and _status_text is not None:
-                chunk_progress = (i + 1) / total_file_chunks
-                overall_progress = min(chunk_progress * 0.3, 0.3)
-                elapsed = time.time() - start_time
-                eta = (elapsed / chunk_progress) - elapsed if chunk_progress > 0 else 0
-                _progress_bar.progress(overall_progress)
-                _status_text.markdown(f"**[1/4]** 📂 正在合并多路数据文件... ({i+1}/{total_file_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
+            chunk_progress = (i + 1) / total_file_chunks
+            overall_progress = min(chunk_progress * 0.3, 0.3)
+            elapsed = time.time() - start_time
+            eta = (elapsed / chunk_progress) - elapsed if chunk_progress > 0 else 0
+            _progress_bar.progress(overall_progress)
+            _status_text.markdown(f"**[1/4]** 📂 正在合并多路数据文件... ({i+1}/{total_file_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
         
-        if _status_text:
-            _status_text.markdown("**[2/4]** 🔄 正在执行时间轴精确排序 (耗费内存操作)...")
+        _status_text.markdown("**[2/4]** 🔄 正在执行时间轴精确排序 (耗费内存操作)...")
             
         valid_tables = [t for t in tables if t.num_rows > 0]
         if not valid_tables:
+            ui_box.empty()
             return pd.DataFrame()
             
         combined_table = pa.concat_tables(valid_tables)
@@ -120,8 +127,7 @@ def render(base_path, realtime_dir):
         combined_table_sorted = pa.Table.from_pandas(combined_df)
         del combined_df 
         
-        if _progress_bar:
-            _progress_bar.progress(0.4)
+        _progress_bar.progress(0.4)
             
         # 3. 切片分块处理 (Chunking) - 解决单次计算卡死无进度的问题
         total_rows = combined_table_sorted.num_rows
@@ -147,15 +153,15 @@ def render(base_path, realtime_dir):
                 os.remove(temp_chunk_file)
                 
             # 重构阶段占总体进度的 60% (从 0.4 到 1.0)
-            if _progress_bar is not None and _status_text is not None:
-                recon_progress = (i + 1) / total_recon_chunks
-                overall_progress = min(0.4 + 0.6 * recon_progress, 1.0)
-                elapsed = time.time() - start_time
-                eta = (elapsed / overall_progress) - elapsed if overall_progress > 0 else 0
-                _progress_bar.progress(overall_progress)
-                _status_text.markdown(f"**[3/4]** 🧠 正在逐笔重构微观盘口 ({i+1}/{total_recon_chunks} 批次, 共 {total_rows:,} 行) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
+            recon_progress = (i + 1) / total_recon_chunks
+            overall_progress = min(0.4 + 0.6 * recon_progress, 1.0)
+            elapsed = time.time() - start_time
+            eta = (elapsed / overall_progress) - elapsed if overall_progress > 0 else 0
+            _progress_bar.progress(overall_progress)
+            _status_text.markdown(f"**[3/4]** 🧠 正在逐笔重构微观盘口 ({i+1}/{total_recon_chunks} 批次, 共 {total_rows:,} 行) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
                 
         if not all_l2_dfs:
+            ui_box.empty()
             return pd.DataFrame()
             
         final_df = pd.concat(all_l2_dfs, ignore_index=True)
@@ -163,18 +169,25 @@ def render(base_path, realtime_dir):
         final_df = final_df.drop_duplicates(subset=['timestamp']).reset_index(drop=True)
         final_df['datetime'] = pd.to_datetime(final_df['timestamp'], unit='ms')
             
-        if _status_text:
-            _status_text.markdown("**[4/4]** ✅ L2 特征流重构完成！")
-        if _progress_bar:
-            _progress_bar.progress(1.0)
-            
+        _status_text.markdown("**[4/4]** ✅ L2 特征流重构完成！")
+        _progress_bar.progress(1.0)
+        
+        # 计算完毕后清理掉内部进度条，保持界面整洁
+        ui_box.empty()
         return final_df
 
-    # 缓存 L1 还原结果 (过滤下推优化 + 进度条)
+    # 缓存 L1 还原结果 (进度条同样在内部初始化)
     @st.cache_data(show_spinner=False)
-    def process_l1_recovery(filepaths, _progress_bar=None, _status_text=None):
+    def process_l1_recovery(filepaths):
         if not filepaths: return pd.DataFrame()
         
+        ui_box = st.empty()
+        with ui_box.container():
+            st.markdown("##### ⚙️ L1 逐笔成交解析引擎")
+            c_text, c_prog = st.columns([2, 3])
+            _status_text = c_text.empty()
+            _progress_bar = c_prog.progress(0.0)
+            
         chunk_size = 50
         total_chunks = (len(filepaths) + chunk_size - 1) // chunk_size
         tables = []
@@ -186,21 +199,22 @@ def render(base_path, realtime_dir):
             chunk_ds = ds.dataset(list(chunk_files), format="parquet")
             tables.append(chunk_ds.to_table(filter=(ds.field("side") == 2)))
             
-            if _progress_bar is not None and _status_text is not None:
-                progress = (i + 1) / total_chunks
-                elapsed = time.time() - start_time
-                eta = (elapsed / progress) - elapsed if progress > 0 else 0
-                _progress_bar.progress(progress)
-                _status_text.markdown(f"🔍 正在提取 L1 逐笔成交 ({i+1}/{total_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
+            progress = (i + 1) / total_chunks
+            elapsed = time.time() - start_time
+            eta = (elapsed / progress) - elapsed if progress > 0 else 0
+            _progress_bar.progress(progress)
+            _status_text.markdown(f"🔍 正在提取 L1 逐笔成交 ({i+1}/{total_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
         
         valid_tables = [t for t in tables if t.num_rows > 0]
         if not valid_tables:
+            ui_box.empty()
             return pd.DataFrame()
         
         combined_table = pa.concat_tables(valid_tables)
         df_trade = combined_table.to_pandas()
         
         if df_trade.empty:
+            ui_box.empty()
             return pd.DataFrame()
         
         # 根据 recorder 的逻辑：quantity 为负数代表卖方主动 (Taker Sell)
@@ -209,12 +223,31 @@ def render(base_path, realtime_dir):
         df_trade['quantity'] = df_trade['quantity'].abs()
         df_trade['datetime'] = pd.to_datetime(df_trade['timestamp'], unit='ms')
         
-        if _progress_bar:
-            _progress_bar.progress(1.0)
-        if _status_text:
-            _status_text.markdown("✅ L1 成交提取完成！")
-            
+        _progress_bar.progress(1.0)
+        _status_text.markdown("✅ L1 成交提取完成！")
+        
+        ui_box.empty()
         return df_trade.sort_values('datetime').reset_index(drop=True)
+
+    # 缓存：官方数据加载器
+    @st.cache_data(show_spinner=False)
+    def load_official_l1(filepath):
+        if filepath == "无 (仅查看重构)": return pd.DataFrame()
+        df = pd.read_parquet(filepath)
+        
+        # 兼容不同命名的时间戳字段
+        time_col = 'timestamp' if 'timestamp' in df.columns else ('datetime' if 'datetime' in df.columns else None)
+        if not time_col: return pd.DataFrame()
+            
+        if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+            # 如果是毫秒级时间戳则转换
+            is_ms = str(df[time_col].iloc[0]).isdigit() and int(df[time_col].iloc[0]) > 1e11
+            df[time_col] = pd.to_datetime(df[time_col], unit='ms' if is_ms else None)
+        
+        if time_col != 'datetime':
+            df['datetime'] = df[time_col]
+            
+        return df.sort_values('datetime').reset_index(drop=True)
 
     # 根据导入按钮的状态 (session_state) 进行数据处理
     process_paths = st.session_state.insight_selected_paths
@@ -222,29 +255,9 @@ def render(base_path, realtime_dir):
     if process_paths:
         st.divider()
         
-        # 使用动态占位符包裹进度区。处理完毕后可以直接清空，防止影响下方视图
-        prog_container = st.empty()
-        with prog_container.container():
-            st.markdown("### ⚙️ 核心计算引擎进度")
-            col_msg_l2, col_prog_l2 = st.columns([2, 3])
-            with col_msg_l2: status_text_l2 = st.empty()
-            with col_prog_l2: 
-                st.write("") # 微调对齐
-                progress_bar_l2 = st.progress(0.0)
-                
-            col_msg_l1, col_prog_l1 = st.columns([2, 3])
-            with col_msg_l1: status_text_l1 = st.empty()
-            with col_prog_l1: 
-                st.write("") 
-                progress_bar_l1 = st.progress(0.0)
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-        # 开始执行数据重构，将 UI 句柄传递进去
-        df_l2 = process_l2_data(process_paths, sample_interval, depth_limit, progress_bar_l2, status_text_l2)
-        df_l1 = process_l1_recovery(process_paths, progress_bar_l1, status_text_l1)
-        
-        # 当处理完成（或者命中缓存秒出）后，立刻隐藏进度占位符，保持界面清爽
-        prog_container.empty()
+        # 开始执行数据重构，内部缓存函数自带进度条的显示与销毁
+        df_l2 = process_l2_data(process_paths, sample_interval, depth_limit)
+        df_l1 = process_l1_recovery(process_paths)
             
         if df_l2.empty:
             st.error("❌ 重建失败：数据为空，或该文件中未发现初始快照 (Side 3/4)，无法重构盘口。")
@@ -256,23 +269,24 @@ def render(base_path, realtime_dir):
         tab_price, tab_depth, tab_l1, tab_data = st.tabs([
             "📊 盘口价格与指标走势", 
             "🧊 动态深度截面图", 
-            "🔄 L1 逐笔成交还原", 
+            "🔄 L1 逐笔成交同盘对比", 
             "📋 原始重构数据"
         ])
         
         with tab_price:
             st.subheader("1. 盘口最优报价 (Top of Book)")
             fig_price = go.Figure()
-            fig_price.add_trace(go.Scatter(x=df_l2['datetime'], y=df_l2['a_p_0'], mode='lines', name='Ask 1 (卖一)', line=dict(color='#FF4B4B', width=1.5)))
-            fig_price.add_trace(go.Scatter(x=df_l2['datetime'], y=df_l2['b_p_0'], mode='lines', name='Bid 1 (买一)', line=dict(color='#00FF00', width=1.5)))
-            fig_price.add_trace(go.Scatter(x=df_l2['datetime'], y=df_l2['mid_price'], mode='lines', name='Mid Price (中间价)', line=dict(color='yellow', width=1, dash='dot')))
+            # 开启 WebGL 加速 (Scattergl) 应对海量点
+            fig_price.add_trace(go.Scattergl(x=df_l2['datetime'], y=df_l2['a_p_0'], mode='lines', name='Ask 1 (卖一)', line=dict(color='#FF4B4B', width=1.5)))
+            fig_price.add_trace(go.Scattergl(x=df_l2['datetime'], y=df_l2['b_p_0'], mode='lines', name='Bid 1 (买一)', line=dict(color='#00FF00', width=1.5)))
+            fig_price.add_trace(go.Scattergl(x=df_l2['datetime'], y=df_l2['mid_price'], mode='lines', name='Mid Price (中间价)', line=dict(color='yellow', width=1, dash='dot')))
             fig_price.update_layout(template="plotly_dark", height=400, hovermode="x unified", margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig_price, use_container_width=True)
 
             st.subheader("2. 盘口微观指标 (Imbalance & Spread)")
             fig_metrics = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_metrics.add_trace(go.Scatter(x=df_l2['datetime'], y=df_l2['imbalance'], mode='lines', name='Imbalance (买盘偏度)', line=dict(color='cyan', width=1.5)), secondary_y=False)
-            fig_metrics.add_trace(go.Scatter(x=df_l2['datetime'], y=df_l2['spread'], mode='lines', name='Spread (价差)', line=dict(color='orange', width=1, dash='dot')), secondary_y=True)
+            fig_metrics.add_trace(go.Scattergl(x=df_l2['datetime'], y=df_l2['imbalance'], mode='lines', name='Imbalance (买盘偏度)', line=dict(color='cyan', width=1.5)), secondary_y=False)
+            fig_metrics.add_trace(go.Scattergl(x=df_l2['datetime'], y=df_l2['spread'], mode='lines', name='Spread (价差)', line=dict(color='orange', width=1, dash='dot')), secondary_y=True)
             fig_metrics.update_layout(template="plotly_dark", height=400, hovermode="x unified", margin=dict(l=0, r=0, t=30, b=0))
             fig_metrics.update_yaxes(title_text="Imbalance (-1 to 1)", secondary_y=False, range=[-1.1, 1.1])
             fig_metrics.update_yaxes(title_text="Spread (Price Diff)", secondary_y=True)
@@ -292,13 +306,12 @@ def render(base_path, realtime_dir):
                     asks_p.append(row[f'a_p_{i}'])
                     asks_q.append(row[f'a_q_{i}'])
             
-            # 买单需要逆序累加计算累计深度 (因为 b_p_0 最高，往后越来越低)
             bids_q_cum = np.cumsum(bids_q)
             asks_q_cum = np.cumsum(asks_q)
             
             fig_depth = go.Figure()
-            fig_depth.add_trace(go.Scatter(x=bids_p, y=bids_q_cum, fill='tozeroy', mode='lines', name='Bids (买单累计)', line=dict(color='#00FF00', shape='hv')))
-            fig_depth.add_trace(go.Scatter(x=asks_p, y=asks_q_cum, fill='tozeroy', mode='lines', name='Asks (卖单累计)', line=dict(color='#FF4B4B', shape='hv')))
+            fig_depth.add_trace(go.Scattergl(x=bids_p, y=bids_q_cum, fill='tozeroy', mode='lines', name='Bids (买单累计)', line=dict(color='#00FF00', shape='hv')))
+            fig_depth.add_trace(go.Scattergl(x=asks_p, y=asks_q_cum, fill='tozeroy', mode='lines', name='Asks (卖单累计)', line=dict(color='#FF4B4B', shape='hv')))
             
             fig_depth.update_layout(
                 title=f"快照时间: {row['datetime']}",
@@ -310,15 +323,31 @@ def render(base_path, realtime_dir):
             st.plotly_chart(fig_depth, use_container_width=True)
             
         with tab_l1:
-            st.subheader("4. 还原的 L1 实时成交 (AggTrades)")
+            st.subheader("4. 还原的 L1 实时成交与官方历史一致性校验")
+            
+            # 定位官方历史目录
+            history_dir = os.path.join(base_path, "replay_buffer", "parquet")
+            if not os.path.exists(history_dir):
+                history_dir = os.path.join(base_path, "replay_buffer")
+            official_files = get_all_parquet_files(history_dir)
+            
+            off_file_options = ["无 (仅查看重构)"] + official_files
+            selected_off_file = st.selectbox(
+                "⚖️ 选取对应时间段的官方 L1 数据 (AggTrades) 注入对比",
+                off_file_options,
+                format_func=lambda x: x if x == "无 (仅查看重构)" else os.path.relpath(x, base_path)
+            )
+            
             if df_l1.empty:
                 st.warning("⚠️ 此 L2 文件中未发现成交记录 (side=2)。可能由于该时间段内无成交，或未采集 aggTrade。")
             else:
-                # 获取整体时间范围
+                # 载入官方历史文件
+                df_off_full = load_official_l1(selected_off_file)
+                
+                # 获取整体时间范围并构建滑块
                 min_time = df_l1['datetime'].min().to_pydatetime()
                 max_time = df_l1['datetime'].max().to_pydatetime()
 
-                # 新增时间范围选择滑块
                 selected_time_range = st.slider(
                     "⌛ 拖动滑块截取特定时间段进行分析",
                     min_value=min_time,
@@ -333,47 +362,106 @@ def render(base_path, realtime_dir):
                 
                 mask_l2 = (df_l2['datetime'] >= selected_time_range[0]) & (df_l2['datetime'] <= selected_time_range[1])
                 f_df_l2 = df_l2.loc[mask_l2]
+                
+                if not df_off_full.empty:
+                    mask_off = (df_off_full['datetime'] >= selected_time_range[0]) & (df_off_full['datetime'] <= selected_time_range[1])
+                    f_df_off = df_off_full.loc[mask_off]
+                else:
+                    f_df_off = pd.DataFrame()
 
+                # ---------------- 指标计算与渲染 ----------------
+                if not f_df_off.empty:
+                    rec_count = len(f_df_l1)
+                    off_count = len(f_df_off)
+                    rec_vol = f_df_l1['quantity'].sum() if not f_df_l1.empty else 0
+                    off_vol = f_df_off['quantity'].sum() if not f_df_off.empty else 0
+                    
+                    diff_count = rec_count - off_count
+                    diff_vol = rec_vol - off_vol
+                    vol_diff_pct = (diff_vol / off_vol * 100) if off_vol > 0 else 0
+                    
+                    st.markdown("#### 📐 数据一致性评分板 (Data Fidelity)")
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("官方历史笔数", f"{off_count:,} 笔")
+                    c2.metric("重构解析笔数", f"{rec_count:,} 笔", f"{diff_count:,} 笔 (偏差)", delta_color="inverse")
+                    c3.metric("官方历史成交量", f"{off_vol:.4f}")
+                    c4.metric("重构解析成交量", f"{rec_vol:.4f}", f"{diff_vol:.4f} ({vol_diff_pct:.3f}%)", delta_color="inverse")
+                    
+                    if diff_count == 0 and abs(diff_vol) < 1e-5:
+                        st.success("🎉 完美匹配！当前重构的 L1 逐笔数据与币安官方历史数据 **100% 吻合**。无掉包漏单。")
+                    else:
+                        st.warning("⚠️ 存在差异。常见原因：WebSocket 断线重连漏收、边界毫秒级截断、或者官方归档时间存在细微时差。请通过下方的“累计成交量”曲线判断差值的发生时间。")
+                else:
+                    t_buys = f_df_l1[f_df_l1['side_label'] == 'BUY (主动买)']
+                    t_sells = f_df_l1[f_df_l1['side_label'] == 'SELL (主动卖)']
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("选定范围成交笔数", f"{len(f_df_l1):,} 笔")
+                    c2.metric("选定主动买入 (Taker Buy)", f"{t_buys['quantity'].sum():.4f}")
+                    c3.metric("选定主动卖出 (Taker Sell)", f"{t_sells['quantity'].sum():.4f}")
+                
+                # ---------------- 图表绘制：双层联合视图 ----------------
+                st.markdown("#### 📈 同盘轨迹叠加视图")
+                fig_l1 = make_subplots(
+                    rows=2, cols=1, shared_xaxes=True, 
+                    vertical_spacing=0.08, 
+                    subplot_titles=("价格分布离散点 (上方) vs 官方连续线 (底层)", "累计成交量轨迹 (Cumulative Volume)"),
+                    row_heights=[0.7, 0.3]
+                )
+                
+                # --- 子图 1: 价格分布 ---
                 t_buys = f_df_l1[f_df_l1['side_label'] == 'BUY (主动买)']
                 t_sells = f_df_l1[f_df_l1['side_label'] == 'SELL (主动卖)']
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("选定范围成交笔数", f"{len(f_df_l1):,} 笔")
-                c2.metric("选定主动买入 (Taker Buy)", f"{t_buys['quantity'].sum():.4f}")
-                c3.metric("选定主动卖出 (Taker Sell)", f"{t_sells['quantity'].sum():.4f}")
-                
-                # 绘制 L1 散点图，并将盘口 Mid Price 作为参考基准叠加
-                fig_l1 = go.Figure()
-                
-                # 绘制买入散点
-                fig_l1.add_trace(go.Scatter(
+                # 绘制官方数据作为基线 (存在的话)
+                if not f_df_off.empty:
+                    fig_l1.add_trace(go.Scattergl(
+                        x=f_df_off['datetime'], y=f_df_off['price'], 
+                        mode='lines', name='Official Price (官方价格基线)', 
+                        line=dict(color='rgba(0, 191, 255, 0.6)', width=2)
+                    ), row=1, col=1)
+
+                # 绘制重构买卖散点
+                fig_l1.add_trace(go.Scattergl(
                     x=t_buys['datetime'], y=t_buys['price'], 
-                    mode='markers', name='Taker Buy', 
-                    marker=dict(color='#00FF00', symbol='triangle-up', size=8, opacity=0.8)
-                ))
+                    mode='markers', name='Recon Buy (重构主动买)', 
+                    marker=dict(color='#00FF00', symbol='triangle-up', size=6, opacity=0.7)
+                ), row=1, col=1)
                 
-                # 绘制卖出散点
-                fig_l1.add_trace(go.Scatter(
+                fig_l1.add_trace(go.Scattergl(
                     x=t_sells['datetime'], y=t_sells['price'], 
-                    mode='markers', name='Taker Sell', 
-                    marker=dict(color='#FF4B4B', symbol='triangle-down', size=8, opacity=0.8)
-                ))
+                    mode='markers', name='Recon Sell (重构主动卖)', 
+                    marker=dict(color='#FF4B4B', symbol='triangle-down', size=6, opacity=0.7)
+                ), row=1, col=1)
                 
-                # 叠加中间价作为盘口背景，使用淡色 (根据过滤后的L2数据)
+                # 叠加中间价作为盘口背景
                 if not f_df_l2.empty:
-                    fig_l1.add_trace(go.Scatter(
+                    fig_l1.add_trace(go.Scattergl(
                         x=f_df_l2['datetime'], y=f_df_l2['mid_price'], 
-                        mode='lines', name='Mid Price (参考)', 
+                        mode='lines', name='Mid Price (盘口参考)', 
                         line=dict(color='rgba(255, 255, 255, 0.4)', width=1, dash='dot')
-                    ))
+                    ), row=1, col=1)
+                
+                # --- 子图 2: 累计成交量追踪 ---
+                f_df_l1_sorted = f_df_l1.sort_values('datetime')
+                fig_l1.add_trace(go.Scattergl(
+                    x=f_df_l1_sorted['datetime'], y=f_df_l1_sorted['quantity'].cumsum(), 
+                    mode='lines', name='Recon CumVol (重构累计量)', 
+                    line=dict(color='#FFA500', width=2)
+                ), row=2, col=1)
+                
+                if not f_df_off.empty:
+                    f_df_off_sorted = f_df_off.sort_values('datetime')
+                    fig_l1.add_trace(go.Scattergl(
+                        x=f_df_off_sorted['datetime'], y=f_df_off_sorted['quantity'].cumsum(), 
+                        mode='lines', name='Official CumVol (官方累计量)', 
+                        line=dict(color='#00BFFF', width=2, dash='dash')
+                    ), row=2, col=1)
                 
                 fig_l1.update_layout(
                     template="plotly_dark", 
-                    height=500, 
-                    title=f"L1 逐笔成交价格分布 ({selected_time_range[0].strftime('%H:%M:%S')} - {selected_time_range[1].strftime('%H:%M:%S')})",
-                    hovermode="closest",
-                    yaxis_title="Price",
-                    xaxis_title="Time"
+                    height=650, 
+                    hovermode="x unified",
+                    margin=dict(l=0, r=0, t=30, b=0)
                 )
                 st.plotly_chart(fig_l1, use_container_width=True)
                 
