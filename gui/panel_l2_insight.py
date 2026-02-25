@@ -20,15 +20,31 @@ def render(base_path, realtime_dir):
     if "insight_selected_paths" not in st.session_state:
         st.session_state.insight_selected_paths = tuple()
     
-    all_raw_files = get_all_parquet_files(realtime_dir)
-    # 仅筛选 RAW 录制文件并按文件名排序，确保时间连续性
+    # --- 1. 物理隔离适配：选择市场类型与交易对 ---
+    c_m1, c_m2 = st.columns(2)
+    with c_m1:
+        market_type = st.selectbox("🎯 市场类型", ["um_futures", "spot"])
+    
+    # 构建当前市场的物理路径 (兼容旧路径)
+    market_dir = os.path.join(realtime_dir, market_type, "l2")
+    if not os.path.exists(market_dir):
+        market_dir = realtime_dir # 退回兼容老版本
+    
+    all_raw_files = get_all_parquet_files(market_dir)
+    
+    available_symbols = sorted(list(set([os.path.basename(f).split('_')[0].upper() for f in all_raw_files if "RAW" in f.upper()])))
+    with c_m2:
+        selected_symbol = st.selectbox("🪙 交易对筛选", ["全部"] + available_symbols)
+        
     raw_files = sorted([f for f in all_raw_files if "RAW" in f.upper()])
+    if selected_symbol != "全部":
+        raw_files = [f for f in raw_files if os.path.basename(f).upper().startswith(selected_symbol)]
     
     if not raw_files:
-        st.warning(f"⚠️ 未在 {realtime_dir} 中找到任何包含 'RAW' 的 L2 录制文件。")
+        st.warning(f"⚠️ 在目录 {market_dir} 中未找到匹配的 L2 录制文件。")
         return
         
-    st.write("📌 **从下表中选择要加载的 L2 数据文件**")
+    st.write(f"📌 **当前检索范围: {market_type} / {selected_symbol} (共 {len(raw_files)} 个碎片)**")
     st.info("💡 **操作提示**：\n"
             "1. **单选**：直接点击行。\n"
             "2. **范围连选**：点击起始行，按住键盘 `Shift` 键，再点击结束行。\n"
@@ -78,156 +94,53 @@ def render(base_path, realtime_dir):
         if st.button("📑 全选并导入全部", type="secondary", use_container_width=True):
             st.session_state.insight_selected_paths = tuple(df_files["_path"].tolist())
 
-    # 缓存 L2 重建结果 (修复点：进度条在缓存函数内部初始化，避免 CacheReplayClosureError)
+    # --- 核心性能重构方法：统一处理 L2 和 L1 ---
     @st.cache_data(show_spinner=False)
-    def process_l2_data(filepaths, interval, limit):
-        if not filepaths: return pd.DataFrame()
+    def process_data_v2(filepaths, interval, limit):
+        if not filepaths: return pd.DataFrame(), pd.DataFrame()
         
-        # 内部创建 UI 占位符，执行完毕后清空，完美适配 Streamlit 缓存机制
+        # 内部创建 UI 占位符，执行完毕后清空
         ui_box = st.empty()
         with ui_box.container():
-            st.markdown("##### ⚙️ L2 盘口特征流重构引擎")
+            st.markdown("##### ⚙️ L2/L1 特征流极速重构引擎 (纯内存计算)")
             c_text, c_prog = st.columns([2, 3])
             _status_text = c_text.empty()
             _progress_bar = c_prog.progress(0.0)
         
-        chunk_size_files = 50
-        total_file_chunks = (len(filepaths) + chunk_size_files - 1) // chunk_size_files
-        tables = []
         start_time = time.time()
         
-        # 1. 分批次通过 PyArrow Dataset 引擎极速加载
-        for i in range(total_file_chunks):
-            chunk_files = filepaths[i*chunk_size_files : (i+1)*chunk_size_files]
-            chunk_ds = ds.dataset(list(chunk_files), format="parquet")
-            tables.append(chunk_ds.to_table())
-            
-            # 读取阶段分配 30% 的进度
-            chunk_progress = (i + 1) / total_file_chunks
-            overall_progress = min(chunk_progress * 0.3, 0.3)
-            elapsed = time.time() - start_time
-            eta = (elapsed / chunk_progress) - elapsed if chunk_progress > 0 else 0
-            _progress_bar.progress(overall_progress)
-            _status_text.markdown(f"**[1/4]** 📂 正在合并多路数据文件... ({i+1}/{total_file_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
+        # [Step 1] 极速聚合
+        _status_text.markdown("**[1/2]** 📂 正在通过 PyArrow 引擎聚合内存数据并执行原子级时间轴对齐...")
+        _progress_bar.progress(0.3)
+        dataset = ds.dataset(list(filepaths), format="parquet")
+        table = dataset.to_table(columns=['timestamp', 'side', 'price', 'quantity'])
+        df_raw = table.to_pandas().sort_values(by=['timestamp', 'side'], ascending=[True, False]).reset_index(drop=True)
         
-        _status_text.markdown("**[2/4]** 🔄 正在执行时间轴精确排序 (耗费内存操作)...")
-            
-        valid_tables = [t for t in tables if t.num_rows > 0]
-        if not valid_tables:
-            ui_box.empty()
-            return pd.DataFrame()
-            
-        combined_table = pa.concat_tables(valid_tables)
-        combined_df = combined_table.to_pandas()
-        
-        # 严格按照时间戳和事件优先级排序 (保证首个文件的快照事件3/4在增量0/1之前)
-        combined_df = combined_df.sort_values(by=['timestamp', 'side'], ascending=[True, False])
-        
-        # 转回 PyArrow Table 以支持极速切片，随后立即释放庞大的 DataFrame 内存
-        combined_table_sorted = pa.Table.from_pandas(combined_df)
-        del combined_df 
-        
-        _progress_bar.progress(0.4)
-            
-        # 3. 切片分块处理 (Chunking) - 解决单次计算卡死无进度的问题
-        total_rows = combined_table_sorted.num_rows
-        # 对于海量行，强制设定为 50 万行一个切片
-        rows_per_chunk = 500000 
-        total_recon_chunks = max(1, (total_rows + rows_per_chunk - 1) // rows_per_chunk)
+        _progress_bar.progress(0.6)
+        _status_text.markdown("**[2/2]** 🧠 正在执行 L2/L1 内存流重构与并行解析...")
         
         recon = L2Reconstructor(depth_limit=limit)
-        all_l2_dfs = []
         
-        for i in range(total_recon_chunks):
-            # 高速截取 50 万行的内存切片
-            chunk_table = combined_table_sorted.slice(offset=i*rows_per_chunk, length=rows_per_chunk)
-            temp_chunk_file = f"temp_insight_l2_chunk_{i}.parquet"
-            pq.write_table(chunk_table, temp_chunk_file)
-            
-            # 继承 L2Reconstructor 的 Orderbook 状态处理本批数据
-            df_chunk = recon.generate_l2_dataset(temp_chunk_file, sample_interval_ms=interval)
-            if not df_chunk.empty:
-                all_l2_dfs.append(df_chunk)
-                
-            if os.path.exists(temp_chunk_file):
-                os.remove(temp_chunk_file)
-                
-            # 重构阶段占总体进度的 60% (从 0.4 到 1.0)
-            recon_progress = (i + 1) / total_recon_chunks
-            overall_progress = min(0.4 + 0.6 * recon_progress, 1.0)
-            elapsed = time.time() - start_time
-            eta = (elapsed / overall_progress) - elapsed if overall_progress > 0 else 0
-            _progress_bar.progress(overall_progress)
-            _status_text.markdown(f"**[3/4]** 🧠 正在逐笔重构微观盘口 ({i+1}/{total_recon_chunks} 批次, 共 {total_rows:,} 行) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
-                
-        if not all_l2_dfs:
-            ui_box.empty()
-            return pd.DataFrame()
-            
-        final_df = pd.concat(all_l2_dfs, ignore_index=True)
-        # 消除边界处可能出现的重复时间戳
-        final_df = final_df.drop_duplicates(subset=['timestamp']).reset_index(drop=True)
-        final_df['datetime'] = pd.to_datetime(final_df['timestamp'], unit='ms')
-            
-        _status_text.markdown("**[4/4]** ✅ L2 特征流重构完成！")
-        _progress_bar.progress(1.0)
-        
-        # 计算完毕后清理掉内部进度条，保持界面整洁
-        ui_box.empty()
-        return final_df
+        # 提取 L1 数据
+        df_l1_raw = df_raw[df_raw['side'] == 2].copy()
+        df_l1_raw['is_buyer_maker'] = df_l1_raw['quantity'] < 0
+        df_l1_raw['side_label'] = df_l1_raw['is_buyer_maker'].map({True: 'SELL (主动卖)', False: 'BUY (主动买)'})
+        df_l1_raw['quantity'] = df_l1_raw['quantity'].abs()
+        df_l1_raw['datetime'] = pd.to_datetime(df_l1_raw['timestamp'], unit='ms')
 
-    # 缓存 L1 还原结果 (进度条同样在内部初始化)
-    @st.cache_data(show_spinner=False)
-    def process_l1_recovery(filepaths):
-        if not filepaths: return pd.DataFrame()
-        
-        ui_box = st.empty()
-        with ui_box.container():
-            st.markdown("##### ⚙️ L1 逐笔成交解析引擎")
-            c_text, c_prog = st.columns([2, 3])
-            _status_text = c_text.empty()
-            _progress_bar = c_prog.progress(0.0)
+        # 执行 L2 内存流重建
+        df_l2_raw = recon.process_dataframe(df_raw, sample_interval_ms=interval)
+        if not df_l2_raw.empty:
+            df_l2_raw['datetime'] = pd.to_datetime(df_l2_raw['timestamp'], unit='ms')
             
-        chunk_size = 50
-        total_chunks = (len(filepaths) + chunk_size - 1) // chunk_size
-        tables = []
-        start_time = time.time()
-        
-        # 同样分批加载并实现 Filter Pushdown
-        for i in range(total_chunks):
-            chunk_files = filepaths[i*chunk_size : (i+1)*chunk_size]
-            chunk_ds = ds.dataset(list(chunk_files), format="parquet")
-            tables.append(chunk_ds.to_table(filter=(ds.field("side") == 2)))
-            
-            progress = (i + 1) / total_chunks
-            elapsed = time.time() - start_time
-            eta = (elapsed / progress) - elapsed if progress > 0 else 0
-            _progress_bar.progress(progress)
-            _status_text.markdown(f"🔍 正在提取 L1 逐笔成交 ({i+1}/{total_chunks} 批次) | ⏱️ 已用时: **{elapsed:.1f}s** | ⏳ 预计剩余: **{eta:.1f}s**")
-        
-        valid_tables = [t for t in tables if t.num_rows > 0]
-        if not valid_tables:
-            ui_box.empty()
-            return pd.DataFrame()
-        
-        combined_table = pa.concat_tables(valid_tables)
-        df_trade = combined_table.to_pandas()
-        
-        if df_trade.empty:
-            ui_box.empty()
-            return pd.DataFrame()
-        
-        # 根据 recorder 的逻辑：quantity 为负数代表卖方主动 (Taker Sell)
-        df_trade['is_buyer_maker'] = df_trade['quantity'] < 0
-        df_trade['side_label'] = df_trade['is_buyer_maker'].map({True: 'SELL (主动卖)', False: 'BUY (主动买)'})
-        df_trade['quantity'] = df_trade['quantity'].abs()
-        df_trade['datetime'] = pd.to_datetime(df_trade['timestamp'], unit='ms')
-        
+        elapsed = time.time() - start_time
         _progress_bar.progress(1.0)
-        _status_text.markdown("✅ L1 成交提取完成！")
+        _status_text.markdown(f"**✅ 重构完成！** 耗时: **{elapsed:.2f}s** | 采样点: **{len(df_l2_raw):,}**")
         
+        time.sleep(1)
         ui_box.empty()
-        return df_trade.sort_values('datetime').reset_index(drop=True)
+        
+        return df_l2_raw, df_l1_raw
 
     # 缓存：官方数据加载器
     @st.cache_data(show_spinner=False)
@@ -255,9 +168,8 @@ def render(base_path, realtime_dir):
     if process_paths:
         st.divider()
         
-        # 开始执行数据重构，内部缓存函数自带进度条的显示与销毁
-        df_l2 = process_l2_data(process_paths, sample_interval, depth_limit)
-        df_l1 = process_l1_recovery(process_paths)
+        # 开始执行数据重构
+        df_l2, df_l1 = process_data_v2(process_paths, sample_interval, depth_limit)
             
         if df_l2.empty:
             st.error("❌ 重建失败：数据为空，或该文件中未发现初始快照 (Side 3/4)，无法重构盘口。")
@@ -265,7 +177,7 @@ def render(base_path, realtime_dir):
         
         st.success(f"✅ L2 跨文件合并重建成功！共串联 **{len(process_paths)}** 个文件。生成 **{len(df_l2)}** 个时间切片，提取出 **{len(df_l1)}** 笔 L1 交易。")
         
-        # 新增 tab_l1 选项卡
+        # 选项卡
         tab_price, tab_depth, tab_l1, tab_data = st.tabs([
             "📊 盘口价格与指标走势", 
             "🧊 动态深度截面图", 
