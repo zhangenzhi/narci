@@ -1,77 +1,143 @@
 import argparse
-import sys
 import os
+import sys
+import re
 import asyncio
+import subprocess
+from datetime import datetime
 
-# 定义命令处理函数
-def run_downloader(args):
-    print(">>> 启动历史数据下载模块...")
-    from data.download import BinanceDownloader
-    # 假设 config 路径可以从 args 传入，这里默认
-    downloader = BinanceDownloader(config_path="./configs/downloader.yaml")
-    downloader.run()
+# 确保能正确引入内部模块
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
 
-def run_l2_recorder(args):
-    print(f">>> 启动 L2 实时录制模块 (Symbol: {args.symbol})...")
+def cmd_gui():
+    """启动 Streamlit 交互式控制台"""
+    print("🚀 正在启动 Narci Quant Terminal (GUI)...")
+    gui_path = os.path.join(current_dir, "gui", "dashboard.py")
+    subprocess.run(["streamlit", "run", gui_path])
+
+def cmd_record(symbol):
+    """启动 WebSocket L2 高频录制器"""
     from data.l2_recoder import BinanceL2Recorder
-    recorder = BinanceL2Recorder(symbol=args.symbol)
+    recorder = BinanceL2Recorder(symbol=symbol)
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
-        print("\n录制已停止")
+        print("\n🛑 用户手动停止录制，正在进行安全关闭...")
+        recorder.running = False
 
-def run_backtest(args):
-    print(">>> 启动命令行回测模式...")
-    from backtest.backtest import BacktestEngine
-    from backtest.strategy import MyTrendStrategy
-    
-    if not os.path.exists(args.data):
-        print(f"错误: 数据文件 {args.data} 不存在")
+def cmd_compact(symbol, target_date=None):
+    """
+    手动扫描 L2 1min 数据库，检查天级别聚合与补全，
+    最后完成与官方离线历史数据的交叉验证。
+    """
+    try:
+        from data.daily_compactor import DailyCompactor
+    except ImportError:
+        print("❌ 无法导入 DailyCompactor。请确保 data/daily_compactor.py 文件存在。")
         return
-
-    print(f"策略: TrendStrategy (Window={args.window})")
-    print(f"数据: {args.data}")
+        
+    # 动态适配 L2 原始数据目录，优先适配 replay_buffer 下的路径
+    raw_dir_replay = os.path.join(current_dir, "replay_buffer", "realtime", "l2")
+    raw_dir_data = os.path.join(current_dir, "data", "realtime", "l2")
     
-    strategy = MyTrendStrategy(window_size=args.window)
-    engine = BacktestEngine(args.data, strategy, initial_cash=args.cash)
-    engine.run()
-
-def run_gui(args):
-    print(">>> 启动可视化终端...")
-    # Streamlit 需要通过 shell 命令启动
-    cmd = f"streamlit run gui/dashboard.py"
-    os.system(cmd)
+    raw_dir = raw_dir_replay if os.path.exists(raw_dir_replay) else raw_dir_data
+    
+    official_dir = os.path.join(current_dir, "replay_buffer", "official_validation")
+    
+    if not os.path.exists(raw_dir):
+        print(f"❌ 原始数据目录不存在，已检查以下路径:\n  - {raw_dir_replay}\n  - {raw_dir_data}")
+        return
+        
+    # 扫描指定交易对的 1min RAW 文件
+    files = os.listdir(raw_dir)
+    # 修复：加入 re.IGNORECASE，忽略大小写，兼容 recorder 生成的 ethusdt_RAW...
+    date_pattern = re.compile(rf"{symbol}_RAW_(\d{{8}})_\d{{6}}\.parquet", re.IGNORECASE)
+    
+    dates_found = set()
+    file_counts = {}
+    
+    for f in files:
+        match = date_pattern.match(f)
+        if match:
+            # 自动修复机制：如果发现由于 recorder 导致的小写前缀，自动将文件重命名为大写。
+            # 这确保了文件系统的一致性，并保证 DailyCompactor 里的 glob 能正确检索。
+            actual_prefix = f.split('_')[0]
+            if actual_prefix != symbol.upper():
+                new_f = f.replace(actual_prefix, symbol.upper(), 1)
+                os.rename(os.path.join(raw_dir, f), os.path.join(raw_dir, new_f))
+                f = new_f
+                
+            d_str = match.group(1)
+            dates_found.add(d_str)
+            file_counts[d_str] = file_counts.get(d_str, 0) + 1
+            
+    # 如果指定了特定日期，则过滤
+    if target_date:
+        d_str = target_date.replace("-", "") # 兼容 2026-02-22 或 20260222 格式
+        if d_str not in dates_found:
+            print(f"⚠️ 数据库中未找到日期为 {target_date} 的 {symbol} 1min 原始碎片。")
+            return
+        dates_found = {d_str}
+        
+    if not dates_found:
+        print(f"⚠️ 未在 {raw_dir} 中找到任何 {symbol} 的 1min 原始碎片文件。")
+        return
+        
+    print(f"\n🔍 [全盘扫描] 共发现 {len(dates_found)} 天的 L2 记录数据。开始执行一致性聚合校验...")
+    print(f"📂 扫描路径: {raw_dir}")
+    print("=" * 60)
+    
+    for d_str in sorted(dates_found):
+        count = file_counts[d_str]
+        # 一天 24 小时 * 60 分钟 = 1440 份
+        completion_rate = (count / 1440) * 100
+        target_dt = datetime.strptime(d_str, "%Y%m%d").date()
+        
+        print(f"\n📅 【处理日期】: {target_dt.strftime('%Y-%m-%d')}")
+        print(f"📦 【碎片完整度】: 发现 {count}/1440 个 1min 文件 (完整率: {completion_rate:.1f}%)")
+        
+        if completion_rate < 99.0:
+            print(f"⚠️ 警告: 存在部分时段掉线或缺失！(缺失约 {1440 - count} 分钟的数据)")
+            
+        compactor = DailyCompactor(
+            symbol=symbol.upper(), # 严格传入大写
+            target_date=target_dt,
+            raw_dir=raw_dir,
+            official_dir=official_dir
+        )
+        
+        # 触发核心执行流：聚合 -> 下载官方历史 -> L1/L2 交叉校验
+        compactor.run()
+        print("=" * 60)
+        
+    print("\n✅ 所有批次数据聚合与交叉验证完毕！请前往 GUI [冷数据仓库] 查看全盘资产。")
 
 def main():
-    parser = argparse.ArgumentParser(description="Narci Quantitative Trading System")
-    subparsers = parser.add_subparsers(dest='command', help='可用命令')
+    parser = argparse.ArgumentParser(description="Narci 量化系统核心调度引擎")
+    subparsers = parser.add_subparsers(dest="command", help="可用命令列表")
 
-    # 1. Download 命令
-    parser_dl = subparsers.add_parser('download', help='下载历史数据')
-    
+    # 1. GUI 命令
+    parser_gui = subparsers.add_parser("gui", help="启动可视化交互控制台 (Dashboard)")
+
     # 2. Record 命令
-    parser_rec = subparsers.add_parser('l2record', help='录制实时 L2 数据')
-    parser_rec.add_argument('--symbol', type=str, default='ETHUSDT', help='交易对名称 (例如 ETHUSDT)')
+    parser_record = subparsers.add_parser("record", help="启动实时 L2 盘口及逐笔数据录制")
+    parser_record.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对名称，如 ETHUSDT")
 
-    # 3. GUI 命令
-    parser_gui = subparsers.add_parser('gui', help='启动可视化 Dashboard')
-
-    # 4. Backtest 命令
-    parser_bt = subparsers.add_parser('backtest', help='运行策略回测')
-    parser_bt.add_argument('--data', type=str, required=True, help='回测数据文件路径 (.parquet)')
-    parser_bt.add_argument('--cash', type=float, default=10000.0, help='初始资金')
-    parser_bt.add_argument('--window', type=int, default=100, help='策略参数: 均线窗口')
+    # 3. Compact/Validate 命令
+    parser_compact = subparsers.add_parser("compact", help="手动触发 L2 小文件日级别聚合与交叉验证")
+    parser_compact.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对名称，如 ETHUSDT")
+    parser_compact.add_argument("--date", type=str, default=None, help="指定验证日期 (如 2026-02-22)，不填则扫描所有存在碎片的天数")
 
     args = parser.parse_args()
 
-    if args.command == 'download':
-        run_downloader(args)
-    elif args.command == 'l2record':
-        run_l2_recorder(args)
-    elif args.command == 'gui':
-        run_gui(args)
-    elif args.command == 'backtest':
-        run_backtest(args)
+    if args.command == "gui":
+        cmd_gui()
+    elif args.command == "record":
+        cmd_record(args.symbol)
+    elif args.command == "compact":
+        cmd_compact(args.symbol, args.date)
     else:
         parser.print_help()
 
