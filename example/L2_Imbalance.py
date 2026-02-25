@@ -1,93 +1,85 @@
-import os
 import sys
-import glob
+import os
 import pandas as pd
 
-# 1. 自动处理路径问题：确保可以从项目根目录导入模块
-current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(current_dir)
-if root_dir not in sys.path:
-    sys.path.append(root_dir)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backtest.strategy import BaseStrategy
+try:
+    from backtest.strategy import BaseStrategy
+except ImportError:
+    class BaseStrategy:
+        def __init__(self): self.broker = None
+        def on_tick(self, tick): pass
+        def on_finish(self): pass
+
 from backtest.backtest import BacktestEngine
-from data.l2_reconstruct import L2Reconstructor
 
-class ImbalanceStrategy(BaseStrategy):
+class L2ImbalanceStrategy(BaseStrategy):
     """
-    基于 L2 盘口不平衡度 (Orderbook Imbalance) 的高频动量策略
+    高频做市商/微观策略 (Maker 版)：
+    动态跟踪盘口，在极端不平衡时挂 Limit 单拦截利润，避免 Taker 巨额滑点与手续费。
     """
-    def __init__(self, entry_threshold=0.3, exit_threshold=-0.1):
+    def __init__(self, symbol='BTCUSDT', imbalance_threshold=0.3, trade_qty=0.1):
         super().__init__()
-        self.entry_threshold = entry_threshold
-        self.exit_threshold = exit_threshold
+        self.symbol = symbol.upper()
+        self.imbalance_threshold = imbalance_threshold
+        self.trade_qty = trade_qty
 
     def on_tick(self, tick):
-        # 引擎已将 mid_price 映射为 price
-        current_price = tick['price']  
-        imbalance = tick.get('imbalance', 0)
-
-        # 策略逻辑
-        if imbalance > self.entry_threshold and self.broker.position == 0:
-            self.broker.buy(current_price, self.broker.cash, tick['timestamp'])
-            
-        elif imbalance < self.exit_threshold and self.broker.position > 0:
-            self.broker.sell(current_price, self.broker.position, tick['timestamp'])
-
-def find_latest_raw_file():
-    """搜索原始数据文件"""
-    search_patterns = [
-        os.path.join(root_dir, "replay_buffer/realtime/l2/*_RAW_*.parquet"),
-        os.path.join(root_dir, "data/realtime/l2/*_RAW_*.parquet")
-    ]
-    files = []
-    for pattern in search_patterns:
-        files.extend(glob.glob(pattern))
-    
-    if not files:
-        return None
-    return max(files, key=os.path.getctime)
-
-def main():
-    print("\n" + "="*50)
-    print("🚀 Narci L2 微观特征策略回测")
-    print("="*50)
-
-    # 1. 查找数据
-    raw_file = find_latest_raw_file()
-    if not raw_file:
-        print("❌ 未找到 L2 RAW 数据文件！")
-        print("建议执行: python create_mock_l2.py 生成测试数据")
-        return
-    print(f"📄 数据源: {os.path.basename(raw_file)}")
-
-    # 2. 特征重构
-    print("⏳ 正在重构订单簿指标...")
-    recon = L2Reconstructor(depth_limit=5)
-    # 按照 100ms 采样
-    df_features = recon.generate_l2_dataset(raw_file, sample_interval_ms=100)
-    
-    if df_features.empty:
-        print("❌ 特征提取失败，请检查数据完整性（是否包含 side 3/4 的快照）。")
-        return
+        imbalance = tick.get('imbalance', 0.0)
         
-    print(f"✅ 特征提取成功！生成 {len(df_features)} 个样本。")
+        # 提取盘口最优价
+        b_p_0 = tick.get('b_p_0') # 买一价
+        a_p_0 = tick.get('a_p_0') # 卖一价
+        
+        if pd.isna(b_p_0) or pd.isna(a_p_0):
+            return
 
-    # 3. 数据适配
-    df_features['price'] = df_features['mid_price']
-    temp_path = os.path.join(root_dir, "temp_test_l2.parquet")
-    df_features.to_parquet(temp_path, index=False)
+        current_pos = self.broker.positions.get(self.symbol, 0.0)
+        sig_info = {'imbalance': round(imbalance, 4)}
+        
+        # 获取当前我方活跃挂单
+        pending_orders = [o for o in self.broker.active_orders.values() if o['symbol'] == self.symbol]
+        
+        # --- 1. 做多追踪逻辑 ---
+        if imbalance > self.imbalance_threshold:
+            if current_pos <= 0:
+                # 价格追踪(Price Tracking)：如果之前的挂单没在当前的买一价(Bid 1)上，撤单重挂，保持在队伍最前列
+                for order in pending_orders:
+                    if order['price'] != b_p_0:
+                        self.broker.cancel_all_orders(self.symbol)
+                        pending_orders = []
+                
+                # 若没有挂单，下达买入限价单 (Maker) 挂在买一价
+                if not pending_orders:
+                    target_qty = self.trade_qty if current_pos == 0 else abs(current_pos)
+                    self.broker.place_limit_order(self.symbol, 'BUY', b_p_0, target_qty, sig_info)
 
-    # 4. 运行回测
-    strategy = ImbalanceStrategy(entry_threshold=0.3, exit_threshold=-0.1)
-    # 使用极低手续费模拟高频场景 (0.01%)
-    engine = BacktestEngine(data_path=temp_path, strategy=strategy, initial_cash=10000.0, fee_rate=0.0001)
-    
-    try:
-        engine.run()
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        # --- 2. 做空追踪逻辑 ---
+        elif imbalance < -self.imbalance_threshold:
+            if current_pos >= 0:
+                for order in pending_orders:
+                    if order['price'] != a_p_0:
+                        self.broker.cancel_all_orders(self.symbol)
+                        pending_orders = []
+                        
+                # 挂在卖一价阻击
+                if not pending_orders:
+                    target_qty = self.trade_qty if current_pos == 0 else abs(current_pos)
+                    self.broker.place_limit_order(self.symbol, 'SELL', a_p_0, target_qty, sig_info)
+
+        # --- 3. 信号消退逻辑 ---
+        else:
+            # 如果盘口不平衡消失了，我们立刻撤掉还没有成交的入场挂单，防止接飞刀
+            if current_pos == 0 and pending_orders:
+                self.broker.cancel_all_orders(self.symbol)
+                
+            # 【可选进阶】：如果已有仓位但信号反转了，挂出平仓止盈单，这里暂时保持简单
+
+    def on_finish(self):
+        """回测结束：撤掉所有未成交的挂单，并将手头上的仓位市价平仓清算"""
+        self.broker.cancel_all_orders(self.symbol)
+        self.broker.close_all(use_l2=True)
 
 if __name__ == "__main__":
-    main()
+    pass
