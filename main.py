@@ -17,10 +17,10 @@ def cmd_gui():
     gui_path = os.path.join(current_dir, "gui", "dashboard.py")
     subprocess.run(["streamlit", "run", gui_path])
 
-def cmd_record(symbol):
+def cmd_record(config_path, symbol):
     """启动 WebSocket L2 高频录制器"""
     from data.l2_recoder import BinanceL2Recorder
-    recorder = BinanceL2Recorder(symbol=symbol)
+    recorder = BinanceL2Recorder(config_path=config_path, symbol=symbol)
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
@@ -122,8 +122,9 @@ def main():
     parser_gui = subparsers.add_parser("gui", help="启动可视化交互控制台 (Dashboard)")
 
     # 2. Record 命令
-    parser_record = subparsers.add_parser("record", help="启动实时 L2 盘口及逐笔数据录制")
-    parser_record.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对名称，如 ETHUSDT")
+    parser_record = subparsers.add_parser("record", help="启动实时 L2 盘口及逐笔数据录制 (支持多币种流)")
+    parser_record.add_argument("--config", type=str, default="configs/um_future_recorder.yaml", help="配置文件路径 (默认: configs/um_future_recorder.yaml)")
+    parser_record.add_argument("--symbol", type=str, default=None, help="可选：临时覆盖配置文件，仅录制指定的单一交易对 (如 BTCUSDT)")
 
     # 3. Compact/Validate 命令
     parser_compact = subparsers.add_parser("compact", help="手动触发 L2 小文件日级别聚合与交叉验证")
@@ -135,7 +136,7 @@ def main():
     if args.command == "gui":
         cmd_gui()
     elif args.command == "record":
-        cmd_record(args.symbol)
+        cmd_record(args.config, args.symbol)
     elif args.command == "compact":
         cmd_compact(args.symbol, args.date)
     else:

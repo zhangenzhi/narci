@@ -1,0 +1,31 @@
+recorder:
+  # 交易对名称列表 (支持多交易对同时订阅)
+  symbols: 
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
+  
+  # 市场类型: "spot" (现货) 或 "um_futures" (U本位合约)
+  market_type: "um_futures"
+  
+  # 深度更新推送频率 (100ms or 1000ms)
+  interval_ms: 100
+  
+  # 数据存储根目录
+  save_dir: "./replay_buffer/realtime/l2"
+  
+  # 多少秒将内存数据落盘一次 (生成一个 parquet 文件)
+  save_interval_sec: 60
+  
+  # 错误重试配置
+  retry:
+    wait_seconds: 5
+
+  # API 节点配置 (支持动态变量 {streams}, {symbol_upper})
+  endpoints:
+    um_futures:
+      ws_url: "wss://fstream.binance.com/stream?streams={streams}"
+      snapshot_url: "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000"
+    spot:
+      ws_url: "wss://stream.binance.com:9443/stream?streams={streams}"
+      snapshot_url: "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000"
