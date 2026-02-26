@@ -3,7 +3,8 @@ broker:
   initial_cash: 10000.0
   
   # 挂单手续费 (Maker fee) - Binance U本位合约通常为 0.02%
-  maker_fee: 0.0002
+  # maker_fee: 0.0002
+  maker_fee: 0.0000    # 模拟 USDC 交易对的零挂单手续费
   
   # 吃单手续费 (Taker fee) - Binance U本位合约通常为 0.04%
   taker_fee: 0.0004
