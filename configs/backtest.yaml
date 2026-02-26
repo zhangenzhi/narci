@@ -1,0 +1,27 @@
+backtest:
+  # --- 数据存储路径配置 (新增) ---
+  data:
+    realtime_dir: "replay_buffer/realtime"           # 录制与回测的原始切片及特征缓存目录
+    history_dir: "replay_buffer/official_validation" # 官方历史数据目录
+    
+  # --- 系统与市场默认路径 ---
+  system:
+    default_market: "um_futures"
+    depth_limit: 10
+    
+  # --- 撮合引擎仿真配置 (Broker) ---
+  broker:
+    initial_cash: 10000.0
+    leverage: 10.0
+    maker_fee: 0.0000    # 零手续费做市 (模拟 VIP 费率或返佣)
+    taker_fee: 0.0004    # 万四吃单费率
+    
+  # --- 高级特征衍生管线配置 (Feature Builder) ---
+  features:
+    ema_span: 10         # Imbalance 的 EMA 平滑窗口
+    vol_window: 20       # 波动率过滤器回看窗口 (Tick数)
+    
+  # --- 策略 UI 默认加载参数 (Strategy) ---
+  strategy:
+    default_imbalance_threshold: 0.4
+    default_trade_qty: 0.1
