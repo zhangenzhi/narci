@@ -14,7 +14,7 @@ backtest:
     initial_cash: 10000.0
     leverage: 10.0
     maker_fee: 0.0000    # 零手续费做市 (模拟 VIP 费率或返佣)
-    taker_fee: 0.0004    # 万四吃单费率
+    taker_fee: 0.0000    # 万四吃单费率
     
   # --- 高级特征衍生管线配置 (Feature Builder) ---
   features:
@@ -23,5 +23,5 @@ backtest:
     
   # --- 策略 UI 默认加载参数 (Strategy) ---
   strategy:
-    default_imbalance_threshold: 0.4
-    default_trade_qty: 0.1
+    default_imbalance_threshold: 0.3
+    default_trade_qty: 1.0
