@@ -9,13 +9,6 @@ import aiohttp
 import websockets
 from datetime import datetime, timedelta
 
-# 动态引入相关模块
-try:
-    from data.daily_compactor import DailyCompactor
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from data.daily_compactor import DailyCompactor
-
 class BinanceL2Recorder:
     def __init__(self, config_path="configs/um_future_recorder.yaml", symbol=None):
         """
@@ -55,6 +48,12 @@ class BinanceL2Recorder:
             stream_list.append(f"{s}@aggTrade")
         self.ws_url = ws_tpl.format(streams="/".join(stream_list))
         
+        # ---------------------------------------------------------
+        # 💡 新增：内存盘口状态机 (In-memory Orderbook)
+        # 用于维持最新的 L2 快照，实现写盘时的“无缝快照注入”
+        # ---------------------------------------------------------
+        self.orderbooks = {sym: {'bids': {}, 'asks': {}} for sym in self.symbols}
+        
         self.buffers = {sym: [] for sym in self.symbols}
         self.pre_align_buffer = {sym: [] for sym in self.symbols} 
         self.last_update_ids = {sym: 0 for sym in self.symbols}
@@ -83,10 +82,18 @@ class BinanceL2Recorder:
         try:
             data = await self.fetch_snapshot(sym)
             records = self.standardize_event('snapshot', data)
+            
+            # 💡 新增：初始化内存状态机
+            self.orderbooks[sym] = {'bids': {}, 'asks': {}}
+            for p, q in data.get('bids', []):
+                self.orderbooks[sym]['bids'][float(p)] = float(q)
+            for p, q in data.get('asks', []):
+                self.orderbooks[sym]['asks'][float(p)] = float(q)
+
             self.buffers[sym].extend(records)
             self.last_update_ids[sym] = data.get('lastUpdateId')
             self.is_initialized[sym] = True
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 {sym.upper()} 快照已就绪, ID: {self.last_update_ids[sym]}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 {sym.upper()} 初始快照已就绪, ID: {self.last_update_ids[sym]}")
         except Exception as e:
             print(f"❌ {sym.upper()} 初始化快照失败: {e}")
 
@@ -112,8 +119,26 @@ class BinanceL2Recorder:
     def process_depth_event(self, sym, data):
         u = data['u']
         if u <= self.last_update_ids[sym]: return
+        
+        # 1. 生成并追加增量记录到缓冲区
         records = self.standardize_event('depthUpdate', data)
         self.buffers[sym].extend(records)
+        
+        # 💡 2. 新增：更新内存状态机（维护最新盘口以供切割时注入）
+        for price, qty in data['b']:
+            p, q = float(price), float(qty)
+            if q == 0:
+                self.orderbooks[sym]['bids'].pop(p, None)  # 数量为0表示撤单，从状态机移除
+            else:
+                self.orderbooks[sym]['bids'][p] = q
+                
+        for price, qty in data['a']:
+            p, q = float(price), float(qty)
+            if q == 0:
+                self.orderbooks[sym]['asks'].pop(p, None)
+            else:
+                self.orderbooks[sym]['asks'][p] = q
+                
         self.last_update_ids[sym] = u
 
     async def record_stream(self):
@@ -126,6 +151,8 @@ class BinanceL2Recorder:
                         self.is_initialized[sym] = False
                         self.stream_aligned[sym] = False
                         self.pre_align_buffer[sym] = []
+                        # 💡 断线重连时，必须重置内存状态机
+                        self.orderbooks[sym] = {'bids': {}, 'asks': {}}
 
                     for sym in self.symbols:
                         asyncio.create_task(self.init_symbol_snapshot(sym))
@@ -179,9 +206,26 @@ class BinanceL2Recorder:
             for sym in self.symbols:
                 if not self.buffers[sym] or not self.stream_aligned[sym]: continue
                 
-                # 原子提取数据
+                # -------------------------------------------------------------
+                # 💡 核心机制：原子提取与快照注入 (实现所有文件自包含 Self-contained)
+                # -------------------------------------------------------------
+                # 1. 提取老数据并清空 buffer (Python 单线程协程下，这是天然的原子操作)
                 data = self.buffers[sym]
                 self.buffers[sym] = []
+                
+                # 2. 内存盘口深拷贝与快照注入：
+                # 提取数据的瞬间，立即把当前内存里最新的 orderbook 打包成 side=3/4 的事件
+                # 并塞入新的空 buffer 中。这样下一个文件就会以一个全量快照作为开头！
+                now_ms = int(time.time() * 1000)
+                snapshot_records = []
+                
+                for p, q in self.orderbooks[sym]['bids'].items():
+                    snapshot_records.append([now_ms, 3, float(p), float(q)])
+                for p, q in self.orderbooks[sym]['asks'].items():
+                    snapshot_records.append([now_ms, 4, float(p), float(q)])
+                
+                # 将快照作为未来 60 秒新数据的“基石”
+                self.buffers[sym].extend(snapshot_records)
                 
                 try:
                     df = pd.DataFrame(data, columns=['timestamp', 'side', 'price', 'quantity'])
@@ -189,67 +233,18 @@ class BinanceL2Recorder:
                     fname = f"{sym.upper()}_RAW_{ts_str}.parquet"
                     path = os.path.join(self.save_dir, fname)
                     
-                    # 1. 异步执行耗时的 RAW 原始数据写盘操作
+                    # 异步执行耗时的 RAW 原始数据写盘操作
                     await asyncio.to_thread(df.to_parquet, path, engine='pyarrow', compression='snappy', index=False)
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 {sym.upper()} 原始数据固化成功 ({len(df)} 行)")
-                    
-                    # -------------------------------------------------------------------------
-                    # 💡 【核心新增】: RAW 落盘后，立即启动无阻塞的后台任务，计算并生成 FEATURE
-                    # -------------------------------------------------------------------------
-                    def _build_and_save_features(raw_df, sym_str, ts_string, base_save_dir):
-                        try:
-                            from data.l2_reconstruct import L2Reconstructor
-                            from data.feature_builder import FeatureBuilder
-                            
-                            # 第一步：盘口重构
-                            recon = L2Reconstructor(depth_limit=10)
-                            df_l2 = recon.process_dataframe(raw_df, sample_interval_ms=100)
-                            
-                            if not df_l2.empty:
-                                # 第二步：高级特征计算
-                                fb = FeatureBuilder()
-                                df_feat = fb.build_offline(df_l2)
-                                
-                                # 第三步：持久化落盘
-                                feat_dir = os.path.join(base_save_dir, 'features')
-                                os.makedirs(feat_dir, exist_ok=True)
-                                feat_path = os.path.join(feat_dir, f"{sym_str.upper()}_FEATURE_{ts_string}.parquet")
-                                df_feat.to_parquet(feat_path, engine='pyarrow', compression='snappy', index=False)
-                                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🧠 {sym_str.upper()} 特征增量处理落盘完毕 ({len(df_feat)} 帧)")
-                        except Exception as inner_e:
-                            print(f"❌ {sym_str.upper()} 特征生成后台任务异常: {inner_e}")
-                            
-                    # 作为纯后台任务发出，绝对不阻塞 websocket 事件循环
-                    asyncio.create_task(asyncio.to_thread(_build_and_save_features, df, sym, ts_str, self.save_dir))
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 {sym.upper()} 原始数据固化 ({len(df)} 行)")
                     
                 except Exception as e:
                     print(f"❌ {sym.upper()} 写盘失败: {e}")
-
-    async def _daily_compaction_task(self):
-        while self.running:
-            now = datetime.utcnow()
-            target_time = datetime.combine(now.date() + timedelta(days=1), datetime.min.time()) + timedelta(minutes=5)
-            await asyncio.sleep((target_time - now).total_seconds())
-            
-            yesterday = datetime.utcnow().date() - timedelta(days=1)
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔄 启动定时任务: {yesterday} 数据归档与验证...")
-            
-            for sym in self.symbols:
-                try:
-                    compactor = DailyCompactor(
-                        symbol=sym, target_date=yesterday, raw_dir=self.save_dir,
-                        official_dir=os.path.join(os.getcwd(), "replay_buffer", "official_validation")
-                    )
-                    await asyncio.to_thread(compactor.run)
-                except Exception as e:
-                    print(f"❌ {sym.upper()} 归档异常: {e}")
 
     async def start(self):
         print(f"🚀 Narci Recorder 启动 | 模式: {self.market_display}")
         await asyncio.gather(
             self.record_stream(),
-            self.save_loop(),
-            self._daily_compaction_task()
+            self.save_loop()
         )
 
 if __name__ == "__main__":

@@ -61,7 +61,7 @@ python main.py record
 
 * **指定配置启动**（例如启动配置好的现货多币种录制器）：
 ```bash
-python main.py record --config configs/spot_record.yaml
+python main.py record --config configs/spot_recorder.yaml
 
 ```
 
