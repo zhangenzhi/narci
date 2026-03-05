@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import signal
+import subprocess
 import time
 import sys
 import yaml
@@ -51,20 +52,28 @@ class BinanceL2Recorder:
         
         # ---------------------------------------------------------
         # 💡 新增：内存盘口状态机 (In-memory Orderbook)
-        # 用于维持最新的 L2 快照，实现写盘时的“无缝快照注入”
+        # 用于维持最新的 L2 快照，实现写盘时的"无缝快照注入"
         # ---------------------------------------------------------
         self.orderbooks = {sym: {'bids': {}, 'asks': {}} for sym in self.symbols}
         
         self.buffers = {sym: [] for sym in self.symbols}
-        self.pre_align_buffer = {sym: [] for sym in self.symbols} 
+        self.pre_align_buffer = {sym: [] for sym in self.symbols}
         self.last_update_ids = {sym: 0 for sym in self.symbols}
-        self.is_initialized = {sym: False for sym in self.symbols} 
-        self.stream_aligned = {sym: False for sym in self.symbols}  
+        self.is_initialized = {sym: False for sym in self.symbols}
+        self.stream_aligned = {sym: False for sym in self.symbols}
         self.running = True
-        
+
+        # ---------------------------------------------------------
+        # rclone 云同步配置：落盘后自动推送至 Google Cloud Storage
+        # 通过环境变量 NARCI_RCLONE_REMOTE 控制，未设置则不同步
+        # ---------------------------------------------------------
+        self.rclone_remote = os.environ.get('NARCI_RCLONE_REMOTE', '')  # e.g. "gdrive:/narci_raw"
+
         os.makedirs(self.save_dir, exist_ok=True)
         print(f"🔧 配置完成 | 交易对: {[s.upper() for s in self.symbols]} | 市场: {self.market_display}")
         print(f"📂 数据隔离路径: {self.save_dir}")
+        if self.rclone_remote:
+            print(f"☁️ rclone 同步已启用 → {self.rclone_remote}")
 
     def _load_config(self, path):
         if not os.path.exists(path): return {}
@@ -204,45 +213,69 @@ class BinanceL2Recorder:
                 await asyncio.sleep(self.retry_wait)
 
     async def save_loop(self):
-        """后台落盘：加入特征生成(Feature Builder)在线双轨制流转"""
+        """后台落盘 + rclone 云同步"""
         while self.running:
             await asyncio.sleep(self.save_interval)
+            saved_files = []
+
             for sym in self.symbols:
                 if not self.buffers[sym] or not self.stream_aligned[sym]: continue
-                
+
                 # -------------------------------------------------------------
-                # 💡 核心机制：原子提取与快照注入 (实现所有文件自包含 Self-contained)
+                # 核心机制：原子提取与快照注入 (实现所有文件自包含 Self-contained)
                 # -------------------------------------------------------------
-                # 1. 提取老数据并清空 buffer (Python 单线程协程下，这是天然的原子操作)
                 data = self.buffers[sym]
                 self.buffers[sym] = []
-                
-                # 2. 内存盘口深拷贝与快照注入：
-                # 提取数据的瞬间，立即把当前内存里最新的 orderbook 打包成 side=3/4 的事件
-                # 并塞入新的空 buffer 中。这样下一个文件就会以一个全量快照作为开头！
+
+                # 内存盘口快照注入：下一个周期的 buffer 以全量快照开头
                 now_ms = int(time.time() * 1000)
                 snapshot_records = []
-                
                 for p, q in self.orderbooks[sym]['bids'].items():
                     snapshot_records.append([now_ms, 3, float(p), float(q)])
                 for p, q in self.orderbooks[sym]['asks'].items():
                     snapshot_records.append([now_ms, 4, float(p), float(q)])
-                
-                # 将快照作为未来 60 秒新数据的“基石”
                 self.buffers[sym].extend(snapshot_records)
-                
+
                 try:
                     df = pd.DataFrame(data, columns=['timestamp', 'side', 'price', 'quantity'])
                     ts_str = datetime.now().strftime('%Y%m%d_%H%M%S')
                     fname = f"{sym.upper()}_RAW_{ts_str}.parquet"
                     path = os.path.join(self.save_dir, fname)
-                    
-                    # 异步执行耗时的 RAW 原始数据写盘操作
+
                     await asyncio.to_thread(df.to_parquet, path, engine='pyarrow', compression='snappy', index=False)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 {sym.upper()} 原始数据固化 ({len(df)} 行)")
-                    
+                    saved_files.append(path)
                 except Exception as e:
                     print(f"❌ {sym.upper()} 写盘失败: {e}")
+
+            # 落盘完成后，立即触发 rclone 将整个目录同步到云端
+            if saved_files and self.rclone_remote:
+                await self._rclone_sync()
+
+    async def _rclone_sync(self):
+        """异步执行 rclone sync，将录制目录推送至 Google Cloud"""
+        try:
+            cmd = [
+                "rclone", "copy", self.save_dir, self.rclone_remote,
+                "--transfers", "4",
+                "--log-level", "NOTICE",
+                "--no-traverse",  # 跳过远端目录扫描，只上传新文件
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ☁️ rclone 同步完成 → {self.rclone_remote}")
+            else:
+                err_msg = stderr.decode().strip()
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 同步异常 (rc={proc.returncode}): {err_msg}")
+        except FileNotFoundError:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 未安装，跳过云同步")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 同步失败: {e}")
 
     async def _flush_all_buffers(self):
         """安全关闭前将所有内存数据强制落盘"""

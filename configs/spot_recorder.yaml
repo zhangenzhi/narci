@@ -18,7 +18,8 @@ recorder:
   save_dir: "./replay_buffer/realtime/"
   
   # 多少秒将内存数据落盘一次 (生成一个自包含全量快照的 parquet 文件)
-  save_interval_sec: 60
+  # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
+  save_interval_sec: 600
   
   # 错误重试配置 (WebSocket 断线或快照拉取失败后的等待时间)
   retry:

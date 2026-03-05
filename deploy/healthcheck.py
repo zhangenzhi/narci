@@ -1,8 +1,8 @@
 """
-轻量级健康检查 HTTP 服务
+轻量级健康检查 HTTP 服务 (Recording Only)
 检查项:
-  1. recorder 进程是否存活
-  2. 最近 5 分钟内是否有新的 parquet 落盘
+  1. recorder 进程是否存活 (最近 5 分钟内是否有新的 parquet 落盘)
+  2. 磁盘空间是否充足
 """
 import os
 import time
@@ -11,7 +11,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 
 DATA_DIR = "/app/replay_buffer/realtime"
-COLD_DIR = "/app/replay_buffer/cold"
 STALE_THRESHOLD_SEC = 300  # 5 分钟无新文件视为不健康
 DISK_WARN_PERCENT = 90     # 磁盘使用超过 90% 告警
 
@@ -51,11 +50,6 @@ def check_health():
             issues.append(f"disk_usage={used_pct:.1f}% (threshold={DISK_WARN_PERCENT}%)")
     except Exception:
         pass
-
-    # 3. 冷数据归档统计
-    if os.path.exists(COLD_DIR):
-        cold_files = [f for f in os.listdir(COLD_DIR) if f.endswith(".parquet")]
-        info["cold_archive_files"] = len(cold_files)
 
     return issues, info
 

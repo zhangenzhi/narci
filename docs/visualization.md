@@ -1,6 +1,6 @@
 # 可视化系统
 
-Narci 内置基于 Streamlit + Plotly (WebGL 加速) 的交互式可视化控制台，提供 L1 行情预览、L2 盘口微观分析、回测实验室与冷数据仓库四大面板。
+Narci 内置基于 Streamlit + Plotly (WebGL 加速) 的交互式可视化控制台，提供 L1 行情预览、L2 盘口微观分析、回测实验室、冷数据仓库与系统设置五大面板。
 
 ---
 
@@ -134,18 +134,22 @@ python main.py gui
 ```yaml
 backtest:
   data:
-    realtime_dir: ./replay_buffer/realtime
-    history_dir: ./replay_buffer/parquet
+    realtime_dir: replay_buffer/realtime
+    history_dir: replay_buffer/official_validation
+  system:
+    default_market: um_futures
+    depth_limit: 10
   broker:
     initial_cash: 10000.0
     leverage: 10.0
     maker_fee: 0.0000
-    taker_fee: 0.0004
+    taker_fee: 0.0000
+  features:
+    ema_span: 10
+    vol_window: 20
   strategy:
-    default_imbalance_threshold: 0.4
-    default_trade_qty: 0.1
-  system:
-    default_market: um_futures
+    default_imbalance_threshold: 0.3
+    default_trade_qty: 1.0
 ```
 
 ### 4.3 操作流程

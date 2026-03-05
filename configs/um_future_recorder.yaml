@@ -14,8 +14,9 @@ recorder:
   # 数据存储根目录
   save_dir: "./replay_buffer/realtime/"
   
-  # 多少秒将内存数据落盘一次 (生成一个 parquet 文件)
-  save_interval_sec: 60
+  # 多少秒将内存数据落盘一次 (生成一个自包含快照的 parquet 文件)
+  # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
+  save_interval_sec: 600
   
   # 错误重试配置
   retry:

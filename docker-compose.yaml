@@ -1,15 +1,20 @@
 services:
+  # =====================================================================
+  # 云服务器职责: 录制 (10min/文件) + 即时推送至 Google Cloud
+  # compact / validate 请在本地拉取数据后执行，节省云端计算资源
+  # =====================================================================
   recorder:
     build: .
     container_name: narci-recorder
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/spot_recorder.yaml
-      - NARCI_RETAIN_DAYS=7
-      # rclone Google Drive 授权 token (必填，否则冷数据不同步)
+      # rclone 推送目标 (录制器落盘后自动 rclone copy)
+      # 设置此变量启用每 10min 自动推送; 留空则仅本地落盘
+      - NARCI_RCLONE_REMOTE=${NARCI_RCLONE_REMOTE:-gdrive:/narci_raw}
+      # rclone Google Drive 授权 token
       # 获取方式: 本地 rclone config 授权后，从 ~/.config/rclone/rclone.conf 复制 token = {...} 的值
       - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
-      # 可选: 指定 Google Drive 中的目标文件夹 ID
       - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
       # 可选: 覆盖为单币种
       # - NARCI_SYMBOL=ETHUSDT
@@ -24,30 +29,3 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
-
-  # 按需手动 compact: docker compose run --rm compact
-  compact:
-    build: .
-    container_name: narci-compact
-    command: ["compact"]
-    environment:
-      - NARCI_SYMBOL=ALL
-      - NARCI_RETAIN_DAYS=7
-    volumes:
-      - ./replay_buffer:/app/replay_buffer
-      - ./configs:/app/configs:ro
-    profiles:
-      - tools
-
-  # 按需手动同步: docker compose run --rm sync
-  sync:
-    build: .
-    container_name: narci-sync
-    command: ["sync"]
-    environment:
-      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
-      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
-    volumes:
-      - ./replay_buffer:/app/replay_buffer
-    profiles:
-      - tools

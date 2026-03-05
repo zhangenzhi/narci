@@ -142,6 +142,7 @@ broker.get_equity_history()  # 资金曲线 DataFrame
 class BaseStrategy:
     def __init__(self):
         self.broker = None   # 由引擎自动注入
+        self.data = None     # 可选：策略可挂载外部数据引用
 
     def on_tick(self, tick):
         """每个 tick 调用，tick 为包含盘口与特征的字典"""
@@ -184,7 +185,7 @@ class BaseStrategy:
 
 负责将 L2 截面数据转化为高级量化因子。
 
-**配置参数** (可通过 `configs/backtest.yaml` 设置)：
+**配置参数** (可通过 `configs/backtest.yaml` 的 `backtest.features` 节点设置)：
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `ema_span` | 10 | EMA 不平衡度的跨度 |
@@ -253,7 +254,7 @@ python main.py build-cache --symbol BTCUSDT --market spot
 python main.py build-cache --symbol ALL
 ```
 
-该命令会调用 `FeatureBuilder.build_from_raw_files()` 并将结果固化到 `backtest_cache/` 目录，GUI 回测面板可直接命中此缓存。
+该命令会调用 `FeatureBuilder.build_from_raw_files()` 并将结果固化到 `backtest_cache/` 目录。GUI 回测面板使用 `features/` 目录存放 JIT 缓存，两者缓存文件命名规则一致 (MD5 哈希)，可互相命中。
 
 ---
 
