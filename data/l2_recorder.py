@@ -186,8 +186,11 @@ class BinanceL2Recorder:
                                 
                                 if not found:
                                     if combined and combined[0]['U'] > self.last_update_ids[sym] + 1:
-                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大，正在重连...")
-                                        break
+                                        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大，重新拉取快照...")
+                                        self.is_initialized[sym] = False
+                                        self.stream_aligned[sym] = False
+                                        self.pre_align_buffer[sym] = []
+                                        asyncio.create_task(self.init_symbol_snapshot(sym))
                                     continue
                             
                             self.process_depth_event(sym, data)
