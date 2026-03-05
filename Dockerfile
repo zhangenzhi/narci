@@ -5,10 +5,7 @@ WORKDIR /app
 # 系统依赖: cron + supervisor + rclone
 RUN apt-get update && \
     apt-get install -y --no-install-recommends cron curl unzip && \
-    curl -O https://downloads.rclone.org/current/rclone-current-linux-amd64.zip && \
-    unzip rclone-current-linux-amd64.zip && \
-    cp rclone-*-linux-amd64/rclone /usr/local/bin/ && \
-    rm -rf rclone-* && \
+    curl -fsSL https://rclone.org/install.sh | bash && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
