@@ -18,6 +18,10 @@ recorder:
   # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
   save_interval_sec: 600
   
+  # 自动清理: 删除超过 N 天的本地 parquet 文件 (已推送至云端后释放磁盘)
+  # 设为 0 则不清理
+  retain_days: 7
+
   # 错误重试配置
   retry:
     wait_seconds: 5

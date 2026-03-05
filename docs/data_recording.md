@@ -38,6 +38,7 @@ Narci 的数据录制系统负责从 Binance 实时采集 L2 订单簿深度与 
 | `interval_ms` | 深度推送间隔(ms) | `100` |
 | `save_interval_sec` | 落盘周期(秒) | `600` |
 | `save_dir` | 数据存储根目录 | `./replay_buffer/realtime` |
+| `retain_days` | 自动清理天数 (0=不清理) | `7` |
 
 ### 1.3 数据编码协议 (Side 编码)
 
@@ -88,6 +89,15 @@ WebSocket 深度增量流必须与 REST 快照的 `lastUpdateId` 对齐后才能
 - 使用 `--no-traverse` 跳过远端目录扫描，仅上传新文件
 - 未设置该环境变量时自动跳过，不影响录制
 - 同步在异步子进程中执行，不阻塞 WebSocket 数据接收
+
+#### 本地文件自动清理
+
+配置 `retain_days` 后，录制器在每次落盘后自动删除超过指定天数的本地 parquet 文件：
+
+- 基于文件修改时间判断，与文件名无关
+- 仅清理 `save_dir` 下的 `.parquet` 文件
+- 配合 rclone 推送使用：数据已上云后释放本地磁盘
+- 设为 `0` 禁用清理 (默认 `7` 天)
 
 ### 1.5 使用方式
 

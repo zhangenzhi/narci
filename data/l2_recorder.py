@@ -28,6 +28,7 @@ class BinanceL2Recorder:
         self.interval = self.config.get('interval_ms', 100)
         self.save_interval = self.config.get('save_interval_sec', 60)
         self.retry_wait = self.config.get('retry', {}).get('wait_seconds', 5)
+        self.retain_days = self.config.get('retain_days', 0)  # 0 = 不清理
         
         base_save_dir = self.config.get('save_dir', './replay_buffer/realtime')
         self.save_dir = os.path.join(base_save_dir, self.market_type, 'l2')
@@ -74,6 +75,8 @@ class BinanceL2Recorder:
         print(f"📂 数据隔离路径: {self.save_dir}")
         if self.rclone_remote:
             print(f"☁️ rclone 同步已启用 → {self.rclone_remote}")
+        if self.retain_days > 0:
+            print(f"🗑️ 自动清理已启用: 保留最近 {self.retain_days} 天")
 
     def _load_config(self, path):
         if not os.path.exists(path): return {}
@@ -252,6 +255,10 @@ class BinanceL2Recorder:
             if saved_files and self.rclone_remote:
                 await self._rclone_sync()
 
+            # 清理过期本地文件，释放磁盘空间
+            if saved_files and self.retain_days > 0:
+                await asyncio.to_thread(self._cleanup_old_files)
+
     async def _rclone_sync(self):
         """异步执行 rclone sync，将录制目录推送至 Google Cloud"""
         try:
@@ -276,6 +283,23 @@ class BinanceL2Recorder:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 未安装，跳过云同步")
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 同步失败: {e}")
+
+    def _cleanup_old_files(self):
+        """删除超过 retain_days 天的本地 parquet 文件"""
+        cutoff = time.time() - self.retain_days * 86400
+        removed = 0
+        try:
+            for fname in os.listdir(self.save_dir):
+                if not fname.endswith('.parquet'):
+                    continue
+                fpath = os.path.join(self.save_dir, fname)
+                if os.path.getmtime(fpath) < cutoff:
+                    os.remove(fpath)
+                    removed += 1
+            if removed:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🗑️ 已清理 {removed} 个过期文件 (>{self.retain_days}天)")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 文件清理失败: {e}")
 
     async def _flush_all_buffers(self):
         """安全关闭前将所有内存数据强制落盘"""
