@@ -51,6 +51,8 @@ def cmd_compact(symbol, target_date=None):
     raw_dirs = [d for d in candidate_dirs if os.path.exists(d)]
 
     official_dir = os.path.join(current_dir, "replay_buffer", "official_validation")
+    cold_dir = os.path.join(current_dir, "replay_buffer", "cold")
+    retain_days = int(os.environ.get("NARCI_RETAIN_DAYS", "7"))
 
     if not raw_dirs:
         print(f"❌ 原始数据目录不存在，已检查以下路径:")
@@ -139,7 +141,9 @@ def cmd_compact(symbol, target_date=None):
             symbol=symbol.upper(),
             target_date=target_dt,
             raw_dir=raw_dir,
-            official_dir=official_dir
+            official_dir=official_dir,
+            cold_dir=cold_dir,
+            retain_days=retain_days
         )
         
         compactor.run()

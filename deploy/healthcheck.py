@@ -11,21 +11,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 
 DATA_DIR = "/app/replay_buffer/realtime"
+COLD_DIR = "/app/replay_buffer/cold"
 STALE_THRESHOLD_SEC = 300  # 5 分钟无新文件视为不健康
+DISK_WARN_PERCENT = 90     # 磁盘使用超过 90% 告警
 
 
 def check_health():
     issues = []
+    info = {}
 
-    # 检查最近落盘时间
+    # 1. 检查最近落盘时间
     parquet_files = glob.glob(os.path.join(DATA_DIR, "**", "*_RAW_*.parquet"), recursive=True)
     if parquet_files:
         latest_mtime = max(os.path.getmtime(f) for f in parquet_files)
         age = time.time() - latest_mtime
+        info["last_file_age_sec"] = int(age)
+        info["total_raw_files"] = len(parquet_files)
         if age > STALE_THRESHOLD_SEC:
             issues.append(f"last_file_age={age:.0f}s (threshold={STALE_THRESHOLD_SEC}s)")
     else:
-        # 容器刚启动时可能还没有文件，给 10 分钟宽限期
         uptime_file = "/tmp/narci_start_time"
         if os.path.exists(uptime_file):
             start_time = float(open(uptime_file).read().strip())
@@ -35,19 +39,37 @@ def check_health():
             with open(uptime_file, "w") as f:
                 f.write(str(time.time()))
 
-    return issues
+    # 2. 磁盘空间检查
+    try:
+        stat = os.statvfs("/app/replay_buffer")
+        total = stat.f_blocks * stat.f_frsize
+        free = stat.f_bavail * stat.f_frsize
+        used_pct = ((total - free) / total) * 100 if total > 0 else 0
+        info["disk_used_percent"] = round(used_pct, 1)
+        info["disk_free_gb"] = round(free / (1024**3), 2)
+        if used_pct > DISK_WARN_PERCENT:
+            issues.append(f"disk_usage={used_pct:.1f}% (threshold={DISK_WARN_PERCENT}%)")
+    except Exception:
+        pass
+
+    # 3. 冷数据归档统计
+    if os.path.exists(COLD_DIR):
+        cold_files = [f for f in os.listdir(COLD_DIR) if f.endswith(".parquet")]
+        info["cold_archive_files"] = len(cold_files)
+
+    return issues, info
 
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
-            issues = check_health()
+            issues, info = check_health()
             if issues:
                 self.send_response(503)
-                body = {"status": "unhealthy", "issues": issues}
+                body = {"status": "unhealthy", "issues": issues, "info": info}
             else:
                 self.send_response(200)
-                body = {"status": "healthy"}
+                body = {"status": "healthy", "info": info}
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(body).encode())

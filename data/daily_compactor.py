@@ -1,5 +1,6 @@
 import os
 import glob
+import shutil
 import time
 import zipfile
 import urllib.request
@@ -14,23 +15,29 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("DailyCompactor")
 
 class DailyCompactor:
-    def __init__(self, symbol, target_date, raw_dir, official_dir):
+    def __init__(self, symbol, target_date, raw_dir, official_dir, cold_dir=None, retain_days=7):
         """
         :param symbol: 交易对，如 ETHUSDT
         :param target_date: 需要聚合的日期 (datetime.date 对象)
         :param raw_dir: L2 1分钟小文件的存储目录
         :param official_dir: 用于存放币安官方下载数据的目录
+        :param cold_dir: 冷数据归档目录 (rclone 同步源)，为 None 则不移动
+        :param retain_days: 保留最近 N 天的 1min 碎片，更早的在 compact 后删除
         """
         self.symbol = symbol.upper()
         self.target_date = target_date
         self.date_str = target_date.strftime("%Y%m%d")
         self.date_str_dash = target_date.strftime("%Y-%m-%d")
-        
+
         self.raw_dir = raw_dir
         self.official_dir = official_dir
+        self.cold_dir = cold_dir
+        self.retain_days = retain_days
         self.daily_file_path = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_DAILY.parquet")
-        
+
         os.makedirs(self.official_dir, exist_ok=True)
+        if self.cold_dir:
+            os.makedirs(self.cold_dir, exist_ok=True)
 
     def compact_small_files(self):
         """将一天内的所有 1min 小文件合并为 1 个 DAILY 大文件，并保持小文件不删除"""
@@ -129,8 +136,40 @@ class DailyCompactor:
             logger.warning("⚠️ 存在差异！网络波动或 WebSocket 重连可能导致了部分数据丢失。")
         logger.info("-" * 40)
 
+    def archive_to_cold(self):
+        """将 DAILY 文件复制到冷数据目录 (供 rclone 同步到 Google Drive)"""
+        if not self.cold_dir or not os.path.exists(self.daily_file_path):
+            return
+
+        dest = os.path.join(self.cold_dir, os.path.basename(self.daily_file_path))
+        if os.path.exists(dest):
+            logger.info(f"冷数据已存在，跳过: {dest}")
+            return
+
+        shutil.copy2(self.daily_file_path, dest)
+        logger.info(f"📦 DAILY 文件已归档到冷数据目录: {dest}")
+
+    def cleanup_old_fragments(self):
+        """清理超过 retain_days 天的 1min 碎片文件，释放本地磁盘空间"""
+        cutoff = datetime.now().date() - timedelta(days=self.retain_days)
+        if self.target_date >= cutoff:
+            return  # 还在保留期内，不清理
+
+        # 确保 DAILY 文件存在才敢删碎片
+        if not os.path.exists(self.daily_file_path):
+            logger.warning(f"DAILY 文件不存在，跳过碎片清理以防数据丢失。")
+            return
+
+        pattern = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_*.parquet")
+        fragments = [f for f in glob.glob(pattern) if "DAILY" not in f]
+
+        if fragments:
+            for f in fragments:
+                os.remove(f)
+            logger.info(f"🧹 已清理 {len(fragments)} 个过期碎片 ({self.date_str}, 超过 {self.retain_days} 天保留期)")
+
     def run(self):
-        """执行完整工作流"""
+        """执行完整工作流: 聚合 → 校验 → 归档冷数据 → 清理碎片"""
         success = self.compact_small_files()
         if success:
             official_csv = self.download_official_agg_trades()
@@ -138,3 +177,5 @@ class DailyCompactor:
                 self.validate_data(official_csv)
             else:
                 logger.warning("跳过校验：未获取到官方对比文件。")
+            self.archive_to_cold()
+            self.cleanup_old_fragments()
