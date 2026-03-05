@@ -32,6 +32,13 @@ RCLONE_EOF
 
     if rclone lsd gdrive:/ --config /root/.config/rclone/rclone.conf > /dev/null 2>&1; then
         echo "[entrypoint] rclone Google Drive 连接验证成功"
+
+        # 在 Google Drive 上预建远端目录 (确保 rclone copy 目标存在)
+        if [ -n "$NARCI_RCLONE_REMOTE" ]; then
+            rclone mkdir "$NARCI_RCLONE_REMOTE" --config /root/.config/rclone/rclone.conf 2>/dev/null \
+                && echo "[entrypoint] 远端目录已就绪: $NARCI_RCLONE_REMOTE" \
+                || echo "[entrypoint] WARNING: 远端目录创建失败: $NARCI_RCLONE_REMOTE"
+        fi
     else
         echo "[entrypoint] WARNING: rclone Google Drive 连接失败，请检查 RCLONE_GDRIVE_TOKEN"
     fi
