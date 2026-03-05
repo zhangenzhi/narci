@@ -1,0 +1,55 @@
+{
+  "family": "narci-recorder",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/narciTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "recorder",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/narci-recorder:latest",
+      "essential": true,
+      "command": ["record"],
+      "environment": [
+        { "name": "NARCI_CONFIG", "value": "configs/um_future_recorder.yaml" }
+      ],
+      "portMappings": [
+        { "containerPort": 8079, "protocol": "tcp" }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "narci-data",
+          "containerPath": "/app/replay_buffer",
+          "readOnly": false
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8079/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/narci-recorder",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "recorder"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "narci-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<EFS_ID>",
+        "rootDirectory": "/narci",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import signal
 import time
 import sys
 import yaml
@@ -240,12 +241,42 @@ class BinanceL2Recorder:
                 except Exception as e:
                     print(f"❌ {sym.upper()} 写盘失败: {e}")
 
+    async def _flush_all_buffers(self):
+        """安全关闭前将所有内存数据强制落盘"""
+        for sym in self.symbols:
+            if not self.buffers[sym]:
+                continue
+            data = self.buffers[sym]
+            self.buffers[sym] = []
+            try:
+                df = pd.DataFrame(data, columns=['timestamp', 'side', 'price', 'quantity'])
+                ts_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                fname = f"{sym.upper()}_RAW_{ts_str}.parquet"
+                path = os.path.join(self.save_dir, fname)
+                df.to_parquet(path, engine='pyarrow', compression='snappy', index=False)
+                print(f"[SHUTDOWN] 📥 {sym.upper()} 最终落盘完成 ({len(df)} 行)")
+            except Exception as e:
+                print(f"[SHUTDOWN] ❌ {sym.upper()} 最终落盘失败: {e}")
+
     async def start(self):
         print(f"🚀 Narci Recorder 启动 | 模式: {self.market_display}")
+
+        # 注册信号处理，容器环境下 ECS 发送 SIGTERM 要求优雅退出
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._handle_shutdown(s)))
+
         await asyncio.gather(
             self.record_stream(),
             self.save_loop()
         )
+
+    async def _handle_shutdown(self, sig):
+        print(f"\n🛑 收到信号 {sig.name}，正在执行安全关闭...")
+        self.running = False
+        await self._flush_all_buffers()
+        print("✅ 所有缓冲区已落盘，进程即将退出。")
+        asyncio.get_running_loop().stop()
 
 if __name__ == "__main__":
     symbol_arg = sys.argv[1] if len(sys.argv) > 1 else None

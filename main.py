@@ -33,25 +33,59 @@ def cmd_compact(symbol, target_date=None):
     """
     手动扫描 L2 1min 数据库，检查天级别聚合与补全，
     最后完成与官方离线历史数据的交叉验证。
+    支持 --symbol ALL 自动发现所有交易对。
     """
     try:
         from data.daily_compactor import DailyCompactor
     except ImportError:
         print("❌ 无法导入 DailyCompactor。请确保 data/daily_compactor.py 文件存在。")
         return
-        
-    # 动态适配 L2 原始数据目录，优先适配 replay_buffer 下的路径
-    raw_dir_replay = os.path.join(current_dir, "replay_buffer", "realtime", "l2")
-    raw_dir_data = os.path.join(current_dir, "data", "realtime", "l2")
-    
-    raw_dir = raw_dir_replay if os.path.exists(raw_dir_replay) else raw_dir_data
-    
+
+    # 动态适配 L2 原始数据目录，扫描所有市场类型子目录
+    candidate_dirs = [
+        os.path.join(current_dir, "replay_buffer", "realtime", "um_futures", "l2"),
+        os.path.join(current_dir, "replay_buffer", "realtime", "spot", "l2"),
+        os.path.join(current_dir, "replay_buffer", "realtime", "l2"),
+        os.path.join(current_dir, "data", "realtime", "l2"),
+    ]
+    raw_dirs = [d for d in candidate_dirs if os.path.exists(d)]
+
     official_dir = os.path.join(current_dir, "replay_buffer", "official_validation")
-    
-    if not os.path.exists(raw_dir):
-        print(f"❌ 原始数据目录不存在，已检查以下路径:\n  - {raw_dir_replay}\n  - {raw_dir_data}")
+
+    if not raw_dirs:
+        print(f"❌ 原始数据目录不存在，已检查以下路径:")
+        for d in candidate_dirs:
+            print(f"  - {d}")
         return
-        
+
+    # 如果 symbol=ALL，自动发现所有交易对并逐个处理
+    if symbol.upper() == "ALL":
+        discovered = set()
+        for raw_dir in raw_dirs:
+            for f in os.listdir(raw_dir):
+                m = re.match(r"([A-Za-z0-9]+)_RAW_", f)
+                if m:
+                    discovered.add(m.group(1).upper())
+        if not discovered:
+            print("⚠️ 未发现任何交易对的 RAW 文件。")
+            return
+        print(f"🔍 [自动发现] 共检测到 {len(discovered)} 个交易对: {sorted(discovered)}")
+        for sym in sorted(discovered):
+            cmd_compact(sym, target_date)
+        return
+
+    # 在所有候选目录中查找该交易对的文件
+    raw_dir = None
+    for d in raw_dirs:
+        files_in_dir = os.listdir(d)
+        if any(re.match(rf"{symbol}_RAW_", f, re.IGNORECASE) for f in files_in_dir):
+            raw_dir = d
+            break
+
+    if raw_dir is None:
+        print(f"⚠️ 未在任何数据目录中找到 {symbol} 的 RAW 文件。")
+        return
+
     # 扫描指定交易对的 1min RAW 文件
     files = os.listdir(raw_dir)
     # 修复：加入 re.IGNORECASE，忽略大小写，兼容 recorder 生成的 ethusdt_RAW...
