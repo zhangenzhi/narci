@@ -4,13 +4,17 @@ services:
     container_name: narci-recorder
     command: ["record"]
     environment:
-      - NARCI_CONFIG=configs/um_future_recorder.yaml
+      - NARCI_CONFIG=configs/spot_recorder.yaml
+      - NARCI_RETAIN_DAYS=7
+      # rclone Google Drive 授权 token (必填，否则冷数据不同步)
+      # 获取方式: 本地 rclone config 授权后，从 ~/.config/rclone/rclone.conf 复制 token = {...} 的值
+      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
+      # 可选: 指定 Google Drive 中的目标文件夹 ID
+      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
       # 可选: 覆盖为单币种
       # - NARCI_SYMBOL=ETHUSDT
     volumes:
-      # 数据持久化到宿主机
       - ./replay_buffer:/app/replay_buffer
-      # 开发时热更新配置 (不重建镜像)
       - ./configs:/app/configs:ro
     ports:
       - "8079:8079"
@@ -21,18 +25,29 @@ services:
         max-size: "50m"
         max-file: "5"
 
-  # 按需手动执行 compact
-  # docker compose run --rm compact
+  # 按需手动 compact: docker compose run --rm compact
   compact:
     build: .
     container_name: narci-compact
     command: ["compact"]
     environment:
-      - NARCI_SYMBOL=ETHUSDT
-      # 可选: 指定日期
-      # - NARCI_DATE=2026-02-22
+      - NARCI_SYMBOL=ALL
+      - NARCI_RETAIN_DAYS=7
     volumes:
       - ./replay_buffer:/app/replay_buffer
       - ./configs:/app/configs:ro
+    profiles:
+      - tools
+
+  # 按需手动同步: docker compose run --rm sync
+  sync:
+    build: .
+    container_name: narci-sync
+    command: ["sync"]
+    environment:
+      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
+      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
+    volumes:
+      - ./replay_buffer:/app/replay_buffer
     profiles:
       - tools

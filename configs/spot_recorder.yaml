@@ -1,6 +1,9 @@
 recorder:
   # 交易对名称列表 (支持多交易对同时订阅，这里配置了日本 Binance 的现货日元交易对)
-  symbols: 
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
     - "BTCJPY"
     - "ETHJPY"
     - "SOLJPY"
