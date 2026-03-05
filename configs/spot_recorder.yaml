@@ -30,6 +30,5 @@ recorder:
       ws_url: "wss://fstream.binance.com/stream?streams={streams}"
       snapshot_url: "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000"
     spot:
-      # Binance Japan 端点 (无美国 IP 限制)
-      ws_url: "wss://jstream.binance.com/stream?streams={streams}"
-      snapshot_url: "https://japi.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000"
+      ws_url: "wss://stream.binance.com:9443/stream?streams={streams}"
+      snapshot_url: "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000"
