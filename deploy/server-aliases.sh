@@ -34,7 +34,7 @@ alias nsyncstop='cd $NARCI_HOME && docker compose stop cloud-sync'
 alias nsyncstart='cd $NARCI_HOME && docker compose start cloud-sync'
 
 # --- 代码更新 ---
-alias npull='cd $NARCI_HOME && git pull && docker compose up -d --build'
+alias npull='cd $NARCI_HOME && git pull && docker compose up -d --build --no-cache && source $NARCI_HOME/deploy/server-aliases.sh'
 
 # --- 快捷进入容器 ---
 alias nshell='cd $NARCI_HOME && docker compose run --rm recorder shell'
