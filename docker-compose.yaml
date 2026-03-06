@@ -54,9 +54,11 @@ services:
         while true; do
           echo "[cloud-sync] 开始同步..."
           rclone copy /data "$${NARCI_RCLONE_REMOTE}" \
-            --transfers 4 \
+            --transfers 2 \
             --log-level NOTICE \
-            --no-traverse
+            --no-traverse \
+            --tpslimit 8 \
+            --tpslimit-burst 8
           echo "[cloud-sync] 同步完成，等待 $${SYNC_INTERVAL:-300}s..."
           sleep $${SYNC_INTERVAL:-300}
         done
