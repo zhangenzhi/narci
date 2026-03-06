@@ -236,7 +236,13 @@ def main():
     parser_compact.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对名称，如 ETHUSDT")
     parser_compact.add_argument("--date", type=str, default=None, help="指定验证日期 (如 2026-02-22)，不填则扫描所有存在碎片的天数")
 
-    # 4. Build-Cache 命令 (新增)
+    # 4. Cloud-Sync 命令
+    parser_sync = subparsers.add_parser("cloud-sync", help="启动独立的 rclone 云同步守护进程")
+    parser_sync.add_argument("--local-dir", type=str, default=os.path.join(current_dir, "replay_buffer", "realtime"), help="本地数据目录")
+    parser_sync.add_argument("--remote", type=str, default=os.environ.get("NARCI_RCLONE_REMOTE", ""), help="rclone 远端路径 (如 gdrive:/narci_raw)")
+    parser_sync.add_argument("--interval", type=int, default=300, help="同步间隔秒数 (默认 300)")
+
+    # 5. Build-Cache 命令
     parser_cache = subparsers.add_parser("build-cache", help="离线聚合 RAW 数据并调用 FeatureBuilder 构建特征缓存")
     parser_cache.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
     parser_cache.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对 (默认: ETHUSDT，输入 ALL 处理所有)")
@@ -250,6 +256,13 @@ def main():
         cmd_record(args.config, args.symbol)
     elif args.command == "compact":
         cmd_compact(args.symbol, args.date)
+    elif args.command == "cloud-sync":
+        from data.cloud_sync import CloudSyncDaemon
+        if not args.remote:
+            print("❌ 未指定远端路径。请设置 --remote 或 NARCI_RCLONE_REMOTE 环境变量。")
+            return
+        daemon = CloudSyncDaemon(local_dir=args.local_dir, remote=args.remote, interval=args.interval)
+        daemon.run()
     elif args.command == "build-cache":
         cmd_build_cache(args.market, args.symbol, args.dir)
     else:

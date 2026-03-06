@@ -1,7 +1,6 @@
 services:
   # =====================================================================
-  # 云服务器职责: 录制 (10min/文件) + 即时推送至 Google Cloud
-  # compact / validate 请在本地拉取数据后执行，节省云端计算资源
+  # recorder: 纯录制，只负责 WebSocket 采集 + 本地落盘
   # =====================================================================
   recorder:
     build: .
@@ -9,17 +8,10 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/spot_recorder.yaml
-      # rclone 推送目标 (录制器落盘后自动 rclone copy)
-      # 设置此变量启用每 10min 自动推送; 留空则仅本地落盘
-      - NARCI_RCLONE_REMOTE=${NARCI_RCLONE_REMOTE:-gdrive:/narci_raw}
-      # rclone Google Drive 授权 token
-      # 获取方式: 本地 rclone config 授权后，从 ~/.config/rclone/rclone.conf 复制 token = {...} 的值
-      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
-      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
       # 可选: 覆盖为单币种
       # - NARCI_SYMBOL=ETHUSDT
     volumes:
-      - ./replay_buffer:/app/replay_buffer
+      - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
     ports:
       - "8079:8079"
@@ -29,3 +21,60 @@ services:
       options:
         max-size: "50m"
         max-file: "5"
+
+  # =====================================================================
+  # cloud-sync: 独立 sidecar，定时将本地数据推送至 Google Drive
+  # 与 recorder 通过共享 volume 解耦，互不阻塞
+  # =====================================================================
+  cloud-sync:
+    image: rclone/rclone:latest
+    container_name: narci-cloud-sync
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        # 从环境变量生成 rclone 配置
+        mkdir -p /root/.config/rclone
+        cat > /root/.config/rclone/rclone.conf <<EOF
+        [gdrive]
+        type = drive
+        scope = drive
+        token = $${RCLONE_GDRIVE_TOKEN}
+        root_folder_id = $${RCLONE_GDRIVE_FOLDER_ID}
+        EOF
+
+        echo "[cloud-sync] rclone 配置已生成，开始定时同步..."
+        echo "[cloud-sync] 远端: $${NARCI_RCLONE_REMOTE}"
+        echo "[cloud-sync] 间隔: $${SYNC_INTERVAL:-300}s"
+
+        # 确保远端目录存在
+        rclone mkdir "$${NARCI_RCLONE_REMOTE}" 2>/dev/null || true
+
+        # 定时同步循环
+        while true; do
+          echo "[cloud-sync] 开始同步..."
+          rclone copy /data "$${NARCI_RCLONE_REMOTE}" \
+            --transfers 4 \
+            --log-level NOTICE \
+            --no-traverse
+          echo "[cloud-sync] 同步完成，等待 $${SYNC_INTERVAL:-300}s..."
+          sleep $${SYNC_INTERVAL:-300}
+        done
+    environment:
+      - NARCI_RCLONE_REMOTE=${NARCI_RCLONE_REMOTE:-gdrive:/narci_raw}
+      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
+      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+    volumes:
+      - narci-data:/data:ro
+    restart: unless-stopped
+    depends_on:
+      - recorder
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  narci-data:

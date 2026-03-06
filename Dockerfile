@@ -2,11 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 系统依赖: curl (健康检查) + rclone (落盘后即时推送至 Google Cloud)
-# 注意: 云服务器仅负责录制 + 推送，compact/validate 请在本地执行
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl unzip && \
-    curl -fsSL https://rclone.org/install.sh | bash && \
+    apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

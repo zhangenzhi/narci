@@ -64,17 +64,9 @@ class BinanceL2Recorder:
         self.stream_aligned = {sym: False for sym in self.symbols}
         self.running = True
 
-        # ---------------------------------------------------------
-        # rclone 云同步配置：落盘后自动推送至 Google Cloud Storage
-        # 通过环境变量 NARCI_RCLONE_REMOTE 控制，未设置则不同步
-        # ---------------------------------------------------------
-        self.rclone_remote = os.environ.get('NARCI_RCLONE_REMOTE', '')  # e.g. "gdrive:/narci_raw"
-
         os.makedirs(self.save_dir, exist_ok=True)
         print(f"🔧 配置完成 | 交易对: {[s.upper() for s in self.symbols]} | 市场: {self.market_display}")
         print(f"📂 数据隔离路径: {self.save_dir}")
-        if self.rclone_remote:
-            print(f"☁️ rclone 同步已启用 → {self.rclone_remote}")
         if self.retain_days > 0:
             print(f"🗑️ 自动清理已启用: 保留最近 {self.retain_days} 天")
 
@@ -216,7 +208,7 @@ class BinanceL2Recorder:
                 await asyncio.sleep(self.retry_wait)
 
     async def save_loop(self):
-        """后台落盘 + rclone 云同步"""
+        """后台定时落盘"""
         while self.running:
             await asyncio.sleep(self.save_interval)
             saved_files = []
@@ -251,38 +243,9 @@ class BinanceL2Recorder:
                 except Exception as e:
                     print(f"❌ {sym.upper()} 写盘失败: {e}")
 
-            # 落盘完成后，立即触发 rclone 将整个目录同步到云端
-            if saved_files and self.rclone_remote:
-                await self._rclone_sync()
-
             # 清理过期本地文件，释放磁盘空间
             if saved_files and self.retain_days > 0:
                 await asyncio.to_thread(self._cleanup_old_files)
-
-    async def _rclone_sync(self):
-        """异步执行 rclone sync，将录制目录推送至 Google Cloud"""
-        try:
-            cmd = [
-                "rclone", "copy", self.save_dir, self.rclone_remote,
-                "--transfers", "4",
-                "--log-level", "NOTICE",
-                "--no-traverse",  # 跳过远端目录扫描，只上传新文件
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode == 0:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ☁️ rclone 同步完成 → {self.rclone_remote}")
-            else:
-                err_msg = stderr.decode().strip()
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 同步异常 (rc={proc.returncode}): {err_msg}")
-        except FileNotFoundError:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 未安装，跳过云同步")
-        except Exception as e:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ rclone 同步失败: {e}")
 
     def _cleanup_old_files(self):
         """删除超过 retain_days 天的本地 parquet 文件"""
