@@ -9,6 +9,7 @@ Narci 的数据录制系统负责从 Binance 实时采集 L2 订单簿深度与 
 ```
 数据录制系统
 ├── l2_recorder.py      # WebSocket 实时高频录制引擎 (核心)
+├── cloud_sync.py       # 独立云同步守护进程 (rclone)
 ├── l2_reconstruct.py   # L2 盘口状态重构引擎 (Reconstructor)
 ├── download.py         # 离线历史数据批量下载器
 ├── daily_compactor.py  # 日级归档聚合与官方交叉验证
@@ -81,15 +82,6 @@ WebSocket 深度增量流必须与 REST 快照的 `lastUpdateId` 对齐后才能
 - 使用 PyArrow + Snappy 压缩
 - 每日产生 144 个文件 (vs 原 1440 个)，每个文件是独立的并行重建单元
 
-#### rclone 即时云同步
-
-落盘完成后，录制器自动触发 `rclone copy` 将录制目录推送至 Google Cloud：
-
-- 通过环境变量 `NARCI_RCLONE_REMOTE` 指定推送目标 (如 `gdrive:/narci_raw`)
-- 使用 `--no-traverse` 跳过远端目录扫描，仅上传新文件
-- 未设置该环境变量时自动跳过，不影响录制
-- 同步在异步子进程中执行，不阻塞 WebSocket 数据接收
-
 #### 本地文件自动清理
 
 配置 `retain_days` 后，录制器在每次落盘后自动删除超过指定天数的本地 parquet 文件：
@@ -130,13 +122,80 @@ python main.py record --symbol DOGEUSDT
 
 ---
 
-## 2. 离线历史数据下载器 (`download.py`)
+## 2. 独立云同步守护进程 (`cloud_sync.py`)
 
 ### 2.1 功能定位
 
+与录制器完全解耦的独立进程，定时将本地数据目录通过 `rclone copy` 推送至远端存储（如 Google Drive）。录制器只负责写盘，云同步只负责上传，两者互不阻塞。
+
+### 2.2 核心类：`CloudSyncDaemon`
+
+**参数**：
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `local_dir` | 本地待同步目录 | `/app/replay_buffer/realtime` |
+| `remote` | rclone 远端路径 | 环境变量 `NARCI_RCLONE_REMOTE` |
+| `interval` | 同步间隔（秒） | `300` |
+| `transfers` | rclone 并发上传数 | `4` |
+
+### 2.3 运行机制
+
+- 定时循环执行 `rclone copy`，使用 `--no-traverse` 跳过远端目录扫描
+- 单次同步设有超时保护（等于 `interval` 时长），超时则跳过本轮
+- 支持 `SIGTERM` / `SIGINT` 信号优雅退出（可中断的 sleep）
+- rclone 未安装时记录错误日志但不崩溃
+
+### 2.4 部署方式
+
+**Docker sidecar（推荐）**：
+
+在 `docker-compose.yaml` 中，`cloud-sync` 服务使用 `rclone/rclone` 官方镜像，通过共享的 named volume (`narci-data`) 以只读方式挂载 recorder 的数据目录：
+
+```yaml
+services:
+  recorder:
+    volumes:
+      - narci-data:/app/replay_buffer    # 读写
+  cloud-sync:
+    image: rclone/rclone:latest
+    volumes:
+      - narci-data:/data:ro              # 只读
+```
+
+环境变量配置：
+| 变量 | 说明 |
+|------|------|
+| `NARCI_RCLONE_REMOTE` | rclone 远端路径（如 `gdrive:/narci_raw`） |
+| `RCLONE_GDRIVE_TOKEN` | Google Drive OAuth token JSON |
+| `RCLONE_GDRIVE_FOLDER_ID` | Google Drive 目标文件夹 ID |
+| `SYNC_INTERVAL` | 同步间隔秒数（默认 300） |
+
+**非 Docker 独立运行**：
+
+```bash
+# 通过 main.py 子命令
+python main.py cloud-sync --remote gdrive:/narci_raw --interval 300
+
+# 直接运行模块
+python -m data.cloud_sync --local-dir ./replay_buffer/realtime --remote gdrive:/narci_raw
+```
+
+### 2.5 解耦优势
+
+- **录制零干扰**：rclone 网络慢或超时不会延迟落盘周期
+- **独立生命周期**：recorder 和 cloud-sync 可各自重启、升级
+- **频率独立**：录制间隔（10min）和同步间隔（5min）可独立调整
+- **镜像精简**：recorder 容器不再需要安装 rclone
+
+---
+
+## 3. 离线历史数据下载器 (`download.py`)
+
+### 3.1 功能定位
+
 从 Binance Vision 官方数据归档站批量下载历史 aggTrades 数据，转换为 Parquet 格式存储。
 
-### 2.2 核心类：`BinanceDownloader`
+### 3.2 核心类：`BinanceDownloader`
 
 **配置文件字段** (`downloader` 节点下)：
 | 字段 | 说明 |
@@ -148,7 +207,7 @@ python main.py record --symbol DOGEUSDT
 | `max_workers` | 并发下载线程数 |
 | `base_dir` | 存储根目录 |
 
-### 2.3 处理流程
+### 3.3 处理流程
 
 1. 根据配置生成任务队列 (交易对 x 日期 x 数据类型)
 2. 断点续传检查：目标 Parquet 已存在则跳过
@@ -157,7 +216,7 @@ python main.py record --symbol DOGEUSDT
 5. 可选数据校验 (`BinanceDataValidator`)
 6. 转换为 Parquet 并清理临时文件
 
-### 2.4 存储结构
+### 3.4 存储结构
 
 ```
 replay_buffer/parquet/
@@ -171,13 +230,13 @@ replay_buffer/parquet/
 
 ---
 
-## 3. 日级归档与交叉验证 (`daily_compactor.py`)
+## 4. 日级归档与交叉验证 (`daily_compactor.py`)
 
-### 3.1 功能定位
+### 4.1 功能定位
 
 将录制器产生的 144 个 10min 碎片文件聚合为单个 DAILY 大文件，并自动下载币安官方 aggTrades 数据进行交叉对比，量化丢包率。
 
-### 3.2 核心类：`DailyCompactor`
+### 4.2 核心类：`DailyCompactor`
 
 **参数**：
 - `symbol`: 交易对
@@ -187,7 +246,7 @@ replay_buffer/parquet/
 - `cold_dir`: 冷数据归档目录 (供 rclone 同步到 Google Drive)，为 `None` 则不移动
 - `retain_days`: 保留最近 N 天的 1min 碎片，更早的在 compact 后自动清理 (默认 7 天)
 
-### 3.3 工作流程
+### 4.3 工作流程
 
 ```
 compact_small_files() → download_official_agg_trades() → validate_data() → archive_to_cold() → cleanup_old_fragments()
@@ -215,7 +274,7 @@ compact_small_files() → download_official_agg_trades() → validate_data() →
 - 清理超过 `retain_days` 天的 1min 碎片文件
 - 释放本地磁盘空间，防止碎片无限膨胀
 
-### 3.4 使用方式
+### 4.4 使用方式
 
 ```bash
 # 智能扫描所有缺漏天数
@@ -225,7 +284,7 @@ python main.py compact --symbol ETHUSDT
 python main.py compact --symbol ETHUSDT --date 2026-02-22
 ```
 
-### 3.5 执行方式
+### 4.5 执行方式
 
 > **注意**：云服务器仅负责数据录制，compact / validate 等计算密集型操作已从云端移除。
 > 请在本地机器上通过 `rclone` 或 `scp` 拉取 1min 碎片后，在本地执行聚合与校验。
@@ -240,9 +299,9 @@ python main.py compact --symbol ALL
 
 ---
 
-## 4. 数据校验器 (`validator.py`)
+## 5. 数据校验器 (`validator.py`)
 
-### 4.1 核心类：`BinanceDataValidator`
+### 5.1 核心类：`BinanceDataValidator`
 
 提供以下校验能力：
 
@@ -261,9 +320,9 @@ python main.py compact --symbol ALL
 
 ---
 
-## 5. 第三方数据源管道 (`third_party.py`)
+## 6. 第三方数据源管道 (`third_party.py`)
 
-### 5.1 核心类：`CryptoDataPipeline`
+### 6.1 核心类：`CryptoDataPipeline`
 
 从 CryptoChassis API 批量拉取历史深度 (market-depth) 和逐笔成交 (trade) 数据，聚合为 1 秒级宽表并落盘为 Parquet。
 
@@ -281,14 +340,14 @@ python main.py compact --symbol ALL
         └── {symbol}_features_{date}.parquet
 ```
 
-### 5.2 处理流程 (`process_daily_data`)
+### 6.2 处理流程 (`process_daily_data`)
 
 1. 读取当天的 Trade CSV，按秒聚合 `taker_buy_vol` / `taker_sell_vol`
 2. 读取当天的 Depth CSV，解析字符串格式的多档挂单 (price_qty 以 `|` 和 `_` 分隔)
 3. 按秒对齐合并 (Merge)，计算 `mid_price` 和 `spread`
 4. 输出为 Parquet 格式
 
-### 5.3 使用方式
+### 6.3 使用方式
 
 ```python
 pipeline = CryptoDataPipeline(base_dir="./quant_data")
@@ -301,23 +360,32 @@ pipeline.run_pipeline(
 
 ---
 
-## 6. 数据流向总结
+## 7. 数据流向总结
 
 ```
-                   ┌──────── 云服务器 (Record + Push) ─────────────┐
-                   │                                                 │
-                   │  Binance WebSocket                              │
-                   │         │                                       │
-                   │         ▼                                       │
-                   │    BinanceL2Recorder (实时采集)                  │
-                   │         │                                       │
-                   │         ▼ (每10分钟落盘)                        │
-                   │    10min RAW Parquet 文件                       │
-                   │         │                                       │
-                   │         ▼ (rclone copy 即时推送)                │
-                   │    Google Cloud (gdrive:/narci_raw)             │
-                   │                                                 │
-                   └─────────────────────────────────────────────────┘
+                   ┌────────────── 云服务器 (Docker Compose) ───────────────┐
+                   │                                                        │
+                   │  ┌─ recorder 容器 ──────────┐                          │
+                   │  │  Binance WebSocket        │                         │
+                   │  │         │                  │                         │
+                   │  │         ▼                  │                         │
+                   │  │  BinanceL2Recorder         │                         │
+                   │  │  (纯采集 + 本地落盘)       │                         │
+                   │  │         │                  │                         │
+                   │  │         ▼ (每10分钟)       │                         │
+                   │  │  10min RAW Parquet 文件    │                         │
+                   │  └────────────┬───────────────┘                        │
+                   │               │ narci-data (共享 volume)               │
+                   │  ┌────────────▼───────────────┐                        │
+                   │  │  cloud-sync 容器 (sidecar)  │                        │
+                   │  │  rclone/rclone 官方镜像     │                        │
+                   │  │  定时 rclone copy (:ro)     │                        │
+                   │  │         │                   │                        │
+                   │  │         ▼                   │                        │
+                   │  │  Google Drive               │                        │
+                   │  │  (gdrive:/narci_raw)        │                        │
+                   │  └────────────────────────────┘                        │
+                   └────────────────────────────────────────────────────────┘
 
                    ┌─────────────────── 本地机器 ────────────────────┐
                    │                                                 │

@@ -74,9 +74,21 @@ python main.py record --symbol DOGEUSDT
 
 
 
-### 3. 数据归档与交叉验证 (Compactor)
+### 3. 云同步 (Cloud Sync)
 
-录制器每分钟会产生碎片数据。该命令会将碎片聚合为 `_DAILY.parquet` 冷数据，并自动下载币安官方数据执行防漏单验证。（**注**：录制器在运行状态下，每天凌晨 00:05 也会自动触发此操作）
+录制器只负责本地写盘，云同步由独立守护进程负责。两者通过共享 volume 解耦，互不阻塞。
+
+* **Docker 部署（推荐）**：`docker-compose.yaml` 中的 `cloud-sync` sidecar 容器自动处理定时同步。
+
+* **本地独立运行**：
+```bash
+python main.py cloud-sync --remote gdrive:/narci_raw --interval 300
+
+```
+
+### 4. 数据归档与交叉验证 (Compactor)
+
+录制器每 10 分钟产生碎片数据。该命令会将碎片聚合为 `_DAILY.parquet` 冷数据，并自动下载币安官方数据执行防漏单验证。
 
 * **一键智能扫描所有缺漏天数并验证**：
 ```bash
@@ -103,7 +115,8 @@ narci/
 │   ├── recorder.yaml      # 默认多币种配置 (U本位合约)
 │   └── spot_record.yaml   # 现货多币种配置示例
 ├── data/                  # 核心数据逻辑
-│   ├── l2_recoder.py      # WS 异步接收引擎
+│   ├── l2_recorder.py     # WS 异步接收引擎 (纯录制)
+│   ├── cloud_sync.py      # 独立 rclone 云同步守护进程
 │   ├── l2_reconstruct.py  # Orderbook 状态重构引擎
 │   └── daily_compactor.py # 日级归档与官方校验引擎
 ├── gui/                   # 可视化控制台面板
