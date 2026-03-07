@@ -242,7 +242,11 @@ def main():
     parser_sync.add_argument("--remote", type=str, default=os.environ.get("NARCI_RCLONE_REMOTE", ""), help="rclone 远端路径 (如 gdrive:/narci_raw)")
     parser_sync.add_argument("--interval", type=int, default=300, help="同步间隔秒数 (默认 300)")
 
-    # 5. Build-Cache 命令
+    # 5. Download 命令
+    parser_download = subparsers.add_parser("download", help="从 Binance Vision 批量下载历史数据 (spot + futures)")
+    parser_download.add_argument("--config", type=str, default="configs/downloader.yaml", help="下载器配置文件路径")
+
+    # 6. Build-Cache 命令
     parser_cache = subparsers.add_parser("build-cache", help="离线聚合 RAW 数据并调用 FeatureBuilder 构建特征缓存")
     parser_cache.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
     parser_cache.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对 (默认: ETHUSDT，输入 ALL 处理所有)")
@@ -263,6 +267,10 @@ def main():
             return
         daemon = CloudSyncDaemon(local_dir=args.local_dir, remote=args.remote, interval=args.interval)
         daemon.run()
+    elif args.command == "download":
+        from data.download import BinanceDownloader
+        downloader = BinanceDownloader(config_path=args.config)
+        downloader.run()
     elif args.command == "build-cache":
         cmd_build_cache(args.market, args.symbol, args.dir)
     else:

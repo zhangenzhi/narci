@@ -21,11 +21,15 @@ class BinanceDataValidator:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
 
-    def verify_checksum(self, local_file_path, symbol, date_str, file_type="aggTrades"):
+    def verify_checksum(self, local_file_path, symbol, date_str, file_type="aggTrades", market_type="spot"):
         """
         通过币安官方提供的 .CHECKSUM 文件校验本地 ZIP 文件的完整性
         """
-        checksum_url = f"https://data.binance.vision/data/spot/daily/{file_type}/{symbol}/{symbol}-{file_type}-{date_str}.zip.CHECKSUM"
+        if market_type == "um_futures":
+            path_segment = f"data/futures/um/daily/{file_type}"
+        else:
+            path_segment = f"data/spot/daily/{file_type}"
+        checksum_url = f"https://data.binance.vision/{path_segment}/{symbol}/{symbol}-{file_type}-{date_str}.zip.CHECKSUM"
         
         try:
             response = requests.get(checksum_url, timeout=10)

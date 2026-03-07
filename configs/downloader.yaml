@@ -1,33 +1,36 @@
 downloader:
   # 数据存储根目录
   base_dir: "./replay_buffer/parquet"
-  
+
   # 并发控制 (L2数据极大，建议降低线程数以防内存溢出)
-  max_workers: 2
-  
+  max_workers: 3
+
+  # 市场类型: "spot" | "um_futures" | "both" (同时下载两个市场)
+  market_type: "both"
+
   # 任务列表
   symbols:
-    - "ETHUSDT"
     - "BTCUSDT"
-    # - "BNBUSDT"
-    # - "SOLUSDT"
-    
-  # 数据类型: 
+    - "ETHUSDT"
+    - "SOLUSDT"
+    - "BNBUSDT"
+    - "XRPUSDT"
+    - "DOGEUSDT"
+
+  # 数据类型:
   # - aggTrades (成交数据, 较小)
-  # - depth (深度数据, 极大, 必须流式下载)
   data_types:
     - "aggTrades"
-    # - "depth" 
-    
+
   # 时间范围
   date_range:
-    # 追溯起始日期
-    start_date: "2026-01-01"
-    
-    # 结束日期: 
+    # 追溯起始日期 (约 6 个月)
+    start_date: "2025-09-01"
+
+    # 结束日期:
     # - "auto": 自动下载到昨天 (适合每日定时任务)
     # - "2026-02-01": 指定具体日期
-    end_date: "auto" 
+    end_date: "auto"
 
   # 稳定性配置
   retry:
