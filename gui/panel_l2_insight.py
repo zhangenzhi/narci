@@ -20,25 +20,51 @@ def render(base_path, realtime_dir):
     if "insight_selected_paths" not in st.session_state:
         st.session_state.insight_selected_paths = tuple()
     
-    # --- 1. 物理隔离适配：选择市场类型与交易对 ---
-    c_m1, c_m2 = st.columns(2)
+    # --- 1. 物理隔离适配：选择交易所 + 市场 + 交易对 ---
+    # 目录结构: realtime/{exchange}/{market}/l2/   (新)
+    #           realtime/{market}/l2/              (旧版兼容)
+    exchanges = []
+    if os.path.isdir(realtime_dir):
+        for e in sorted(os.listdir(realtime_dir)):
+            if os.path.isdir(os.path.join(realtime_dir, e)):
+                exchanges.append(e)
+
+    c_m0, c_m1, c_m2 = st.columns(3)
+    with c_m0:
+        exchange = st.selectbox("🏪 交易所", exchanges or ["binance"])
     with c_m1:
-        market_type = st.selectbox("🎯 市场类型", ["um_futures", "spot"])
-    
-    # 构建当前市场的物理路径 (兼容旧路径)
-    market_dir = os.path.join(realtime_dir, market_type, "l2")
-    if not os.path.exists(market_dir):
-        market_dir = realtime_dir # 退回兼容老版本
-    
+        # 动态发现该交易所下的市场
+        exch_dir = os.path.join(realtime_dir, exchange) if exchange else realtime_dir
+        markets = []
+        if os.path.isdir(exch_dir):
+            for m in sorted(os.listdir(exch_dir)):
+                if os.path.isdir(os.path.join(exch_dir, m, "l2")):
+                    markets.append(m)
+        market_type = st.selectbox("🎯 市场类型", markets or ["um_futures", "spot"])
+
+    # 构建实际数据目录（支持三种结构）
+    candidates = [
+        os.path.join(realtime_dir, exchange, market_type, "l2"),  # 新
+        os.path.join(realtime_dir, market_type, "l2"),            # 旧
+        realtime_dir,                                              # 兜底
+    ]
+    market_dir = next((d for d in candidates if os.path.isdir(d)), realtime_dir)
+
     all_raw_files = get_all_parquet_files(market_dir)
     
-    available_symbols = sorted(list(set([os.path.basename(f).split('_')[0].upper() for f in all_raw_files if "RAW" in f.upper()])))
+    # 拆分 SYMBOL_RAW_YYYYMMDD_HHMMSS.parquet：按 _RAW_ 切分得到完整 symbol（兼容 ETH_JPY 这种含下划线的 Coincheck 格式）
+    available_symbols = sorted(set(
+        os.path.basename(f).split("_RAW_")[0].upper()
+        for f in all_raw_files if "_RAW_" in f.upper()
+    ))
     with c_m2:
         selected_symbol = st.selectbox("🪙 交易对筛选", ["全部"] + available_symbols)
         
     raw_files = sorted([f for f in all_raw_files if "RAW" in f.upper()])
     if selected_symbol != "全部":
-        raw_files = [f for f in raw_files if os.path.basename(f).upper().startswith(selected_symbol)]
+        # 用 lowercase 前缀匹配，兼容 Coincheck 的 btc_jpy 和 Binance 的 BTCUSDT
+        raw_files = [f for f in raw_files
+                     if os.path.basename(f).split("_RAW_")[0].upper() == selected_symbol]
     
     if not raw_files:
         st.warning(f"⚠️ 在目录 {market_dir} 中未找到匹配的 L2 录制文件。")

@@ -1,0 +1,45 @@
+recorder:
+  # ⚠️ 重要说明：
+  # Binance U 本位永续合约【不提供 JPY 计价的交易对】，所有合约均为 USDT/USDC 保证金。
+  # 若策略主攻 JPY 方向，合约侧仅保留主流 USDT 对作为：
+  #   1) 跨币种对冲参考（Delta 对冲 JPY 现货风险）
+  #   2) 信号源（USDT 合约流动性/深度远大于现货 JPY，更敏感的价格发现）
+  #   3) 期现套利的另一腿
+  # 如果不需要合约数据，可把此 symbols 列表置空。
+  symbols:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
+    - "BNBUSDT"
+    - "XRPUSDT"
+    - "DOGEUSDT"
+  
+  # 市场类型: "spot" (现货) 或 "um_futures" (U本位合约)
+  market_type: "um_futures"
+  
+  # 深度更新推送频率 (100ms or 1000ms)
+  interval_ms: 100
+  
+  # 数据存储根目录
+  save_dir: "./replay_buffer/realtime/"
+  
+  # 多少秒将内存数据落盘一次 (生成一个自包含快照的 parquet 文件)
+  # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
+  save_interval_sec: 600
+  
+  # 自动清理: 删除超过 N 天的本地 parquet 文件 (已推送至云端后释放磁盘)
+  # 设为 0 则不清理
+  retain_days: 7
+
+  # 错误重试配置
+  retry:
+    wait_seconds: 5
+
+  # API 节点配置 (支持动态变量 {streams}, {symbol_upper})
+  endpoints:
+    um_futures:
+      ws_url: "wss://fstream.binance.com/stream?streams={streams}"
+      snapshot_url: "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000"
+    spot:
+      ws_url: "wss://stream.binance.com:9443/stream?streams={streams}"
+      snapshot_url: "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000"

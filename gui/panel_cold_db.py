@@ -48,16 +48,15 @@ def scan_cold_database(base_path):
                     # 2. L2 每日聚合冷数据 (最高优)
                     elif "DAILY" in f.upper():
                         dtype = "L2 聚合冷数据 (DAILY)"
-                        m_sym = f.split('_')[0]
-                        symbol = m_sym.upper()
+                        # 按 _RAW_ 切分得到完整 symbol（兼容 Coincheck ETH_JPY 格式）
+                        symbol = f.split("_RAW_")[0].upper() if "_RAW_" in f else f.split("_")[0].upper()
                         m_date = re.search(r'(\d{8})', f)
                         if m_date: date_str = datetime.strptime(m_date.group(1), "%Y%m%d").strftime("%Y-%m-%d")
-                        
+
                     # 3. L2 原始碎片 (1min)
                     elif "RAW" in f.upper():
                         dtype = "L2 录制碎片 (1min RAW)"
-                        m_sym = f.split('_')[0]
-                        symbol = m_sym.upper()
+                        symbol = f.split("_RAW_")[0].upper() if "_RAW_" in f else f.split("_")[0].upper()
                         m_date = re.search(r'(\d{8})', f)
                         if m_date: date_str = datetime.strptime(m_date.group(1), "%Y%m%d").strftime("%Y-%m-%d")
                         

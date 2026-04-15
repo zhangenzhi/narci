@@ -41,14 +41,34 @@ def cmd_compact(symbol, target_date=None):
         print("❌ 无法导入 DailyCompactor。请确保 data/daily_compactor.py 文件存在。")
         return
 
-    # 动态适配 L2 原始数据目录，扫描所有市场类型子目录
-    candidate_dirs = [
-        os.path.join(current_dir, "replay_buffer", "realtime", "um_futures", "l2"),
-        os.path.join(current_dir, "replay_buffer", "realtime", "spot", "l2"),
+    # 动态适配 L2 原始数据目录，支持新旧两种路径结构
+    # 新结构: replay_buffer/realtime/{exchange}/{market_type}/l2/
+    # 旧结构（向后兼容）: replay_buffer/realtime/{market_type}/l2/
+    candidate_dirs = []
+    base = os.path.join(current_dir, "replay_buffer", "realtime")
+    if os.path.isdir(base):
+        for entry in os.listdir(base):
+            p = os.path.join(base, entry)
+            if not os.path.isdir(p):
+                continue
+            # 新结构: {exchange}/{market}/l2
+            for sub in os.listdir(p):
+                l2 = os.path.join(p, sub, "l2")
+                if os.path.isdir(l2):
+                    candidate_dirs.append(l2)
+            # 旧结构: {market}/l2
+            l2_legacy = os.path.join(p, "l2")
+            if os.path.isdir(l2_legacy):
+                candidate_dirs.append(l2_legacy)
+    # 兜底
+    for legacy in [
         os.path.join(current_dir, "replay_buffer", "realtime", "l2"),
         os.path.join(current_dir, "data", "realtime", "l2"),
-    ]
-    raw_dirs = [d for d in candidate_dirs if os.path.exists(d)]
+    ]:
+        if os.path.isdir(legacy) and legacy not in candidate_dirs:
+            candidate_dirs.append(legacy)
+
+    raw_dirs = candidate_dirs
 
     official_dir = os.path.join(current_dir, "replay_buffer", "official_validation")
     cold_dir = os.path.join(current_dir, "replay_buffer", "cold")
@@ -137,15 +157,35 @@ def cmd_compact(symbol, target_date=None):
         if completion_rate < 99.0:
             print(f"⚠️ 警告: 存在部分时段掉线或缺失！(缺失约 {1440 - count} 分钟的数据)")
             
+        # 从 raw_dir 推断 exchange + market_type (仅对新结构有效)
+        #   replay_buffer/realtime/{exchange}/{market}/l2/
+        path_parts = os.path.normpath(raw_dir).split(os.sep)
+        exchange, market_type = None, "um_futures"
+        if len(path_parts) >= 3 and path_parts[-1] == "l2":
+            market_type = path_parts[-2]
+            if len(path_parts) >= 4 and path_parts[-3] != "realtime":
+                exchange = path_parts[-3]
+
+        # 只有 Binance 能用 Binance Vision 做交叉校验；其他交易所传 None 跳过
+        source = None
+        if exchange in (None, "binance"):
+            try:
+                from data.historical import get_source
+                source = get_source("binance_vision")
+            except Exception:
+                source = None
+
         compactor = DailyCompactor(
             symbol=symbol.upper(),
             target_date=target_dt,
             raw_dir=raw_dir,
             official_dir=official_dir,
             cold_dir=cold_dir,
-            retain_days=retain_days
+            retain_days=retain_days,
+            source=source,
+            market_type=market_type,
         )
-        
+
         compactor.run()
         print("=" * 60)
         
@@ -252,6 +292,24 @@ def main():
     parser_cache.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对 (默认: ETHUSDT，输入 ALL 处理所有)")
     parser_cache.add_argument("--dir", type=str, default=os.path.join(current_dir, "replay_buffer", "realtime"), help="基础数据目录")
 
+    # 7. Tardis Download 命令
+    parser_tardis = subparsers.add_parser("tardis", help="从 Tardis.dev 下载 L2 depth 数据")
+    parser_tardis.add_argument("--symbol", type=str, required=True, help="交易对 (如 ETHUSDT)")
+    parser_tardis.add_argument("--start", type=str, required=True, help="起始日期 (如 2025-09-01)")
+    parser_tardis.add_argument("--end", type=str, required=True, help="结束日期 (如 2025-09-30)")
+    parser_tardis.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
+    parser_tardis.add_argument("--output-dir", type=str, default=os.path.join(current_dir, "replay_buffer", "tardis"), help="输出目录")
+
+    # 8. Merge 命令 (合并 Tardis depth + Binance aggTrades -> Narci RAW)
+    parser_merge = subparsers.add_parser("merge", help="合并 Tardis depth 与 Binance aggTrades 为 Narci RAW 格式")
+    parser_merge.add_argument("--symbol", type=str, default=None, help="交易对 (不填则自动发现所有)")
+    parser_merge.add_argument("--start", type=str, default=None, help="起始日期")
+    parser_merge.add_argument("--end", type=str, default=None, help="结束日期")
+    parser_merge.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
+    parser_merge.add_argument("--tardis-dir", type=str, default=os.path.join(current_dir, "replay_buffer", "tardis"), help="Tardis 数据目录")
+    parser_merge.add_argument("--aggtrades-dir", type=str, default=os.path.join(current_dir, "replay_buffer", "parquet"), help="aggTrades 数据目录")
+    parser_merge.add_argument("--output-dir", type=str, default=os.path.join(current_dir, "replay_buffer", "merged", "um_futures", "l2"), help="合并输出目录")
+
     args = parser.parse_args()
 
     if args.command == "gui":
@@ -273,6 +331,29 @@ def main():
         downloader.run()
     elif args.command == "build-cache":
         cmd_build_cache(args.market, args.symbol, args.dir)
+    elif args.command == "tardis":
+        from data.tardis_downloader import TardisDownloader
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+        dl = TardisDownloader(output_dir=args.output_dir)
+        files = dl.download_range(args.symbol, args.start, args.end, args.market)
+        print(f"\n{'='*50}")
+        print(f"Tardis download complete: {len(files)} files saved")
+    elif args.command == "merge":
+        from data.format_converter import FormatConverter
+        import logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+        converter = FormatConverter(
+            tardis_dir=args.tardis_dir,
+            aggtrades_dir=args.aggtrades_dir,
+            output_dir=args.output_dir,
+        )
+        if args.symbol and args.start and args.end:
+            files = converter.merge_range(args.symbol, args.start, args.end, args.market)
+        else:
+            files = converter.scan_and_merge_all(args.market)
+        print(f"\n{'='*50}")
+        print(f"Merge complete: {len(files)} RAW files created")
     else:
         parser.print_help()
 

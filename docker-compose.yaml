@@ -1,20 +1,61 @@
 services:
   # =====================================================================
-  # recorder: 纯录制，只负责 WebSocket 采集 + 本地落盘
+  # recorder-spot: 现货 JPY 全交易对录制
   # =====================================================================
-  recorder:
+  recorder-spot:
     build: .
-    container_name: narci-recorder
+    container_name: narci-recorder-spot
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/spot_recorder.yaml
-      # 可选: 覆盖为单币种
-      # - NARCI_SYMBOL=ETHUSDT
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
     ports:
-      - "8079:8079"
+      - "8079:8079"  # healthcheck
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =====================================================================
+  # recorder-umfut: U 本位合约 USDT 主流对录制
+  # （币安合约不支持 JPY，这些 USDT 对用于对冲参考 / 信号源 / 期现套利）
+  # =====================================================================
+  recorder-umfut:
+    build: .
+    container_name: narci-recorder-umfut
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/um_future_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8080:8079"  # 宿主机 8080 -> 容器内 8079
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =====================================================================
+  # recorder-coincheck: Coincheck 现货 JPY 录制（主力交易所，优先级最高）
+  # =====================================================================
+  recorder-coincheck:
+    build: .
+    container_name: narci-recorder-coincheck
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/coincheck_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8081:8079"  # 宿主机 8081 -> 容器内 8079
     restart: unless-stopped
     logging:
       driver: json-file
@@ -71,7 +112,9 @@ services:
       - narci-data:/data:ro
     restart: unless-stopped
     depends_on:
-      - recorder
+      - recorder-spot
+      - recorder-umfut
+      - recorder-coincheck
     logging:
       driver: json-file
       options:

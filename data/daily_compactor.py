@@ -1,28 +1,48 @@
-import os
-import glob
-import shutil
-import time
-import zipfile
-import urllib.request
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-import pyarrow.dataset as ds
-from datetime import datetime, timedelta
-import logging
+"""
+日级小文件聚合 + 可选交叉校验（交易所无关）。
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+工作流:
+  1. compact_small_files: 把一天内所有 RAW parquet 碎片合并为一个 DAILY 大文件
+  2. validate_data (可选): 通过 HistoricalSource 拉官方对比数据做 L1 对账
+  3. archive_to_cold: 复制到冷数据目录（供 rclone 同步）
+  4. cleanup_old_fragments: 删除超龄小文件
+
+相比原实现：
+  - 不再硬编码 Binance Vision URL
+  - 通过 HistoricalSource 注入交叉校验源；Coincheck 等无官方归档的交易所自动跳过
+"""
+
+import glob
+import logging
+import os
+import shutil
+from datetime import datetime, timedelta
+
+import pandas as pd
+import pyarrow.dataset as ds
+
+from data.historical import HistoricalSource
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("DailyCompactor")
 
+
 class DailyCompactor:
-    def __init__(self, symbol, target_date, raw_dir, official_dir, cold_dir=None, retain_days=7):
+    def __init__(self, symbol: str, target_date,
+                 raw_dir: str, official_dir: str,
+                 cold_dir: str | None = None,
+                 retain_days: int = 7,
+                 source: HistoricalSource | None = None,
+                 market_type: str = "um_futures"):
         """
-        :param symbol: 交易对，如 ETHUSDT
-        :param target_date: 需要聚合的日期 (datetime.date 对象)
-        :param raw_dir: L2 1分钟小文件的存储目录
-        :param official_dir: 用于存放币安官方下载数据的目录
-        :param cold_dir: 冷数据归档目录 (rclone 同步源)，为 None 则不移动
-        :param retain_days: 保留最近 N 天的 1min 碎片，更早的在 compact 后删除
+        :param symbol: 交易对，如 ETHUSDT / eth_jpy
+        :param target_date: datetime.date
+        :param raw_dir: RAW 1min 碎片目录
+        :param official_dir: 拉取的官方对比文件落脚点
+        :param cold_dir: 冷数据归档目录（None 则不归档）
+        :param retain_days: 聚合后保留最近 N 天碎片
+        :param source: 交叉校验用的 HistoricalSource（None 则跳过校验）
+        :param market_type: "spot" | "um_futures"，供 source 构造 URL 用
         """
         self.symbol = symbol.upper()
         self.target_date = target_date
@@ -33,149 +53,108 @@ class DailyCompactor:
         self.official_dir = official_dir
         self.cold_dir = cold_dir
         self.retain_days = retain_days
-        self.daily_file_path = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_DAILY.parquet")
+        self.source = source
+        self.market_type = market_type
+
+        self.daily_file_path = os.path.join(
+            self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_DAILY.parquet"
+        )
 
         os.makedirs(self.official_dir, exist_ok=True)
         if self.cold_dir:
             os.makedirs(self.cold_dir, exist_ok=True)
 
-    def compact_small_files(self):
-        """将一天内的所有 1min 小文件合并为 1 个 DAILY 大文件，并保持小文件不删除"""
-        logger.info(f"[{self.symbol}] 开始聚合 {self.date_str} 的 1min 级 L2 原始数据...")
-        
+    def compact_small_files(self) -> bool:
+        logger.info(f"[{self.symbol}] 聚合 {self.date_str} 的 1min 碎片...")
         pattern = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_*.parquet")
-        files = glob.glob(pattern)
-        
-        # 过滤掉可能已经存在的 DAILY 文件
-        files = [f for f in files if "DAILY" not in f]
-        
+        files = [f for f in glob.glob(pattern) if "DAILY" not in f]
         if not files:
-            logger.warning(f"[{self.symbol}] 未找到 {self.date_str} 的任何录制文件。")
+            logger.warning(f"[{self.symbol}] 未找到 {self.date_str} 的任何录制文件")
             return False
-            
-        logger.info(f"[{self.symbol}] 找到 {len(files)} 个 1min 切片文件，开始使用 PyArrow 引擎合并...")
-        
-        # 使用 PyArrow Dataset 极速加载并合并
-        dataset = ds.dataset(files, format="parquet")
-        combined_table = dataset.to_table()
-        df = combined_table.to_pandas()
-        
-        # 严格按时间戳和优先级排序
-        df = df.sort_values(by=['timestamp', 'side'], ascending=[True, False]).reset_index(drop=True)
-        
-        # 写入大文件
+
+        logger.info(f"[{self.symbol}] 合并 {len(files)} 个切片 (PyArrow Dataset)")
+        table = ds.dataset(files, format="parquet").to_table()
+        df = table.to_pandas()
+        df = df.sort_values(by=["timestamp", "side"], ascending=[True, False]).reset_index(drop=True)
         df.to_parquet(self.daily_file_path, index=False)
-        logger.info(f"✅ 聚合完成！共处理 {len(df):,} 行数据。文件已保存至: {self.daily_file_path}")
-        
-        # 注意：此处遵守要求，不对原始 1min 小文件进行 os.remove() 删除
+        logger.info(f"✅ 聚合完成: {len(df):,} 行 -> {self.daily_file_path}")
         return True
 
-    def download_official_agg_trades(self):
-        """从 Binance Vision 下载官方 AggTrades (L1) 历史数据用于校验"""
-        base_url = "https://data.binance.vision/data/futures/um/daily/aggTrades"
-        zip_filename = f"{self.symbol}-aggTrades-{self.date_str_dash}.zip"
-        download_url = f"{base_url}/{self.symbol}/{zip_filename}"
-        
-        zip_path = os.path.join(self.official_dir, zip_filename)
-        csv_path = zip_path.replace(".zip", ".csv")
-        
-        if os.path.exists(csv_path):
-            logger.info(f"官方 L1 数据已存在: {csv_path}")
-            return csv_path
-            
-        logger.info(f"正在从币安官方下载 {self.date_str_dash} 的 AggTrades 校验数据...")
-        try:
-            urllib.request.urlretrieve(download_url, zip_path)
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(self.official_dir)
-            os.remove(zip_path) # 删除压缩包
-            logger.info(f"✅ 官方数据下载并解压成功。")
-            return csv_path
-        except Exception as e:
-            logger.error(f"❌ 官方数据下载失败 (可能由于币安尚未生成该日的归档): {e}")
-            return None
-
-    def validate_data(self, official_csv_path):
-        """读取聚合后的 DAILY 文件，提取 L1 还原数据，与官方数据进行交叉比对"""
+    def validate_data(self) -> bool:
+        """
+        若配置了 HistoricalSource 且其支持 aggTrades，拉取官方 L1 做交叉比对。
+        返回 True = 已执行（成功或失败），False = 跳过。
+        """
+        if self.source is None:
+            logger.info("未配置 HistoricalSource，跳过交叉校验")
+            return False
+        if not self.source.supports("aggTrades", self.market_type):
+            logger.info(f"source={self.source.name} 不支持 {self.market_type}/aggTrades，跳过校验")
+            return False
         if not os.path.exists(self.daily_file_path):
-            logger.error("找不到聚合后的 DAILY 文件，无法进行校验。")
-            return
-            
-        logger.info(f"🔍 开始交叉验证 {self.date_str} 的微观数据一致性...")
-        
-        # 1. 解析本地聚合 L2 文件中的 L1 数据
+            logger.error("DAILY 文件不存在，无法校验")
+            return False
+
+        official_path = self.source.download_day(
+            self.symbol, self.date_str_dash, "aggTrades",
+            self.market_type, self.official_dir)
+        if official_path is None:
+            logger.warning("官方对比文件下载失败，跳过校验")
+            return False
+
+        logger.info(f"🔍 交叉验证 {self.symbol} {self.date_str_dash}")
+
         df_l2 = pd.read_parquet(self.daily_file_path)
-        df_local_trades = df_l2[df_l2['side'] == 2].copy()
-        df_local_trades['quantity'] = df_local_trades['quantity'].abs()
-        local_count = len(df_local_trades)
-        local_volume = df_local_trades['quantity'].sum()
-        
-        # 2. 读取官方数据
-        # Binance CSV 格式: agg_trade_id, price, quantity, first_trade_id, last_trade_id, transact_time, is_buyer_maker
-        df_official = pd.read_csv(official_csv_path, header=0, names=[
-            'agg_trade_id', 'price', 'quantity', 'first_trade_id', 'last_trade_id', 'transact_time', 'is_buyer_maker'
-        ])
-        official_count = len(df_official)
-        official_volume = df_official['quantity'].sum()
-        
-        # 3. 计算差异
+        df_local = df_l2[df_l2["side"] == 2].copy()
+        df_local["quantity"] = df_local["quantity"].abs()
+
+        df_official = pd.read_parquet(official_path)
+
+        local_count, local_vol = len(df_local), df_local["quantity"].sum()
+        official_count, official_vol = len(df_official), df_official["quantity"].sum()
         count_diff = local_count - official_count
-        vol_diff = local_volume - official_volume
-        vol_diff_pct = (vol_diff / official_volume * 100) if official_volume > 0 else 0
-        
+        vol_diff = local_vol - official_vol
+        vol_diff_pct = (vol_diff / official_vol * 100) if official_vol > 0 else 0
+
         logger.info("-" * 40)
-        logger.info(f"📊 【{self.symbol} - {self.date_str_dash}】 L1 数据交叉校验报告")
-        logger.info(f"▶ 官方数据: {official_count:,} 笔 | 总量: {official_volume:.4f}")
-        logger.info(f"▶ 本地录制: {local_count:,} 笔 | 总量: {local_volume:.4f}")
-        logger.info(f"▶ 笔数差异: {count_diff:,} 笔")
-        logger.info(f"▶ 体积差异: {vol_diff:.4f} ({vol_diff_pct:.4f}%)")
-        
+        logger.info(f"📊 【{self.symbol} {self.date_str_dash}】 L1 交叉校验")
+        logger.info(f"▶ 官方:  {official_count:,} 笔 / 总量 {official_vol:.4f}")
+        logger.info(f"▶ 本地:  {local_count:,} 笔 / 总量 {local_vol:.4f}")
+        logger.info(f"▶ 笔数差 {count_diff:,} | 体积差 {vol_diff:.4f} ({vol_diff_pct:.4f}%)")
         if count_diff == 0 and abs(vol_diff) < 1e-5:
-            logger.info("🎉 完美匹配！本地录制流无任何掉包/漏单。")
+            logger.info("🎉 完美匹配")
         else:
-            logger.warning("⚠️ 存在差异！网络波动或 WebSocket 重连可能导致了部分数据丢失。")
+            logger.warning("⚠️ 存在差异（可能断线/漏单）")
         logger.info("-" * 40)
+        return True
 
     def archive_to_cold(self):
-        """将 DAILY 文件复制到冷数据目录 (供 rclone 同步到 Google Drive)"""
         if not self.cold_dir or not os.path.exists(self.daily_file_path):
             return
-
         dest = os.path.join(self.cold_dir, os.path.basename(self.daily_file_path))
         if os.path.exists(dest):
             logger.info(f"冷数据已存在，跳过: {dest}")
             return
-
         shutil.copy2(self.daily_file_path, dest)
-        logger.info(f"📦 DAILY 文件已归档到冷数据目录: {dest}")
+        logger.info(f"📦 已归档到 {dest}")
 
     def cleanup_old_fragments(self):
-        """清理超过 retain_days 天的 1min 碎片文件，释放本地磁盘空间"""
         cutoff = datetime.now().date() - timedelta(days=self.retain_days)
         if self.target_date >= cutoff:
-            return  # 还在保留期内，不清理
-
-        # 确保 DAILY 文件存在才敢删碎片
+            return
         if not os.path.exists(self.daily_file_path):
-            logger.warning(f"DAILY 文件不存在，跳过碎片清理以防数据丢失。")
+            logger.warning("DAILY 文件不存在，跳过碎片清理")
             return
 
         pattern = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_*.parquet")
         fragments = [f for f in glob.glob(pattern) if "DAILY" not in f]
-
         if fragments:
             for f in fragments:
                 os.remove(f)
-            logger.info(f"🧹 已清理 {len(fragments)} 个过期碎片 ({self.date_str}, 超过 {self.retain_days} 天保留期)")
+            logger.info(f"🧹 已清理 {len(fragments)} 个碎片（超 {self.retain_days} 天）")
 
     def run(self):
-        """执行完整工作流: 聚合 → 校验 → 归档冷数据 → 清理碎片"""
-        success = self.compact_small_files()
-        if success:
-            official_csv = self.download_official_agg_trades()
-            if official_csv:
-                self.validate_data(official_csv)
-            else:
-                logger.warning("跳过校验：未获取到官方对比文件。")
+        if self.compact_small_files():
+            self.validate_data()
             self.archive_to_cold()
             self.cleanup_old_fragments()

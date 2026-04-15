@@ -48,28 +48,53 @@ def render(base_path, default_history_dir, default_realtime_dir):
 
     st.write("📌 **选择数据集 (自动支持 JIT 重构及本地特征缓存落盘)**")
     
-    c_m1, c_m2 = st.columns(2)
+    # 发现可用的 exchange / market 组合：
+    #   realtime/{exchange}/{market}/l2/  (新)
+    #   realtime/{market}/l2/             (旧兼容)
+    exchanges = [e for e in sorted(os.listdir(realtime_dir))
+                 if os.path.isdir(os.path.join(realtime_dir, e))] if os.path.isdir(realtime_dir) else []
+
+    c_m0, c_m1, c_m2 = st.columns(3)
+    with c_m0:
+        exchange = st.selectbox("🏪 交易所", exchanges or ["binance"], key="bt_exchange")
     with c_m1:
-        # 使用配置中的默认市场类型
-        default_market = sys_cfg.get('default_market', 'um_futures')
-        market_index = 0 if default_market == 'um_futures' else 1
-        market_type = st.selectbox("🎯 数据来源市场", ["um_futures", "spot"], index=market_index, key="bt_market_type")
-    
-    market_dir = os.path.join(realtime_dir, market_type, "l2")
-    if not os.path.exists(market_dir):
-        os.makedirs(market_dir, exist_ok=True)
-        
-    cache_dir =os.path.join(realtime_dir, market_type, "features")
-    
+        exch_dir = os.path.join(realtime_dir, exchange)
+        markets = [m for m in sorted(os.listdir(exch_dir))
+                   if os.path.isdir(os.path.join(exch_dir, m, "l2"))] if os.path.isdir(exch_dir) else []
+        if not markets:
+            # 旧结构兜底
+            markets = ["um_futures", "spot"]
+        default_market = sys_cfg.get("default_market", markets[0])
+        default_idx = markets.index(default_market) if default_market in markets else 0
+        market_type = st.selectbox("🎯 数据来源市场", markets, index=default_idx, key="bt_market_type")
+
+    # 支持新旧两种目录结构
+    candidates = [
+        os.path.join(realtime_dir, exchange, market_type, "l2"),
+        os.path.join(realtime_dir, market_type, "l2"),
+    ]
+    market_dir = next((d for d in candidates if os.path.isdir(d)),
+                      os.path.join(realtime_dir, exchange, market_type, "l2"))
+    os.makedirs(market_dir, exist_ok=True)
+
+    cache_dir = os.path.join(realtime_dir, exchange, market_type, "features")
+
     all_files = get_all_parquet_files(market_dir)
     available_files = [f for f in all_files if f.endswith(".parquet") and "features" not in f]
-    
-    available_symbols = sorted(list(set([os.path.basename(f).split('_')[0].upper() for f in available_files])))
+
+    # 按 _RAW_ 切分得到完整 symbol，兼容 Coincheck ETH_JPY 这类含下划线的格式
+    available_symbols = sorted(set(
+        os.path.basename(f).split("_RAW_")[0].upper()
+        for f in available_files if "_RAW_" in f.upper()
+    ))
     with c_m2:
         selected_symbol = st.selectbox("🪙 交易对筛选", ["全部"] + available_symbols, key="bt_symbol_filter")
         
     if selected_symbol != "全部":
-        available_files = sorted([f for f in available_files if os.path.basename(f).upper().startswith(selected_symbol)])
+        available_files = sorted([
+            f for f in available_files
+            if os.path.basename(f).split("_RAW_")[0].upper() == selected_symbol
+        ])
     else:
         available_files = sorted(available_files)
         

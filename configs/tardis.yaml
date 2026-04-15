@@ -1,0 +1,17 @@
+tardis:
+  # Tardis.dev API key (also reads from TARDIS_API_KEY env var)
+  # Free tier: 10GB/month
+  # api_key: "YOUR_KEY_HERE"
+
+  # Target symbols and date ranges
+  # Run: python main.py tardis --symbol ETHUSDT --start 2025-09-01 --end 2025-09-30 --market um_futures
+
+  # After downloading both Tardis depth and Binance aggTrades, merge them:
+  # Run: python main.py merge --symbol ETHUSDT --start 2025-09-01 --end 2025-09-30
+
+  # Full pipeline example (6 months of ETH futures):
+  # 1. python main.py download                    # Download aggTrades from Binance Vision
+  # 2. python main.py tardis --symbol ETHUSDT --start 2025-09-01 --end 2026-03-01
+  # 3. python main.py merge --symbol ETHUSDT --start 2025-09-01 --end 2026-03-01
+  # 4. Output: replay_buffer/merged/um_futures/l2/ETHUSDT_RAW_*.parquet
+  #    These files are compatible with nyx's L2Reconstructor -> FV5 pipeline

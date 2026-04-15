@@ -1,0 +1,36 @@
+recorder:
+  # ============================================================
+  # Coincheck 交易所录制配置
+  # 未来主要在 Coincheck 进行 JPY 现货交易，此为主力数据源
+  # ============================================================
+
+  exchange: coincheck
+  market_type: spot
+
+  # Coincheck 原生符号格式 btc_jpy（L2Recorder 会 lower 化）
+  # 全部 JPY 现货对（共 27，按流动性排序取主要几个）
+  symbols:
+    - "btc_jpy"
+    - "eth_jpy"
+    - "xrp_jpy"
+    - "sol_jpy"
+    - "doge_jpy"
+    - "avax_jpy"
+    - "bch_jpy"
+
+  # Coincheck WebSocket 本身不按频率推送，由交易所侧 orderbook 变化驱动
+  # interval_ms 仅作文档字段；实际吞吐取决于盘口活跃度
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  # Coincheck API 端点（如需代理或私有化部署可覆盖）
+  endpoints:
+    spot:
+      ws_url: "wss://ws-api.coincheck.com"
+      snapshot_url: "https://coincheck.com/api/order_books?pair={symbol_lower}"
