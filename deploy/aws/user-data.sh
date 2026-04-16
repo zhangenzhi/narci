@@ -33,13 +33,19 @@ dnf install -y docker git jq
 systemctl enable --now docker
 usermod -aG docker ec2-user
 
-# Compose plugin (AL2023 不自带)
+# Compose plugin + Buildx (AL2023 不自带)
 DOCKER_PLUGIN_DIR=/usr/libexec/docker/cli-plugins
 mkdir -p "$DOCKER_PLUGIN_DIR"
+
 COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | jq -r .tag_name)
 curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-aarch64" \
     -o "$DOCKER_PLUGIN_DIR/docker-compose"
 chmod +x "$DOCKER_PLUGIN_DIR/docker-compose"
+
+BUILDX_VERSION=$(curl -s https://api.github.com/repos/docker/buildx/releases/latest | jq -r .tag_name)
+curl -SL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-arm64" \
+    -o "$DOCKER_PLUGIN_DIR/docker-buildx"
+chmod +x "$DOCKER_PLUGIN_DIR/docker-buildx"
 
 # ---------- 2. 克隆仓库 ----------
 NARCI_HOME=/home/ec2-user/narci
