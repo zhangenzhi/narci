@@ -9,4 +9,5 @@ replay_buffer
 *.png
 
 configs/account.yaml
+.env
 

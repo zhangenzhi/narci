@@ -64,8 +64,10 @@ services:
         max-file: "5"
 
   # =====================================================================
-  # cloud-sync: 独立 sidecar，定时将本地数据推送至 Google Drive
-  # 与 recorder 通过共享 volume 解耦，互不阻塞
+  # cloud-sync: 独立 sidecar，定时将本地数据推送至云端
+  # 通过 NARCI_RCLONE_REMOTE 环境变量决定目标：
+  #   - s3://bucket-name/prefix   → 使用 AWS S3（推荐；EC2 instance profile 自动鉴权）
+  #   - gdrive:/narci_raw         → 使用 Google Drive（legacy；需 RCLONE_GDRIVE_TOKEN）
   # =====================================================================
   cloud-sync:
     image: rclone/rclone:latest
@@ -74,28 +76,44 @@ services:
     command:
       - -c
       - |
-        # 从环境变量生成 rclone 配置
         mkdir -p /root/.config/rclone
-        cat > /root/.config/rclone/rclone.conf <<EOF
+        REMOTE="$${NARCI_RCLONE_REMOTE}"
+
+        # 自动识别远端类型并生成 rclone.conf
+        if echo "$${REMOTE}" | grep -q "^s3://"; then
+          # S3: 依赖 EC2 instance profile / IAM role（容器内需暴露 AWS env 变量或 metadata）
+          cat > /root/.config/rclone/rclone.conf <<EOF
+        [s3]
+        type = s3
+        provider = AWS
+        region = $${AWS_REGION:-ap-northeast-1}
+        env_auth = true
+        storage_class = STANDARD_IA
+        EOF
+          # 把 s3://bucket/prefix 转成 rclone 的 s3:bucket/prefix 写法
+          RCLONE_REMOTE=$(echo "$${REMOTE}" | sed 's|s3://|s3:|')
+        else
+          # Google Drive (legacy)
+          cat > /root/.config/rclone/rclone.conf <<EOF
         [gdrive]
         type = drive
         scope = drive
         token = $${RCLONE_GDRIVE_TOKEN}
         root_folder_id = $${RCLONE_GDRIVE_FOLDER_ID}
         EOF
+          RCLONE_REMOTE="$${REMOTE}"
+        fi
 
-        echo "[cloud-sync] rclone 配置已生成，开始定时同步..."
-        echo "[cloud-sync] 远端: $${NARCI_RCLONE_REMOTE}"
+        echo "[cloud-sync] 远端: $${RCLONE_REMOTE}"
         echo "[cloud-sync] 间隔: $${SYNC_INTERVAL:-300}s"
 
-        # 确保远端目录存在
-        rclone mkdir "$${NARCI_RCLONE_REMOTE}" 2>/dev/null || true
+        # 确保目标目录/bucket 存在（S3 mkdir 会 no-op）
+        rclone mkdir "$${RCLONE_REMOTE}" 2>/dev/null || true
 
-        # 定时同步循环
         while true; do
           echo "[cloud-sync] 开始同步..."
-          rclone copy /data "$${NARCI_RCLONE_REMOTE}" \
-            --transfers 2 \
+          rclone copy /data "$${RCLONE_REMOTE}" \
+            --transfers 4 \
             --log-level NOTICE \
             --no-traverse \
             --tpslimit 8 \
@@ -104,10 +122,15 @@ services:
           sleep $${SYNC_INTERVAL:-300}
         done
     environment:
+      # 默认 Google Drive（5TB 免费空间）；可在 .env 切 S3
       - NARCI_RCLONE_REMOTE=${NARCI_RCLONE_REMOTE:-gdrive:/narci_raw}
+      - AWS_REGION=${AWS_REGION:-ap-northeast-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
       - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
-      - SYNC_INTERVAL=${SYNC_INTERVAL:-300}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
     volumes:
       - narci-data:/data:ro
     restart: unless-stopped
