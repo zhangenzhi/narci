@@ -1,6 +1,13 @@
-# AWS 部署手册（Tokyo 区）
+# AWS 双实例部署手册
 
-目标：在 `ap-northeast-1` 跑 24/7 录制 + 冷数据推 S3。预算 ¥4,050/月，可支撑约 24 个月。
+两台 EC2 分工录制，同推一个 Google Drive：
+
+| 实例 | 区域 | 规格 | Profile | 录什么 | 月成本 |
+|---|---|---|---|---|---|
+| **narci-tokyo** | ap-northeast-1 | t4g.small (2GB) | `tokyo` | Coincheck 7 对 JPY 现货 | ~$15 |
+| **narci-us** | us-west-2 | t4g.micro (1GB) | `global` | Binance spot 24 对 + futures 6 对 | ~$8 |
+
+总计 ~¥3,500/月，10w 预算可跑 **~28 个月**。
 
 ## 前置一次性准备
 
@@ -68,26 +75,33 @@ aws ssm put-parameter \
 
 ## 启动 EC2
 
-**建议规格**：
+## 启动实例
 
-| 选项 | 规格 | 月成本 | 备注 |
-|---|---|---|---|
-| **推荐** | `t4g.small`（2 vCPU ARM, 2GB） | ~$15 | 录 3 个 recorder 刚够 |
-| 备选 | `t4g.medium`（2 vCPU, 4GB） | ~$30 | 更宽裕 |
+两台实例都用同一个 `deploy/aws/user-data.sh`，只需改脚本顶部的 `MY_PROFILE`。
 
-**配置**：
-- AMI: Amazon Linux 2023 (ARM64)
-- 存储: gp3 50GB（`retain_days=7` × 3 recorder × ~1GB/日 ≈ 21GB 峰值）
-- IAM Role: `NarciRecorderRole`
-- **User data**: 贴 `deploy/aws/user-data.sh` 全文
+### narci-tokyo（Coincheck）
+
+- **区域**: ap-northeast-1
+- **AMI**: Amazon Linux 2023 ARM64
+- **规格**: t4g.small（2 vCPU / 2GB）
+- **存储**: gp3 30GB
+- **User data**: 粘贴 `user-data.sh`，设 `MY_PROFILE='tokyo'`，填 GDrive token
+
+### narci-us（Binance）
+
+- **区域**: us-west-2
+- **AMI**: Amazon Linux 2023 ARM64
+- **规格**: t4g.micro（2 vCPU / 1GB）
+- **存储**: gp3 30GB
+- **User data**: 粘贴 `user-data.sh`，设 `MY_PROFILE='global'`，填**同一个** GDrive token
 
 启动后约 3 分钟完成 bootstrap。SSH 进去验证：
 
 ```bash
-ssh ec2-user@<EC2-IP>
+ssh -i key.pem ec2-user@<EC2-IP>
 source narci/deploy/server-aliases.sh
 export NARCI_HOME=$HOME/narci
-nstatus          # 应该看到 4 个容器 UP
+nstatus          # Tokyo: coincheck + cloud-sync; US: spot + umfut + cloud-sync
 nlog             # 看录制输出
 ```
 

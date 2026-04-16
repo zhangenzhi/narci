@@ -16,11 +16,12 @@
 #   - Security Group: 开 22 (SSH)
 # =============================================================================
 
-# ▼▼▼▼▼ 在这里填入你的 Google Drive Token（粘贴时替换整行） ▼▼▼▼▼
+# ▼▼▼▼▼ 填入 Google Drive Token + 部署模式 ▼▼▼▼▼
 MY_GDRIVE_TOKEN='FILL_ME'
-# ▲▲▲▲▲ 只需填这一行，其余不要动 ▲▲▲▲▲
-# folder_id 留空 → 推到 Google Drive 根目录下的 narci_raw/
 MY_GDRIVE_FOLDER_ID=''
+# 部署模式: "tokyo" = Coincheck only, "global" = Binance only
+MY_PROFILE='tokyo'
+# ▲▲▲▲▲ 填完上面即可 ▲▲▲▲▲
 
 set -euo pipefail
 exec > >(tee /var/log/narci-bootstrap.log) 2>&1
@@ -59,6 +60,7 @@ cd "$NARCI_HOME"
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
 # 生成 .env（凭证来自脚本顶部的变量，不进 git）
 cat > .env <<EOF
+COMPOSE_PROFILES=${MY_PROFILE}
 NARCI_RCLONE_REMOTE=gdrive:/narci_raw
 RCLONE_GDRIVE_TOKEN=${MY_GDRIVE_TOKEN}
 RCLONE_GDRIVE_FOLDER_ID=${MY_GDRIVE_FOLDER_ID}

@@ -10,28 +10,29 @@ export NARCI_HOME="$HOME/narci"
 # --- 服务管理 ---
 alias nstart='cd $NARCI_HOME && docker compose up -d'
 alias nstop='cd $NARCI_HOME && docker compose down'
-alias nrestart='cd $NARCI_HOME && docker compose restart recorder-coincheck recorder-spot recorder-umfut'
-alias nrestartcc='cd $NARCI_HOME && docker compose restart recorder-coincheck'
-alias nrestartspot='cd $NARCI_HOME && docker compose restart recorder-spot'
-alias nrestartumfut='cd $NARCI_HOME && docker compose restart recorder-umfut'
+alias nrestart='cd $NARCI_HOME && docker compose restart'
 alias nrebuild='cd $NARCI_HOME && docker compose up -d --build'
 
+# --- 按交易所重启 ---
+alias nrestartcc='cd $NARCI_HOME && docker compose restart recorder-coincheck'
+alias nrestartbn='cd $NARCI_HOME && docker compose restart recorder-binance-spot recorder-binance-umfut'
+alias nrestartbnspot='cd $NARCI_HOME && docker compose restart recorder-binance-spot'
+alias nrestartbnfut='cd $NARCI_HOME && docker compose restart recorder-binance-umfut'
+
 # --- 日志 ---
-alias nlog='cd $NARCI_HOME && docker compose logs -f recorder-coincheck recorder-spot recorder-umfut'
+alias nlog='cd $NARCI_HOME && docker compose logs -f'
 alias nlogcc='cd $NARCI_HOME && docker compose logs -f recorder-coincheck'
-alias nlogspot='cd $NARCI_HOME && docker compose logs -f recorder-spot'
-alias nlogumfut='cd $NARCI_HOME && docker compose logs -f recorder-umfut'
-alias nlog100='cd $NARCI_HOME && docker compose logs --tail=100 recorder-coincheck recorder-spot recorder-umfut'
+alias nlogbn='cd $NARCI_HOME && docker compose logs -f recorder-binance-spot recorder-binance-umfut'
+alias nlogbnspot='cd $NARCI_HOME && docker compose logs -f recorder-binance-spot'
+alias nlogbnfut='cd $NARCI_HOME && docker compose logs -f recorder-binance-umfut'
+alias nlog100='cd $NARCI_HOME && docker compose logs --tail=100'
 alias nsynclog='cd $NARCI_HOME && docker compose logs -f cloud-sync'
 alias nsynclog100='cd $NARCI_HOME && docker compose logs --tail=100 cloud-sync'
 
 # --- 状态检查 ---
 alias nstatus='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
-alias nhealthcc='curl -s http://localhost:8081/health | python3 -m json.tool'
-alias nhealthspot='curl -s http://localhost:8079/health | python3 -m json.tool'
-alias nhealthumfut='curl -s http://localhost:8080/health | python3 -m json.tool'
-alias nhealth='echo "[COINCHECK]"; nhealthcc; echo "[BN-SPOT]"; nhealthspot; echo "[BN-UMFUT]"; nhealthumfut'
-alias ndisk='df -h /home && echo "" && du -sh $NARCI_HOME/replay_buffer/*/ 2>/dev/null'
+alias nhealth='for p in 8079 8080 8081; do echo "[:$p]"; curl -s http://localhost:$p/health 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "  not running"; done'
+alias ndisk='df -h / && echo "" && du -sh $NARCI_HOME/replay_buffer/*/ 2>/dev/null'
 
 # --- 数据管理 ---
 alias ncount='find $NARCI_HOME/replay_buffer -name "*.parquet" | wc -l'
@@ -47,8 +48,8 @@ alias npull='cd $NARCI_HOME && git pull && docker compose up -d --build --no-cac
 
 # --- 快捷进入容器 ---
 alias nshellcc='cd $NARCI_HOME && docker compose exec recorder-coincheck sh'
-alias nshellspot='cd $NARCI_HOME && docker compose exec recorder-spot sh'
-alias nshellumfut='cd $NARCI_HOME && docker compose exec recorder-umfut sh'
+alias nshellbnspot='cd $NARCI_HOME && docker compose exec recorder-binance-spot sh'
+alias nshellbnfut='cd $NARCI_HOME && docker compose exec recorder-binance-umfut sh'
 
 echo "Narci aliases loaded. Type 'nhelp' for available commands."
 
@@ -58,39 +59,35 @@ nhelp() {
     echo "============================================"
     echo ""
     echo "  服务管理:"
-    echo "    nstart             启动所有服务 (spot + umfut + cloud-sync)"
+    echo "    nstart             启动当前 profile 的所有服务"
     echo "    nstop              停止所有服务"
-    echo "    nrestart           重启两个 recorder"
-    echo "    nrestartspot       只重启现货录制器"
-    echo "    nrestartumfut      只重启合约录制器"
+    echo "    nrestart           重启所有运行中的服务"
     echo "    nrebuild           重新构建并启动"
     echo ""
+    echo "  按交易所操作:"
+    echo "    nrestartcc         重启 Coincheck 录制器"
+    echo "    nrestartbn         重启 Binance 两个录制器"
+    echo "    nrestartbnspot     只重启 Binance 现货"
+    echo "    nrestartbnfut      只重启 Binance 合约"
+    echo ""
     echo "  日志:"
-    echo "    nlog               实时查看两个 recorder 的合并日志"
-    echo "    nlogspot           实时查看现货 recorder 日志"
-    echo "    nlogumfut          实时查看合约 recorder 日志"
-    echo "    nlog100            两个 recorder 最近 100 行"
-    echo "    nsynclog           实时查看云同步日志"
-    echo "    nsynclog100        云同步最近 100 行"
+    echo "    nlog               所有运行中服务的合并日志"
+    echo "    nlogcc             Coincheck 录制器日志"
+    echo "    nlogbn             Binance 两个录制器日志"
+    echo "    nlogbnspot/bnfut   单独查看"
+    echo "    nsynclog           云同步日志"
     echo ""
-    echo "  状态检查:"
-    echo "    nstatus            查看容器运行状态"
-    echo "    nhealth            两个 recorder 健康检查"
-    echo "    nhealthspot/umfut  单独检查"
-    echo "    ndisk              磁盘使用情况"
+    echo "  状态:"
+    echo "    nstatus            容器运行状态"
+    echo "    nhealth            所有端口健康检查"
+    echo "    ndisk              磁盘使用"
     echo ""
-    echo "  数据管理:"
-    echo "    ncount             统计 parquet 文件数量"
-    echo "    ncold              查看冷数据归档"
-    echo ""
-    echo "  云同步管理:"
-    echo "    nsyncrestart       重启 cloud-sync"
-    echo "    nsyncstop          停止 cloud-sync"
-    echo "    nsyncstart         启动 cloud-sync"
+    echo "  云同步:"
+    echo "    nsyncrestart/stop/start"
     echo ""
     echo "  其他:"
-    echo "    npull              拉取最新代码并重启"
-    echo "    nshellspot/umfut   进入对应容器 shell"
+    echo "    npull              拉代码 + 重建 + 重载别名"
+    echo "    nshellcc/bnspot/bnfut  进入容器 shell"
     echo "    nhelp              显示本帮助"
     echo "============================================"
 }
