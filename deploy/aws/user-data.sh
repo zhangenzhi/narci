@@ -19,7 +19,9 @@
 # ▼▼▼▼▼ 填入 Google Drive Token + 部署模式 ▼▼▼▼▼
 MY_GDRIVE_TOKEN='FILL_ME'
 MY_GDRIVE_FOLDER_ID=''
-# 部署模式: "tokyo" = Coincheck only, "global" = Binance only
+# 部署模式:
+#   "tokyo"  = Coincheck + Binance JP（日本区实例）
+#   "global" = Binance 国际现货 + U本位合约（非日本区实例，如新加坡）
 MY_PROFILE='tokyo'
 # ▲▲▲▲▲ 填完上面即可 ▲▲▲▲▲
 
