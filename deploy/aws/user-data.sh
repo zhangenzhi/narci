@@ -58,15 +58,19 @@ cd "$NARCI_HOME"
 # ---------- 3. 环境变量 ----------
 # 从 SSM 读取 S3 bucket（可选；否则直接写在本脚本）
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-# 生成 .env（凭证来自脚本顶部的变量，不进 git）
-cat > .env <<EOF
-COMPOSE_PROFILES=${MY_PROFILE}
+# 生成 .env（用 'EOF' 防止 shell 展开 $、双引号等特殊字符）
+cat > .env <<'ENVEOF'
+COMPOSE_PROFILES=PLACEHOLDER_PROFILE
 NARCI_RCLONE_REMOTE=gdrive:/narci_raw
-RCLONE_GDRIVE_TOKEN=${MY_GDRIVE_TOKEN}
-RCLONE_GDRIVE_FOLDER_ID=${MY_GDRIVE_FOLDER_ID}
+RCLONE_GDRIVE_TOKEN=PLACEHOLDER_TOKEN
+RCLONE_GDRIVE_FOLDER_ID=PLACEHOLDER_FOLDER
 NARCI_RETAIN_DAYS=7
 SYNC_INTERVAL=600
-EOF
+ENVEOF
+# 替换占位符为脚本顶部变量（sed 不会吃引号）
+sed -i "s|PLACEHOLDER_PROFILE|${MY_PROFILE}|" .env
+sed -i "s|PLACEHOLDER_TOKEN|${MY_GDRIVE_TOKEN}|" .env
+sed -i "s|PLACEHOLDER_FOLDER|${MY_GDRIVE_FOLDER_ID}|" .env
 chown ec2-user:ec2-user .env
 chmod 600 .env
 
