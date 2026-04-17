@@ -35,6 +35,15 @@ dnf update -y
 dnf install -y docker git jq
 systemctl enable --now docker
 usermod -aG docker ec2-user
+# 让 docker.sock 对 docker 组立即可写（不用等 ec2-user 重新登录）
+chmod 666 /var/run/docker.sock
+# 持久化：docker 重启后也保持 socket 权限
+mkdir -p /etc/systemd/system/docker.socket.d
+cat > /etc/systemd/system/docker.socket.d/override.conf <<'SYSD'
+[Socket]
+SocketMode=0666
+SYSD
+systemctl daemon-reload
 
 # Compose plugin + Buildx (AL2023 不自带)
 DOCKER_PLUGIN_DIR=/usr/libexec/docker/cli-plugins
@@ -76,11 +85,15 @@ sed -i "s|PLACEHOLDER_FOLDER|${MY_GDRIVE_FOLDER_ID}|" .env
 chown ec2-user:ec2-user .env
 chmod 600 .env
 
-# ---------- 4. 自动加载运维别名 ----------
+# ---------- 4. 自动加载运维别名 + cd 到项目目录 ----------
 BASHRC="/home/ec2-user/.bashrc"
-ALIAS_LINE="source $NARCI_HOME/deploy/server-aliases.sh"
-if ! grep -qF "$ALIAS_LINE" "$BASHRC" 2>/dev/null; then
-    echo "$ALIAS_LINE" >> "$BASHRC"
+SETUP_BLOCK='# --- Narci auto-setup ---
+export NARCI_HOME=$HOME/narci
+cd $NARCI_HOME 2>/dev/null
+source $NARCI_HOME/deploy/server-aliases.sh 2>/dev/null
+# --- end Narci ---'
+if ! grep -qF "Narci auto-setup" "$BASHRC" 2>/dev/null; then
+    echo "$SETUP_BLOCK" >> "$BASHRC"
     chown ec2-user:ec2-user "$BASHRC"
 fi
 
