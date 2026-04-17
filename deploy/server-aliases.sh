@@ -52,12 +52,7 @@ alias nstatus='docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
 alias nhealth='for p in 8079 8080; do echo "[:$p]"; curl -s http://localhost:$p/health 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "  not running"; done'
 
 # --- 数据（Docker volume 内） ---
-ncount() {
-    for c in $(docker ps --format '{{.Names}}' | grep recorder); do
-        cnt=$(docker exec "$c" find /app/replay_buffer -name '*.parquet' 2>/dev/null | wc -l)
-        echo "  $c: $cnt files"
-    done
-}
+alias ncount='docker ps --format "{{.Names}}" | grep recorder | while read c; do cnt=$(docker exec "$c" find /app/replay_buffer -name "*.parquet" 2>/dev/null | wc -l); echo "  $c: $cnt files"; done'
 alias ndisk='df -h / && echo "" && docker system df'
 
 # --- 云同步管理 ---
