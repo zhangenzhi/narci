@@ -70,9 +70,11 @@ EOF
 chown ec2-user:ec2-user .env
 chmod 600 .env
 
-# ---------- 4. 启动 ----------
-sudo -u ec2-user docker compose pull || true
-sudo -u ec2-user docker compose up -d --build
+# ---------- 4. 让 ec2-user 免 sudo 使用 docker ----------
+# usermod -aG 已在上面执行，但需要新 session 才生效
+# 直接用 sg 切换到 docker 组运行 compose
+sg docker -c "docker compose pull" || true
+sg docker -c "docker compose up -d --build"
 
 echo "[$(date)] Narci bootstrap complete. Running:"
-sudo -u ec2-user docker compose ps
+docker compose ps
