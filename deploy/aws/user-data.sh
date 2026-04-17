@@ -76,7 +76,15 @@ sed -i "s|PLACEHOLDER_FOLDER|${MY_GDRIVE_FOLDER_ID}|" .env
 chown ec2-user:ec2-user .env
 chmod 600 .env
 
-# ---------- 4. 让 ec2-user 免 sudo 使用 docker ----------
+# ---------- 4. 自动加载运维别名 ----------
+BASHRC="/home/ec2-user/.bashrc"
+ALIAS_LINE="source $NARCI_HOME/deploy/server-aliases.sh"
+if ! grep -qF "$ALIAS_LINE" "$BASHRC" 2>/dev/null; then
+    echo "$ALIAS_LINE" >> "$BASHRC"
+    chown ec2-user:ec2-user "$BASHRC"
+fi
+
+# ---------- 5. 让 ec2-user 免 sudo 使用 docker ----------
 # usermod -aG 已在上面执行，但需要新 session 才生效
 # 直接用 sg 切换到 docker 组运行 compose
 sg docker -c "docker compose pull" || true
