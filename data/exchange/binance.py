@@ -150,3 +150,29 @@ class BinanceSpotAdapter(BinanceAdapter):
 class BinanceUmFuturesAdapter(BinanceAdapter):
     def __init__(self, **kwargs):
         super().__init__(market_type="um_futures", **kwargs)
+
+
+class BinanceJpAdapter(BinanceAdapter):
+    """
+    Binance Japan 适配器（日本 IP 可用）。
+
+    WS 用 data-stream.binance.vision（纯行情端点，不受日本 IP 地理封锁）。
+    REST snapshot 用 api.binance.com（从日本 IP 可访问 /api/v3 端点）。
+    消息格式与国际版完全一致，复用 BinanceAdapter 的全部解析逻辑。
+    """
+
+    name = "binance_jp"
+
+    _ENDPOINTS = {
+        "spot": {
+            "ws":       "wss://data-stream.binance.vision/stream?streams={streams}",
+            "snapshot": "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000",
+        },
+    }
+
+    def __init__(self, **kwargs):
+        kwargs.pop("market_type", None)
+        super().__init__(market_type="spot", **kwargs)
+        defaults = self._ENDPOINTS["spot"]
+        self.ws_tpl = kwargs.get("ws_tpl") or defaults["ws"]
+        self.snapshot_tpl = kwargs.get("snapshot_tpl") or defaults["snapshot"]

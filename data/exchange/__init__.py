@@ -7,13 +7,15 @@
 """
 
 from .base import ExchangeAdapter
-from .binance import BinanceAdapter, BinanceSpotAdapter, BinanceUmFuturesAdapter
+from .binance import (BinanceAdapter, BinanceSpotAdapter,
+                      BinanceUmFuturesAdapter, BinanceJpAdapter)
 from .coincheck import CoincheckAdapter
 
 _REGISTRY = {
     "binance": BinanceAdapter,
     "binance_spot": BinanceSpotAdapter,
     "binance_um_futures": BinanceUmFuturesAdapter,
+    "binance_jp": BinanceJpAdapter,
     "coincheck": CoincheckAdapter,
 }
 
@@ -36,8 +38,12 @@ def get_adapter(name: str, market_type: str | None = None,
                      if k in ("ws_tpl", "snapshot_tpl") and v is not None}
         return BinanceAdapter(market_type=market_type or "um_futures", **bn_kwargs)
 
+    if name_lower == "binance_jp":
+        jp_kwargs = {k: v for k, v in kwargs.items()
+                     if k in ("ws_tpl", "snapshot_tpl") and v is not None}
+        return BinanceJpAdapter(**jp_kwargs)
+
     if name_lower == "coincheck":
-        # Coincheck 不接 market_type/ws_tpl（WS 地址固定，市场默认 spot）
         cc_kwargs = {k: v for k, v in kwargs.items() if k in ()}
         return CoincheckAdapter(**cc_kwargs)
 

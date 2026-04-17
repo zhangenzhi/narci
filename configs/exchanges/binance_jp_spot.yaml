@@ -1,0 +1,46 @@
+recorder:
+  # ============================================================
+  # Binance Japan 现货录制配置（日本 IP 可用）
+  #
+  # WS 用 data-stream.binance.vision（纯行情端点，绕开日本 IP 封锁）
+  # REST 快照用 api.binance.com（/api/v3 从日本 IP 可访问）
+  # 消息格式与 Binance 国际版一致，复用 BinanceAdapter 解析逻辑
+  # ============================================================
+
+  exchange: binance_jp
+  market_type: spot
+
+  # Binance 上全部 24 个 JPY 交易对（与 binance_spot.yaml 一致）
+  symbols:
+    - "BTCJPY"
+    - "ETHJPY"
+    - "SOLJPY"
+    - "BNBJPY"
+    - "XRPJPY"
+    - "DOGEJPY"
+    - "ADAJPY"
+    - "LINKJPY"
+    - "LTCJPY"
+    - "BCHJPY"
+    - "TRXJPY"
+    - "SUIJPY"
+    - "NEARJPY"
+    - "APTJPY"
+    - "POLJPY"
+    - "XLMJPY"
+    - "SHIBJPY"
+    - "PEPEJPY"
+    - "FETJPY"
+    - "TAOJPY"
+    - "SEIJPY"
+    - "LPTJPY"
+    - "IOTXJPY"
+    - "TRUMPJPY"
+
+  interval_ms: 100
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5

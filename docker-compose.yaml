@@ -34,7 +34,30 @@ services:
         max-file: "5"
 
   # =====================================================================
-  # recorder-binance-spot: Binance 现货 JPY 全交易对（需非日本 IP）
+  # recorder-binance-jp: Binance Japan 现货 JPY（日本 IP 可用，WS 走 data-stream.binance.vision）
+  # Profile: tokyo
+  # =====================================================================
+  recorder-binance-jp:
+    build: .
+    container_name: narci-recorder-binance-jp
+    profiles: [tokyo]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/binance_jp_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8080:8079"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =====================================================================
+  # recorder-binance-spot: Binance 国际现货（需非日本 IP）
   # Profile: global
   # =====================================================================
   recorder-binance-spot:
