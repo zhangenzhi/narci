@@ -7,6 +7,7 @@ Binance Vision 历史数据源。
 
 import hashlib
 import io
+import logging
 import os
 import zipfile
 from pathlib import Path
@@ -17,6 +18,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .base import HistoricalSource
+
+logger = logging.getLogger(__name__)
 
 
 class BinanceVisionSource(HistoricalSource):
@@ -75,12 +78,14 @@ class BinanceVisionSource(HistoricalSource):
         # Offline mode: refuse outbound HTTP. Set BINANCE_VISION_OFFLINE=1 on
         # machines that must not reach data.binance.vision directly. The donor
         # machine downloads + pushes parquets to Drive; this machine reads them
-        # locally only after rclone sync.
+        # locally only after rclone sync. Warn + return None so bulk runs (e.g.
+        # `compact --symbol ALL`) keep going on the next date.
         if os.environ.get("BINANCE_VISION_OFFLINE", "").strip():
-            raise FileNotFoundError(
-                f"BINANCE_VISION_OFFLINE=1 and local parquet missing: {final_path}. "
-                f"Donor machine must download + push to Drive first."
+            logger.warning(
+                f"BINANCE_VISION_OFFLINE=1, local parquet missing: {final_path}. "
+                f"Skipping cross-validation; donor must push first."
             )
+            return None
 
         url = self._build_url(symbol, date_str, data_type, market_type)
         temp_zip = str(final_path) + ".zip"
