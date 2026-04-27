@@ -38,6 +38,10 @@ class BaseBroker:
         self.trade_history: list[dict] = []
         self.equity_history: list[dict] = []
 
+        # 事件驱动引擎接管时由 engine 注入；非空时 place_limit_order 会同步注册到此 orderbook，
+        # 而 update_l2 不再触发本地的 _match_limit_orders（fills 由 engine 通过 apply_fill 推回来）。
+        self.orderbook = None
+
     # --- 行情更新 ---
     def update_l1(self, symbol, timestamp, price):
         self.current_timestamp = timestamp
@@ -49,7 +53,9 @@ class BaseBroker:
         self.current_asks[symbol] = asks
         if bids and asks:
             self.current_price[symbol] = (bids[0][0] + asks[0][0]) / 2.0
-        self._match_limit_orders(symbol, bids, asks)
+        # event-driven 模式下 orderbook 接管限价单撮合，不再走 best-price-cross 简化模型
+        if self.orderbook is None:
+            self._match_limit_orders(symbol, bids, asks)
 
     # --- 限价单 (Maker) ---
     def _match_limit_orders(self, symbol, bids, asks):
@@ -145,9 +151,30 @@ class SpotBroker(BaseBroker):
         oid = self.order_counter
         self.active_orders[oid] = {
             "symbol": symbol, "side": side, "price": price,
-            "qty": qty, "signal_info": signal_info,
+            "qty": qty, "remaining": qty, "signal_info": signal_info,
         }
+        # 同步到事件驱动 orderbook（如已注入）。orderbook 拒绝（aggressive cross / 满单）则同步回滚。
+        if self.orderbook is not None:
+            from .orderbook import ORDER_BUY, ORDER_SELL
+            ob_side = ORDER_BUY if side == "BUY" else ORDER_SELL
+            if not self.orderbook.place_limit_order(oid, ob_side, price, qty):
+                self.active_orders.pop(oid, None)
+                return None
         return oid
+
+    def apply_fill(self, oid: int, fill_qty: float, fill_price: float, is_maker: bool = True):
+        """
+        由 EventBacktestEngine 在 orderbook 报告成交时调用。
+        支持部分成交：active_orders[oid] 的 remaining 减到 0 才弹出。
+        """
+        order = self.active_orders.get(oid)
+        if order is None:
+            return
+        order["remaining"] -= fill_qty
+        self._execute(order["symbol"], order["side"], fill_qty, fill_price,
+                      is_maker=is_maker, signal_info=order["signal_info"])
+        if order["remaining"] <= 1e-10:
+            self.active_orders.pop(oid, None)
 
     # --- 市价单 ---
     def buy(self, symbol, quantity, use_l2=True, signal_info=None):
