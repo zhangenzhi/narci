@@ -137,7 +137,13 @@ class SpotBroker(BaseBroker):
         self.avg_costs: dict[str, float] = {}
 
     # --- 限价单 ---
-    def place_limit_order(self, symbol, side, price, qty, signal_info=None):
+    def place_limit_order(self, symbol, side, price, qty, signal_info=None,
+                          post_only: bool = True):
+        """
+        post_only=True (默认): 价格 cross spread 即被拒绝（maker-only）
+        post_only=False: marketable limit —— 越价部分立即按 taker 吃流动性,
+                         剩余部分以 limit 价位挂入 book (GTC).
+        """
         side = side.upper()
         if side == "BUY":
             if self.cash < price * qty:
@@ -147,20 +153,71 @@ class SpotBroker(BaseBroker):
                 return None
         else:
             return None
+
+        # SymbolSpec 校验（仅当 engine 注入了 spec 时）
+        engine = getattr(self, "engine", None)
+        if engine is not None and getattr(engine, "symbol_spec", None) is not None:
+            err = engine.symbol_spec.validate(price, qty)
+            if err is not None:
+                return None
+
         self.order_counter += 1
         oid = self.order_counter
         self.active_orders[oid] = {
             "symbol": symbol, "side": side, "price": price,
             "qty": qty, "remaining": qty, "signal_info": signal_info,
+            "post_only": post_only,
         }
-        # 同步到事件驱动 orderbook（如已注入）。orderbook 拒绝（aggressive cross / 满单）则同步回滚。
+
+        # 事件驱动模式 + 有 latency 配置 → 通过 engine 队列延迟入 book
+        if engine is not None and getattr(engine, "order_latency_ms", 0) > 0:
+            engine._queue_op("place", oid, side, price, qty, post_only)
+            return oid
+
+        # 直入 book（无延迟、或非事件驱动模式）
         if self.orderbook is not None:
-            from .orderbook import ORDER_BUY, ORDER_SELL
-            ob_side = ORDER_BUY if side == "BUY" else ORDER_SELL
-            if not self.orderbook.place_limit_order(oid, ob_side, price, qty):
-                self.active_orders.pop(oid, None)
+            self._submit_to_book(oid, side, price, qty, post_only)
+            if oid not in self.active_orders:
                 return None
         return oid
+
+    def _submit_to_book(self, oid, side, price, qty, post_only):
+        """
+        实际把订单挂到 orderbook（由 broker 直接调或 engine drain pending 调）。
+        marketable 时先吃流动性、再把剩余挂入；book 拒绝（满单）回滚 active_orders。
+        """
+        from .orderbook import ORDER_BUY, ORDER_SELL
+        ob_side = ORDER_BUY if side == "BUY" else ORDER_SELL
+        ba = self.orderbook.best_ask()
+        bb = self.orderbook.best_bid()
+        crosses = (side == "BUY" and ba > 0 and price >= ba) or \
+                  (side == "SELL" and bb > 0 and price <= bb)
+
+        if crosses and post_only:
+            self.active_orders.pop(oid, None)
+            return
+
+        if crosses and not post_only:
+            # 走 sweep_marketable 吃 limit price 内的流动性（taker fees）
+            filled, vwap = self.orderbook.sweep_marketable(ob_side, price, qty)
+            if filled > 0:
+                # 吃到的部分直接通过 _execute 记账（taker）
+                self._execute(self.active_orders[oid]["symbol"], side,
+                              filled, vwap, is_maker=False,
+                              signal_info=self.active_orders[oid]["signal_info"])
+                self.active_orders[oid]["remaining"] -= filled
+            remaining = self.active_orders[oid]["remaining"]
+            if remaining <= 1e-10:
+                self.active_orders.pop(oid, None)
+                return
+            # 剩余以 limit 价位挂入（被动）
+            if not self.orderbook.place_limit_order(oid, ob_side, price, remaining):
+                self.active_orders.pop(oid, None)
+            return
+
+        # 完全被动 maker
+        if not self.orderbook.place_limit_order(oid, ob_side, price, qty):
+            self.active_orders.pop(oid, None)
 
     def apply_fill(self, oid: int, fill_qty: float, fill_price: float, is_maker: bool = True):
         """
@@ -175,6 +232,25 @@ class SpotBroker(BaseBroker):
                       is_maker=is_maker, signal_info=order["signal_info"])
         if order["remaining"] <= 1e-10:
             self.active_orders.pop(oid, None)
+
+    def cancel_order(self, oid: int) -> bool:
+        """
+        策略侧调用的取消接口。事件驱动模式下走延迟队列（cancel ack 也有 RTT），
+        与 place 的延迟语义对称。
+        """
+        engine = getattr(self, "engine", None)
+        if engine is not None and getattr(engine, "order_latency_ms", 0) > 0:
+            if oid not in self.active_orders:
+                return False
+            engine._queue_op("cancel", oid)
+            return True
+        # 立即取消
+        order = self.active_orders.pop(oid, None)
+        if order is None:
+            return False
+        if self.orderbook is not None:
+            self.orderbook.cancel_order(oid)
+        return True
 
     # --- 市价单 ---
     def buy(self, symbol, quantity, use_l2=True, signal_info=None):

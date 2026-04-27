@@ -254,3 +254,55 @@ class Orderbook:
                 self._next_slot_hint = i
                 return True
         return False
+
+    def sweep_marketable(self, side: int, price_cap: float, qty: float):
+        """
+        Walk acceptable levels for a marketable limit order. Mutates the book
+        (decrements level qtys, removes empty levels). Returns (filled_qty, vwap).
+
+        side: ORDER_BUY 走 ask 侧，仅吃 price <= price_cap 的档；
+              ORDER_SELL 走 bid 侧，仅吃 price >= price_cap 的档。
+        """
+        if side == ORDER_BUY:
+            prices = self.ask_prices
+            qtys = self.ask_qtys
+            n_arr = self.n_ask
+        else:
+            prices = self.bid_prices
+            qtys = self.bid_qtys
+            n_arr = self.n_bid
+
+        n = n_arr[0]
+        remaining = qty
+        total_filled = 0.0
+        total_cost = 0.0
+        # 从 [0] 顶档开始走（ask 升序、bid 降序），只要价格还在限价范围内
+        i = 0
+        while i < n_arr[0] and remaining > 1e-12:
+            p = prices[i]
+            if side == ORDER_BUY and p > price_cap:
+                break
+            if side == ORDER_SELL and p < price_cap:
+                break
+            available = qtys[i]
+            fill = available if available < remaining else remaining
+            total_filled += fill
+            total_cost += fill * p
+            remaining -= fill
+            new_q = available - fill
+            if new_q <= 1e-12:
+                # 删档：左移
+                cur_n = n_arr[0]
+                for k in range(i, cur_n - 1):
+                    prices[k] = prices[k + 1]
+                    qtys[k] = qtys[k + 1]
+                prices[cur_n - 1] = 0.0
+                qtys[cur_n - 1] = 0.0
+                n_arr[0] = cur_n - 1
+                # 不递增 i，下一档已经左移到当前位置
+            else:
+                qtys[i] = new_q
+                i += 1
+        if total_filled <= 0:
+            return 0.0, 0.0
+        return total_filled, total_cost / total_filled
