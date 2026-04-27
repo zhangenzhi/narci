@@ -148,14 +148,31 @@ def cmd_compact(symbol, target_date=None):
     
     for d_str in sorted(dates_found):
         count = file_counts[d_str]
-        completion_rate = (count / 1440) * 100
         target_dt = datetime.strptime(d_str, "%Y%m%d").date()
-        
+
+        # 推断 save_interval_sec：从文件名 HHMMSS 的相邻间隔取中位数
+        times_sec = []
+        for f in files:
+            m = re.match(rf"{symbol}_RAW_{d_str}_(\d{{6}})\.parquet", f, re.IGNORECASE)
+            if m:
+                hms = m.group(1)
+                times_sec.append(int(hms[:2]) * 3600 + int(hms[2:4]) * 60 + int(hms[4:6]))
+        times_sec.sort()
+        if len(times_sec) >= 2:
+            diffs = sorted(times_sec[i + 1] - times_sec[i] for i in range(len(times_sec) - 1))
+            interval_sec = max(1, diffs[len(diffs) // 2])
+            expected = max(1, round(86400 / interval_sec))
+            interval_label = f"{interval_sec}s"
+        else:
+            expected = count
+            interval_label = "?"
+        completion_rate = (count / expected) * 100 if expected else 0.0
+
         print(f"\n📅 【处理日期】: {target_dt.strftime('%Y-%m-%d')}")
-        print(f"📦 【碎片完整度】: 发现 {count}/1440 个 1min 文件 (完整率: {completion_rate:.1f}%)")
-        
-        if completion_rate < 99.0:
-            print(f"⚠️ 警告: 存在部分时段掉线或缺失！(缺失约 {1440 - count} 分钟的数据)")
+        print(f"📦 【碎片完整度】: 发现 {count}/{expected} 个 {interval_label} 切片 (完整率: {completion_rate:.1f}%)")
+
+        if completion_rate < 99.0 and expected > 1:
+            print(f"⚠️ 警告: 存在部分时段掉线或缺失！(约 {expected - count} 个 {interval_label} 切片缺失)")
             
         # 从 raw_dir 推断 exchange + market_type (仅对新结构有效)
         #   replay_buffer/realtime/{exchange}/{market}/l2/

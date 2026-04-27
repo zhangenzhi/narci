@@ -1,6 +1,6 @@
 downloader:
-  # 数据存储根目录
-  base_dir: "./replay_buffer/parquet"
+  # 数据存储根目录 (与 main.py compact 的 official_dir 对齐，下载产物可直接用作交叉校验源)
+  base_dir: "./replay_buffer/official_validation"
 
   # 并发控制 (L2数据极大，建议降低线程数以防内存溢出)
   max_workers: 3

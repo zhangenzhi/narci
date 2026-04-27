@@ -6,6 +6,7 @@ Binance Vision 历史数据源。
 """
 
 import hashlib
+import io
 import os
 import zipfile
 from pathlib import Path
@@ -71,6 +72,16 @@ class BinanceVisionSource(HistoricalSource):
         if final_path.exists():
             return str(final_path)
 
+        # Offline mode: refuse outbound HTTP. Set BINANCE_VISION_OFFLINE=1 on
+        # machines that must not reach data.binance.vision directly. The donor
+        # machine downloads + pushes parquets to Drive; this machine reads them
+        # locally only after rclone sync.
+        if os.environ.get("BINANCE_VISION_OFFLINE", "").strip():
+            raise FileNotFoundError(
+                f"BINANCE_VISION_OFFLINE=1 and local parquet missing: {final_path}. "
+                f"Donor machine must download + push to Drive first."
+            )
+
         url = self._build_url(symbol, date_str, data_type, market_type)
         temp_zip = str(final_path) + ".zip"
 
@@ -100,13 +111,31 @@ class BinanceVisionSource(HistoricalSource):
                 os.remove(temp_zip)
 
     def _parse_csv(self, f, data_type: str) -> pd.DataFrame:
+        # Binance Vision aggTrade CSVs gained a header row in 2025; old ones don't.
+        # Detect by checking whether the first cell is numeric, and remap columns by position.
+        data = f.read()
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+        if not data.strip():
+            return pd.DataFrame()
+
         if data_type == "aggTrades":
-            df = pd.read_csv(f, header=None, names=[
+            cols = [
                 "agg_trade_id", "price", "quantity", "first_trade_id",
                 "last_trade_id", "timestamp", "is_buyer_maker", "is_best_match",
-            ])
+            ]
+            first_line = data.split("\n", 1)[0]
+            ncols = len(first_line.split(","))
+            first_cell = first_line.split(",", 1)[0]
+            has_header = not first_cell.lstrip("-").isdigit()
+            df = pd.read_csv(
+                io.StringIO(data),
+                header=0 if has_header else None,
+                names=None if has_header else cols[:ncols],
+            )
+            df.columns = cols[: df.shape[1]]
         else:
-            df = pd.read_csv(f)
+            df = pd.read_csv(io.StringIO(data))
 
         if "timestamp" in df.columns and not df.empty:
             ts_sample = df["timestamp"].max()

@@ -10,4 +10,5 @@ replay_buffer
 
 configs/account.yaml
 .env
+.rclone/
 
