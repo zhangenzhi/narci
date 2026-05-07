@@ -38,7 +38,10 @@ recorder:
   # API 节点配置 (支持动态变量 {streams}, {symbol_upper})
   endpoints:
     um_futures:
-      ws_url: "wss://fstream.binance.com/stream?streams={streams}"
+      # Binance UM split WS endpoints into /public, /market, /private around
+      # 2026-04-23. /market/stream delivers depth + aggTrade + markPrice etc.
+      # in a single connection. Old /stream drops aggTrade silently.
+      ws_url: "wss://fstream.binance.com/market/stream?streams={streams}"
       snapshot_url: "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000"
     spot:
       ws_url: "wss://stream.binance.com:9443/stream?streams={streams}"

@@ -27,7 +27,12 @@ class BinanceAdapter(ExchangeAdapter):
             "snapshot": "https://api.binance.com/api/v3/depth?symbol={symbol_upper}&limit=1000",
         },
         "um_futures": {
-            "ws":       "wss://fstream.binance.com/stream?streams={streams}",
+            # Binance restructured futures WS endpoints around 2026-04-23 into
+            # category-prefixed routes (/public, /market, /private). aggTrade,
+            # markPrice and kline now require /market/; old /stream still
+            # delivers depth but silently drops aggTrade. /market/stream handles
+            # depth too, so one URL covers everything.
+            "ws":       "wss://fstream.binance.com/market/stream?streams={streams}",
             "snapshot": "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000",
         },
     }
