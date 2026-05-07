@@ -111,6 +111,21 @@ async def main():
         ("12. spot aggTrade (different host)",
          "wss://stream.binance.com:9443/ws/btcusdt@aggTrade",
          "aggTrade"),
+        # 2026-04-23 binance restructured futures WS endpoints into
+        # /public, /market, /private categories. aggTrade now requires
+        # /market/ prefix; old /ws and /stream paths got deprecated.
+        ("13. NEW /market/ws aggTrade (post-2026-04-23 endpoint)",
+         f"{BASE}/market/ws/btcusdt@aggTrade",
+         "aggTrade"),
+        ("14. NEW /market/stream aggTrade combined",
+         f"{BASE}/market/stream?streams=btcusdt@aggTrade",
+         "aggTrade"),
+        ("15. NEW /market/stream depth+aggTrade combo",
+         f"{BASE}/market/stream?streams=btcusdt@depth@100ms/btcusdt@aggTrade",
+         "aggTrade"),
+        ("16. NEW /public/stream depth (control for new layout)",
+         f"{BASE}/public/stream?streams=btcusdt@depth@100ms",
+         "depth"),
     ]
 
     results = {}
