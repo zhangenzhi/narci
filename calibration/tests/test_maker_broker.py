@@ -1,0 +1,258 @@
+"""MakerSimBroker v1 unit tests.
+
+Covers: place / cancel / fill via trade event / spec validation /
+post-only emulation / spot-only inventory / queue eat-down.
+"""
+
+from __future__ import annotations
+
+import sys
+
+from backtest.symbol_spec import SymbolSpec
+from calibration import priors as P
+from simulation import MakerSimBroker
+
+
+def _make_broker(*, post_only=True, top1_size=0.02):
+    spec = SymbolSpec(symbol="BTC_JPY", tick_size=1.0, lot_size=1e-8, min_notional=0.0)
+    params = P.get_priors("coincheck", "BTC_JPY")
+    params.top1_size_median = top1_size
+    params.cancel_latency_p50_ms = 100.0  # explicit
+    return MakerSimBroker(params=params, symbol_spec=spec)
+
+
+def _seed_book(broker, ts=1_000_000_000):
+    """Inject a basic snapshot so book is ready."""
+    # Bid side
+    for p, q in [(100, 0.5), (99, 0.5), (98, 0.5)]:
+        broker.apply_market_event(ts, 3, p, q)
+    # Ask side
+    for p, q in [(101, 0.5), (102, 0.5), (103, 0.5)]:
+        broker.apply_market_event(ts, 4, p, q)
+    return ts + 1_000_000  # ns
+
+
+def test_book_seed_makes_state_ready():
+    b = _make_broker()
+    _seed_book(b)
+    state = b.book.get_state(top_n=3)
+    assert state is not None
+    assert state["best_bid"] == 100
+    assert state["best_ask"] == 101
+
+
+def test_place_then_filled_by_trade():
+    b = _make_broker()
+    ts = _seed_book(b)
+    # Place a BUY at price=99 (existing level, joins behind 0.5)
+    cid = b.place_limit(ts, "echo-1", "BUY", 99, 0.1)
+    assert cid == "echo-1"
+    assert "echo-1" in b.active_orders
+    o = b.active_orders["echo-1"]
+    # Queue ahead = 0.5 (existing 99 level qty); top1_size=0.02 → est rank = 25
+    assert o.queue_ahead_qty == 0.5
+    assert o.estimated_queue_position == 25
+
+    # Trade comes that consumes 0.4 at price 99 (qty>0 = aggressive seller hit bid)
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.4)
+    # Our queue: was 0.5 ahead, consumed 0.4 → 0.1 ahead, no fill yet
+    assert abs(o.queue_ahead_qty - 0.1) < 1e-9, o.queue_ahead_qty
+    assert o.qty_filled == 0
+    assert b.inventory == 0
+
+    # Another trade consumes another 0.2 — first 0.1 finishes queue, then 0.1 of us fills
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.2)
+    assert abs(o.queue_ahead_qty) < 1e-9
+    assert abs(o.qty_filled - 0.1) < 1e-9
+    assert abs(b.inventory - 0.1) < 1e-9
+    assert b.cash == -0.1 * 99
+    assert "echo-1" not in b.active_orders  # fully filled
+    assert len(b.sim_fills) == 1
+
+
+def test_post_only_rejects_cross():
+    b = _make_broker()
+    _seed_book(b)
+    # BUY at price 101 = best_ask → would cross (taker). Must reject.
+    cid = b.place_limit(1_001_000_000, "echo-2", "BUY", 101, 0.05)
+    assert cid is None
+    assert "echo-2" not in b.active_orders
+    # The reject should have logged a PLACE_REJECT decision with WOULD_CROSS_ASK
+    rejects = [d for d in b.sim_decisions if d["event_type"] == "PLACE_REJECT"]
+    assert len(rejects) == 1
+    assert "WOULD_CROSS_ASK" in rejects[0]["reason"]
+
+
+def test_spot_only_inventory_blocks_short_sell():
+    b = _make_broker()
+    _seed_book(b)
+    cid = b.place_limit(1_001_000_000, "echo-3", "SELL", 102, 0.005)
+    assert cid is None
+    rejects = [d for d in b.sim_decisions if d["event_type"] == "PLACE_REJECT"]
+    assert len(rejects) == 1
+    assert "INVENTORY_INSUFFICIENT" in rejects[0]["reason"]
+
+
+def test_sell_after_buy_works():
+    b = _make_broker()
+    ts = _seed_book(b)
+    # Build inventory by buying via trade fill
+    b.place_limit(ts, "echo-4", "BUY", 99, 0.05)
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 1.0)  # huge sell sweep, fills us after 0.5 queue
+    assert b.inventory > 0
+    # Now we can place a SELL
+    ts += 1_000_000
+    cid = b.place_limit(ts, "echo-5", "SELL", 102, 0.05)
+    assert cid == "echo-5"
+
+
+def test_cancel_with_latency():
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "echo-6", "BUY", 99, 0.05)
+    ts += 1_000_000
+    ok = b.cancel(ts, "echo-6")
+    assert ok
+    assert "echo-6" in b.active_orders   # still active until ack
+    assert "echo-6" in b.pending_cancels
+
+    # Below ack time
+    ts_pending = ts + int(50e6)  # 50 ms — under 100 ms p50
+    b.apply_market_event(ts_pending, 0, 95, 0.1)
+    assert "echo-6" in b.active_orders
+
+    # Past ack time
+    ts_after = ts + int(150e6)  # 150 ms — past p50
+    b.apply_market_event(ts_after, 0, 95, 0.0)
+    assert "echo-6" not in b.active_orders
+    assert "echo-6" not in b.pending_cancels
+    assert len(b.sim_cancels) == 1
+    cxl = b.sim_cancels[0]
+    assert cxl["final_state"] == "CANCELLED"
+    assert abs(cxl["cancel_latency_ms"] - 100.0) < 1e-6
+
+
+def test_filled_during_cancel():
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "echo-7", "BUY", 99, 0.05)
+    o = b.active_orders["echo-7"]
+    # First eat the 0.5 queue ahead (full sweep)
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.5)
+    assert abs(o.queue_ahead_qty) < 1e-9
+    # Issue cancel — order enters cancel pipeline
+    ts += 1_000_000
+    b.cancel(ts, "echo-7")
+    # Trade hits us BEFORE cancel ack
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.05)
+    # Order is fully filled but still tracked in active_orders so the
+    # imminent cancel-ack can emit FILLED_DURING_CANCEL with full info
+    assert "echo-7" in b.active_orders
+    assert b.active_orders["echo-7"].state == "FILLED"
+    assert b.sim_fills, "should have one fill"
+
+    # Now process cancel ack — should record FILLED_DURING_CANCEL and finally
+    # remove the order
+    ts += int(200e6)  # past p50
+    b.apply_market_event(ts, 0, 95, 0.1)
+    assert "echo-7" not in b.active_orders
+    assert b.sim_cancels
+    assert b.sim_cancels[0]["final_state"] == "FILLED_DURING_CANCEL"
+
+
+def test_cancel_unknown_oid_returns_false():
+    b = _make_broker()
+    _seed_book(b)
+    assert b.cancel(2_000_000_000, "no-such-oid") is False
+
+
+def test_double_cancel_returns_false():
+    b = _make_broker()
+    ts = _seed_book(b)
+    b.place_limit(ts, "echo-8", "BUY", 99, 0.05)
+    ts += 1_000_000
+    assert b.cancel(ts, "echo-8") is True
+    assert b.cancel(ts, "echo-8") is False  # already in pipeline
+
+
+def test_book_qty_increase_does_not_advance_queue():
+    """When level qty *grows*, our queue_ahead_qty must NOT decrease.
+    (New entrants go behind us, not in front.)"""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "echo-9", "BUY", 99, 0.05)
+    o = b.active_orders["echo-9"]
+    initial_ahead = o.queue_ahead_qty
+    ts += 1_000_000
+    # Someone adds 1.0 BTC at price 99 (level grows from 0.5 to 1.5)
+    b.apply_market_event(ts, 0, 99, 1.5)
+    # Queue ahead should be unchanged
+    assert abs(o.queue_ahead_qty - initial_ahead) < 1e-9
+
+
+def test_book_qty_decrease_advances_queue():
+    """When level qty shrinks (cancel ahead of us), queue_ahead reduces."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "echo-10", "BUY", 99, 0.05)
+    o = b.active_orders["echo-10"]
+    initial_ahead = o.queue_ahead_qty
+    assert initial_ahead == 0.5
+    ts += 1_000_000
+    # Level qty drops from 0.5 → 0.2 (someone cancelled 0.3)
+    b.apply_market_event(ts, 0, 99, 0.2)
+    # Our queue_ahead should drop by 0.3
+    assert abs(o.queue_ahead_qty - 0.2) < 1e-9
+
+
+def test_stats_reports_uncalibrated():
+    b = _make_broker()
+    s = b.stats()
+    assert s["uncalibrated"] is True
+    assert s["active_orders"] == 0
+    assert s["n_fills"] == 0
+
+
+def test_validate_rejects_bad_tick():
+    b = _make_broker()
+    _seed_book(b)
+    # tick_size=1.0; price 99.5 not aligned
+    cid = b.place_limit(1_001_000_000, "echo-11", "BUY", 99.5, 0.05)
+    assert cid is None
+    assert any("SPEC" in d.get("reason", "") for d in b.sim_decisions)
+
+
+def test_min_notional_enforced():
+    spec = SymbolSpec(symbol="BTC_JPY", tick_size=1.0, lot_size=1e-8, min_notional=10000.0)
+    params = P.get_priors("coincheck", "BTC_JPY")
+    b = MakerSimBroker(params=params, symbol_spec=spec)
+    _seed_book(b)
+    # 99 * 0.001 = 99 << 10000
+    cid = b.place_limit(1_001_000_000, "echo-12", "BUY", 99, 0.001)
+    assert cid is None
+    assert any("min_notional" in d.get("reason", "") for d in b.sim_decisions)
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"  ✓ {fn.__name__}")
+        except AssertionError as e:
+            print(f"  ✗ {fn.__name__}: {e}")
+            failed += 1
+        except Exception as e:
+            import traceback
+            print(f"  ✗ {fn.__name__}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            failed += 1
+    print()
+    print(f"{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(failed)

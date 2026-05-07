@@ -1,0 +1,202 @@
+"""FeatureBuilder smoke tests.
+
+Verifies update_event + get_features + get_feature_sequence behave on
+synthetic data. Doesn't validate exact feature values (that requires
+spec-level review); just shape + finite-vs-NaN behavior.
+"""
+
+from __future__ import annotations
+
+import math
+import sys
+
+import numpy as np
+
+from features import FEATURE_NAMES, FEATURES_VERSION, FeatureBuilder
+
+
+def _seed(fb: FeatureBuilder, ts0: int = 1_700_000_000_000):
+    """Seed each venue with a snapshot + a few trades."""
+    for v in ("cc", "bj", "um"):
+        # snapshots
+        fb.update_event(v, ts0, 3, 100, 0.5)
+        fb.update_event(v, ts0, 3, 99, 0.5)
+        fb.update_event(v, ts0, 4, 101, 0.5)
+        fb.update_event(v, ts0, 4, 102, 0.5)
+        # trades over 30 seconds
+        for k in range(30):
+            ts = ts0 + (k + 1) * 1000
+            sign = 1 if k % 2 else -1
+            fb.update_event(v, ts, 2, 100.5, sign * 0.01)
+
+
+def test_features_version_constant():
+    assert isinstance(FEATURES_VERSION, str)
+    assert FEATURES_VERSION
+
+
+def test_feature_names_include_baseline():
+    assert "r_um" in FEATURE_NAMES
+    assert "basis_bj_bps" in FEATURE_NAMES
+    assert "hour_sin" in FEATURE_NAMES
+
+
+def test_get_features_returns_dict_after_seeding():
+    fb = FeatureBuilder()
+    _seed(fb)
+    feats = fb.get_features()
+    assert isinstance(feats, dict)
+    # all canonical names present
+    for n in FEATURE_NAMES:
+        assert n in feats, f"missing {n}"
+
+
+def test_get_features_no_seed_returns_nans():
+    """Empty builder: features should be mostly NaN, no exception."""
+    fb = FeatureBuilder()
+    feats = fb.get_features(ts_ms=1_700_000_000_000)
+    # at least r_um etc. should be NaN since no data
+    assert math.isnan(feats["r_um"])
+
+
+def test_basis_finite_when_books_aligned():
+    fb = FeatureBuilder()
+    _seed(fb)
+    feats = fb.get_features()
+    # basis_bj_bps should be finite (CC and BJ have same prices)
+    assert not math.isnan(feats["basis_bj_bps"])
+
+
+def test_hour_features_in_range():
+    fb = FeatureBuilder()
+    _seed(fb)
+    feats = fb.get_features()
+    assert -1.0 <= feats["hour_sin"] <= 1.0
+    assert -1.0 <= feats["hour_cos"] <= 1.0
+
+
+def test_is_healthy_after_seed():
+    fb = FeatureBuilder()
+    _seed(fb)
+    assert fb.is_healthy(max_stale_sec=120.0)
+
+
+def test_is_healthy_returns_false_without_data():
+    fb = FeatureBuilder()
+    assert not fb.is_healthy()
+
+
+def test_get_feature_sequence_shape():
+    fb = FeatureBuilder()
+    _seed(fb)
+    # call get_features a few times to populate snapshot history
+    for k in range(10):
+        fb.update_event("cc", 1_700_000_030_000 + k * 1000, 2, 100.5, 0.001)
+        fb.get_features()
+    arr = fb.get_feature_sequence(window_sec=5, step_sec=1)
+    if arr is not None:
+        # shape (5, len(FEATURE_NAMES))
+        assert arr.shape[0] == 5
+        assert arr.shape[1] == len(FEATURE_NAMES)
+
+
+def test_tier2_features_finite_after_book_updates():
+    """All tier2 (L2 imbalance / microprice) should be finite once the
+    book has been updated with bid+ask snapshot + at least one book event.
+    Regression from v1 where these were placeholder NaN."""
+    import math
+    fb = FeatureBuilder(lookback_seconds=300)
+    ts = 1_700_000_000_000
+    # snapshots — populate book_metric_history
+    for v in ("cc", "bj"):
+        fb.update_event(v, ts, 3, 100, 0.5)
+        fb.update_event(v, ts, 3, 99, 0.3)
+        fb.update_event(v, ts, 4, 101, 0.4)
+        fb.update_event(v, ts, 4, 102, 0.2)
+    # also feed UM (basis_um needs UM mid)
+    fb.update_event("um", ts, 3, 100, 0.5)
+    fb.update_event("um", ts, 4, 101, 0.5)
+    # need at least one trade for r_cc lag
+    for v in ("cc", "bj", "um"):
+        for k in range(5):
+            fb.update_event(v, ts + 1000 * k, 2, 100.5, 0.001)
+
+    feats = fb.get_features()
+    tier2 = [
+        "cc_l2_top1_imb", "cc_l2_top5_imb",
+        "cc_l2_imb_top1_5s", "cc_l2_imb_top5_5s",
+        "cc_l2_micro_dev_bps", "cc_micro_dev_5s",
+        "cc_l2_spread_bps",
+        "bj_l2_top1_imb", "bj_l2_top5_imb", "l2_imb_diff",
+    ]
+    for f in tier2:
+        assert not math.isnan(feats[f]), f"{f} should be finite, got NaN"
+
+
+def test_long_window_no_count_truncation():
+    """Regression: maxlen=400 used to silently drop 30s data on UM
+    (14 trades/sec → 30s × 14 = 420 trades > 400). Now history is
+    time-bounded, not count-bounded."""
+    fb = FeatureBuilder(lookback_seconds=300)
+    ts0 = 1_700_000_000_000
+    # snapshots so book ready
+    for v in ("um", "cc", "bj"):
+        fb.update_event(v, ts0, 3, 100, 0.5)
+        fb.update_event(v, ts0, 4, 101, 0.5)
+    # 14 UM trades/sec for 30 seconds = 420 trades. All should be retained.
+    for k in range(420):
+        ts = ts0 + (k * 71)  # 71 ms intervals → 14.08 trades/sec
+        fb.update_event("um", ts, 2, 100.5, (-1) ** k * 0.01)
+    # All 420 in window since lookback=300s
+    um_state = fb._venues["um"]
+    assert len(um_state.trades.history) == 420
+    # 30s imbalance should reflect all 420 trades, not just last 400
+    feats = fb.get_features(ts0 + 420 * 71)
+    # imb_30s should be near 0 since alternating signs
+    assert abs(feats["um_imb_30s_norm"]) < 0.05
+
+
+def test_trim_drops_old_data():
+    """When new event arrives with ts > old + lookback, old data is trimmed."""
+    fb = FeatureBuilder(lookback_seconds=10)  # 10s lookback for fast test
+    ts0 = 1_700_000_000_000
+    for v in ("um", "cc", "bj"):
+        fb.update_event(v, ts0, 3, 100, 0.5)
+        fb.update_event(v, ts0, 4, 101, 0.5)
+    # Inject 100 trades in window
+    for k in range(100):
+        fb.update_event("um", ts0 + k * 50, 2, 100.5, 0.001)
+    assert len(fb._venues["um"].trades.history) == 100
+    # Far-future event should trim everything past window
+    fb.update_event("um", ts0 + 60_000, 2, 100.5, 0.001)  # 60s later
+    # Only the last (60s event) should remain
+    assert len(fb._venues["um"].trades.history) == 1
+
+
+def test_stats_shape():
+    fb = FeatureBuilder()
+    _seed(fb)
+    s = fb.stats()
+    assert s["features_version"] == FEATURES_VERSION
+    assert s["feature_count"] == len(FEATURE_NAMES)
+    assert "cc" in s["venues_state"]
+
+
+if __name__ == "__main__":
+    fns = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
+    failed = 0
+    for fn in fns:
+        try:
+            fn()
+            print(f"  ✓ {fn.__name__}")
+        except AssertionError as e:
+            print(f"  ✗ {fn.__name__}: {e}")
+            failed += 1
+        except Exception as e:
+            import traceback
+            print(f"  ✗ {fn.__name__}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            failed += 1
+    print()
+    print(f"{len(fns) - failed}/{len(fns)} passed")
+    sys.exit(failed)
