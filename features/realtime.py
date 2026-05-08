@@ -320,12 +320,25 @@ class FeatureBuilder:
             # on busy books (UM 1000+ levels × 1k events/sec = catastrophic).
             last = self._last_metric_ts.get(venue, 0)
             if ts_ms >= last + self._metric_sample_interval_ms:
-                # _record_book_metric returns False when book not yet ready
-                # (one side empty). Only mark last_metric_ts on success so
-                # we don't burn the throttle window on a no-op call during
-                # snapshot bootstrap.
-                if self._record_book_metric(v, ts_ms):
+                # P2 fix 2026-05-09: gate on book-has-both-sides BEFORE
+                # touching the throttle. Previous logic ("only mark on
+                # success") let snapshot batches — which share a single
+                # ts across thousands of side=3/4 events — bypass throttle
+                # entirely: each event found ts ≥ last+500ms, called
+                # _record_book_metric, partial book returned False, last
+                # stayed at 0, next event repeated. Profile on a 3-min
+                # UM slice: 67,651 _record_book_metric calls vs ~720
+                # expected (94x over) — 12x total wall reduction.
+                #
+                # The refined check is: only attempt + lock throttle if
+                # both sides have at least one level. Pre-bootstrap (one
+                # side cleared, other not yet refilled) is skipped without
+                # consuming throttle so the FIRST sample after batch
+                # completion still fires.
+                book = v.book
+                if book.is_ready and book.bids and book.asks:
                     self._last_metric_ts[venue] = ts_ms
+                    self._record_book_metric(v, ts_ms)
         if ts_ms > self._last_ts_ms:
             self._last_ts_ms = ts_ms
 

@@ -173,6 +173,63 @@ def test_trim_drops_old_data():
     assert len(fb._venues["um"].trades.history) == 1
 
 
+def test_metric_sample_throttle_caps_at_interval():
+    """P2 fix 2026-05-09: snapshot-batch throttle bypass regression.
+
+    A snapshot batch consists of thousands of side=3/4 events sharing the
+    same ts. The pre-fix throttle ("only update last_metric_ts on success")
+    let every event in the batch attempt _record_book_metric — which
+    failed during early-bootstrap (one side empty), didn't lock the
+    throttle, and so the next event tried again. Profile showed 67,651
+    metric attempts on a 3-min UM slice (94x over the expected ~720).
+
+    This test feeds 1000 side=4 events at the SAME ts after the book is
+    fully populated and asserts that book_metric_history grows by AT MOST
+    a small constant (1-2), not 1000."""
+    from features import FeatureBuilder
+
+    fb = FeatureBuilder(metric_sample_interval_ms=500)
+    base_ts = 1_700_000_000_000
+    # Seed both sides.
+    fb.update_event("um", base_ts, 3, 100.0, 1.0)
+    fb.update_event("um", base_ts, 4, 101.0, 1.0)
+    # Now book is non-empty on both sides; this single sample should fire.
+    initial = len(fb._venues["um"].book_metric_history)
+    assert initial >= 1, "expected at least one metric sample after seed"
+
+    # Inject 1000 side=4 events at the SAME ts (simulating a snapshot batch).
+    for i in range(1000):
+        fb.update_event("um", base_ts, 4, 110.0 + i, 0.1)
+
+    final = len(fb._venues["um"].book_metric_history)
+    # Throttle limits to 1 sample per 500ms; same-ts events all blocked.
+    assert final - initial <= 1, (
+        f"throttle bypass regression: {final - initial} samples added during "
+        f"same-ts snapshot batch (expected ≤ 1)"
+    )
+
+
+def test_metric_sample_skipped_when_one_side_empty():
+    """The refined throttle gate: don't burn the throttle window on a
+    sample attempt when one side of the book is still empty (mid-init).
+    This way the FIRST sample fires as soon as both sides arrive."""
+    from features import FeatureBuilder
+
+    fb = FeatureBuilder(metric_sample_interval_ms=500)
+    base_ts = 1_700_000_000_000
+
+    # Feed only bid snapshot — asks empty.
+    fb.update_event("bj", base_ts, 3, 100.0, 1.0)
+    fb.update_event("bj", base_ts, 3, 99.0, 1.0)
+    # No sample possible (asks empty), throttle should NOT lock.
+    assert len(fb._venues["bj"].book_metric_history) == 0
+
+    # Now add ask side at SAME ts. Throttle should still be unlocked, so
+    # this event fires the sample.
+    fb.update_event("bj", base_ts, 4, 101.0, 1.0)
+    assert len(fb._venues["bj"].book_metric_history) >= 1
+
+
 def test_stats_shape():
     fb = FeatureBuilder()
     _seed(fb)
