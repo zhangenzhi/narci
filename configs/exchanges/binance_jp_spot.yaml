@@ -40,6 +40,13 @@ recorder:
   interval_ms: 100
   save_dir: "./replay_buffer/realtime/"
   save_interval_sec: 600
+
+  # P1-A 修法 (2026-05-08)：每次落盘前 REST 重拉 snapshot 替换内存 book，
+  # 扔掉 WS 漏 delete 累积的 dust。BJ 流量低 + dust 持续严重，这是核心
+  # 治本路径。WS 走 data-stream.binance.vision，REST snapshot 走
+  # api.binance.com /api/v3/depth；24 symbols × 1 次 / 600s = 2.4 req/min。
+  snapshot_refresh_on_save: true
+
   retain_days: 7
 
   retry:

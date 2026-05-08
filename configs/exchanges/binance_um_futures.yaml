@@ -26,6 +26,12 @@ recorder:
   # 多少秒将内存数据落盘一次 (生成一个自包含快照的 parquet 文件)
   # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
   save_interval_sec: 600
+
+  # P1-A 修法 (2026-05-08)：每次 save_loop 落盘前 REST 重拉一次完整 snapshot
+  # 替换内存 book，从源头扔掉 WS 漏 delete 累积的 dust。下游 reconstruct
+  # 不再需要 prune 也能拿到干净的 top1。Binance UM 限流 2400/min/IP，
+  # 6 symbols × 1 次 / 600s = 0.6 req/min，4 个数量级 headroom。
+  snapshot_refresh_on_save: true
   
   # 自动清理: 删除超过 N 天的本地 parquet 文件 (已推送至云端后释放磁盘)
   # 设为 0 则不清理

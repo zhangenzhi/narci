@@ -63,6 +63,14 @@ class L2Recorder:
         self.save_interval = self.config.get("save_interval_sec", 60)
         self.retry_wait = self.config.get("retry", {}).get("wait_seconds", 5)
         self.retain_days = self.config.get("retain_days", 0)
+        # P1-A fix 2026-05-08: opt-in REST snapshot refresh in save_loop.
+        # When True, save_loop fetches a fresh REST snapshot before
+        # writing each periodic snapshot batch, evicting accumulated dust
+        # from the in-memory book at the source. Default False preserves
+        # legacy behavior. See data/l2_recorder.py save_loop docstring.
+        self.snapshot_refresh_on_save = bool(
+            self.config.get("snapshot_refresh_on_save", False)
+        )
 
         # 4. 落盘路径：{save_dir}/{exchange}/{market_type}/l2/
         base_dir = self.config.get("save_dir", "./replay_buffer/realtime")
@@ -225,6 +233,27 @@ class L2Recorder:
     # ------------------------------------------------------------------ #
 
     async def save_loop(self):
+        """Periodic disk flush + (optional) REST snapshot refresh.
+
+        Each save_interval:
+          1. Drain the in-flight diff buffer for each symbol.
+          2. If snapshot_refresh_on_save=True: REST-fetch a fresh order
+             book and atomically install it as the new in-memory book.
+             Discards dust accumulated when WS delete events were missed.
+             Re-aligns the WS stream the same way a reconnect would —
+             setting is_initialized=False during the await means concurrent
+             depth events buffer in pre_align_buffer instead of mutating
+             the about-to-be-replaced book.
+          3. Inject a side=3/4 snapshot batch (from the now-fresh book) at
+             the head of the next cycle's buffer so each parquet file is
+             self-contained.
+          4. Write the drained buffer to disk.
+
+        REST refresh failure is non-fatal: log + fall through to dump the
+        in-memory book (legacy behavior). One operator-facing failure mode
+        is rate limiting; with 600s interval × ~6 symbols × ~50ms per call,
+        Binance UM 2400/min limit has 4 orders of magnitude headroom.
+        """
         while self.running:
             await asyncio.sleep(self.save_interval)
             saved = []
@@ -233,10 +262,15 @@ class L2Recorder:
                 if not self.buffers[sym] or not self.stream_aligned[sym]:
                     continue
 
-                # 原子取出 + 注入下一周期快照（side=3/4），保证文件自包含
+                # Step 1: atomic buffer drain
                 data = self.buffers[sym]
                 self.buffers[sym] = []
 
+                # Step 2: optional REST refresh of the in-memory book.
+                if self.snapshot_refresh_on_save:
+                    await self._refresh_book_via_rest(sym)
+
+                # Step 3: inject side=3/4 snapshot batch from current book.
                 now_ms = int(time.time() * 1000)
                 snapshot_records = []
                 for p, q in self.orderbooks[sym]["bids"].items():
@@ -261,6 +295,54 @@ class L2Recorder:
 
             if saved and self.retain_days > 0:
                 await asyncio.to_thread(self._cleanup_old_files)
+
+    async def _refresh_book_via_rest(self, sym: str) -> None:
+        """REST-refresh a single symbol's in-memory book.
+
+        Mirrors the WS reconnect protocol so depth events arriving
+        during the REST round-trip don't get lost or trample the
+        about-to-be-replaced book:
+
+        1. Set is_initialized=False, stream_aligned=False, clear
+           pre_align_buffer. From this point, concurrent _handle_depth
+           callbacks buffer events in pre_align_buffer (see
+           _handle_depth's `not self.is_initialized[sym]` branch).
+        2. Await fetch_snapshot. Yields control to record_stream which
+           may push events into pre_align_buffer.
+        3. Atomically install the new book + last_update_id (no await
+           in this block). Set is_initialized=True so the next depth
+           event triggers re-alignment using the buffered events
+           captured during step 2.
+
+        On REST failure, restore is_initialized/stream_aligned to True
+        so the existing in-memory book continues to be used (legacy
+        path) — we lose the dust eviction this cycle but don't drop
+        the recording.
+        """
+        self.is_initialized[sym] = False
+        self.stream_aligned[sym] = False
+        self.pre_align_buffer[sym] = []
+        try:
+            fresh = await asyncio.wait_for(
+                self.adapter.fetch_snapshot(sym), timeout=10
+            )
+            new_book = {"bids": {}, "asks": {}}
+            for p, q in fresh.get("bids", []):
+                new_book["bids"][float(p)] = float(q)
+            for p, q in fresh.get("asks", []):
+                new_book["asks"][float(p)] = float(q)
+            last_id, _ = self.adapter.parse_snapshot(fresh)
+            # Atomic install — no await between these lines.
+            self.orderbooks[sym] = new_book
+            self.last_update_ids[sym] = last_id
+            self.is_initialized[sym] = True
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 {sym.upper()} REST 重拉 snapshot ({len(new_book['bids'])} bids / {len(new_book['asks'])} asks, last_id={last_id})")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} REST 重拉失败: {e}, 继续用内存 book")
+            # Restore to legacy state — no fresh book installed, but
+            # the existing in-memory book is still valid and aligned.
+            self.is_initialized[sym] = True
+            self.stream_aligned[sym] = True
 
     def _cleanup_old_files(self):
         cutoff = time.time() - self.retain_days * 86400
