@@ -85,8 +85,8 @@ def test_load_unknown_model_kind_raises():
             "train_period_start": "x", "train_period_end": "x",
             "test_period": "x", "test_metrics": {},
             "expected_inference_latency_us": 0,
-            "nyx_features_version": "v2",
-            "narci_features_version_required": "v2",
+            "nyx_features_version": FEATURES_VERSION,
+            "narci_features_version_required": FEATURES_VERSION,
         }
         with open(d / "manifest.json", "w") as f:
             json.dump(manifest, f)
@@ -111,8 +111,8 @@ def test_load_missing_weights_raises():
             "train_period_start": "x", "train_period_end": "x",
             "test_period": "x", "test_metrics": {},
             "expected_inference_latency_us": 0,
-            "nyx_features_version": "v2",
-            "narci_features_version_required": "v2",
+            "nyx_features_version": FEATURES_VERSION,
+            "narci_features_version_required": FEATURES_VERSION,
         }
         with open(d / "manifest.json", "w") as f:
             json.dump(manifest, f)
@@ -164,8 +164,8 @@ def test_manifest_parse_sequence():
         "train_period_start": "x", "train_period_end": "x",
         "test_period": "x", "test_metrics": {},
         "expected_inference_latency_us": 500,
-        "nyx_features_version": "v2",
-        "narci_features_version_required": "v2",
+        "nyx_features_version": FEATURES_VERSION,
+        "narci_features_version_required": FEATURES_VERSION,
     })
     win, step = m.parse_sequence()
     assert win == 60 and step == 1
@@ -182,8 +182,8 @@ def test_manifest_parse_sequence_returns_none_for_snapshot():
         "train_period_start": "x", "train_period_end": "x",
         "test_period": "x", "test_metrics": {},
         "expected_inference_latency_us": 0,
-        "nyx_features_version": "v2",
-        "narci_features_version_required": "v2",
+        "nyx_features_version": FEATURES_VERSION,
+        "narci_features_version_required": FEATURES_VERSION,
     })
     assert m.parse_sequence() is None
 
@@ -225,8 +225,8 @@ def test_unknown_target_kind_rejected():
         "train_period_start": "x", "train_period_end": "x",
         "test_period": "x", "test_metrics": {},
         "expected_inference_latency_us": 0,
-        "nyx_features_version": "v2",
-        "narci_features_version_required": "v2",
+        "nyx_features_version": FEATURES_VERSION,
+        "narci_features_version_required": FEATURES_VERSION,
     }
     try:
         Manifest.from_dict(bad)
@@ -251,8 +251,8 @@ def test_ols_beta_length_mismatch_raises():
             "train_period_start": "x", "train_period_end": "x",
             "test_period": "x", "test_metrics": {},
             "expected_inference_latency_us": 0,
-            "nyx_features_version": "v2",
-            "narci_features_version_required": "v2",
+            "nyx_features_version": FEATURES_VERSION,
+            "narci_features_version_required": FEATURES_VERSION,
         }
         with open(d / "manifest.json", "w") as f:
             json.dump(manifest, f)

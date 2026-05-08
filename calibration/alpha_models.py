@@ -245,9 +245,13 @@ class LGBAlphaModel(AlphaModel):
     def _predict_snapshot(self, x: np.ndarray) -> float:
         # LGB expects 2D input (n_samples, n_features)
         pred = self.booster.predict(x.reshape(1, -1))
-        # Output assumed already in bps (or log-return × 1e4 — convention
-        # depends on training; we just pass through and trust manifest)
-        return float(pred[0])
+        # AlphaModel.predict contract: returns bps. nyx's canonical
+        # target_kind="cc_trade_event_log_return" → raw log-return space
+        # (~1e-4 magnitude). Multiply by 1e4 to match OLS subclass and
+        # honor the bps-out contract. Bug fix 2026-05-08: backtest
+        # threshold (1.0 bps) was filtering out every prediction because
+        # LGB output stayed in raw-log-return units (~5e-5 typical).
+        return float(pred[0]) * 10000.0
 
 
 # ------------------------------------------------------------------ #
