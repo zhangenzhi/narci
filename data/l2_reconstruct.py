@@ -7,7 +7,8 @@ import numpy as np
 _ITEMGETTER_0 = operator.itemgetter(0)
 
 class L2Reconstructor:
-    def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0):
+    def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0,
+                 prune_snapshot_dust: bool = False):
         """
         :param depth_limit: 还原 L2 时保留的深度档位数量
         :param book_staleness_seconds: when get_top1/get_state can't produce
@@ -17,9 +18,20 @@ class L2Reconstructor:
             NaN" pattern where cross-spread / dust transients briefly
             invalidate the book — the staleness window keeps features
             valid for ~10s of recovery time. Per-call override available.
+        :param prune_snapshot_dust: P1-C fix 2026-05-08. The narci recorder
+            writes snapshots from its in-memory book, which accumulates
+            dust when WS delete events are dropped. When True, at the
+            close of every snapshot batch, walk to a non-crossing top
+            pair via _resolve_top_non_crossing and remove all bids at
+            or above that ask (cross-side dust) and asks at or below
+            that bid. Conservative: only removes definitely-crossing
+            levels; legitimate deep liquidity is kept. Default False
+            preserves old behavior. See docs for staleness fallback (P1)
+            for how this composes with the cache-fallback path.
         """
         self.depth_limit = depth_limit
         self.book_staleness_seconds = book_staleness_seconds
+        self.prune_snapshot_dust = prune_snapshot_dust
         self.bids = {}
         self.asks = {}
         self.is_ready = False
@@ -219,6 +231,15 @@ class L2Reconstructor:
         No emit happens here — query state via get_state() / get_snapshot().
         """
         ts = int(ts)
+        # P1-C fix: when configured, prune cross-side dust at the close
+        # of a snapshot batch. The first non-snapshot event after a
+        # batch (sides 0/1/2 while _snapshot_batch_ts is set) is the
+        # natural close trigger; prune runs BEFORE the current event
+        # modifies the book.
+        if (self.prune_snapshot_dust
+                and self._snapshot_batch_ts is not None
+                and side in (0, 1, 2)):
+            self.prune_dust()
         if side in (0, 3):
             if side == 3 and ts != self._last_snap_bid_ts:
                 # New snapshot batch — atomically replace bid book. Old
@@ -444,6 +465,43 @@ class L2Reconstructor:
                     stale["taker_sell_vol"] = self.period_taker_sell_vol
                     return stale
         return None
+
+    def prune_dust(self) -> int:
+        """Remove cross-side dust that the recorder's in-memory book
+        accumulated and re-emitted in its snapshot batch.
+
+        Walks to a non-crossing top pair via _resolve_top_non_crossing,
+        then removes:
+          - bids priced >= validated best_ask  (dust above market)
+          - asks priced <= validated best_bid  (dust below market)
+        Levels at validated bp/ap themselves are kept.
+
+        No-op if book is empty or has no resolvable non-crossing pair.
+        Returns the number of levels pruned (for telemetry).
+
+        Conservative by design: deep liquidity (bids well below market,
+        asks well above market) is left intact; only definitely-crossing
+        levels are touched. False-positive pruning of a legitimate
+        thin-qty level is bounded by _resolve_top_non_crossing's own
+        skip-by-qty heuristic — a real top sometimes loses its top
+        position when a bigger-qty stale level masks it, but the result
+        is still a usable mid (slightly worse spread), not None."""
+        if not self.bids or not self.asks:
+            return 0
+        bp, ap = self._resolve_top_non_crossing()
+        if bp is None or ap is None:
+            return 0
+        bids_to_drop = [p for p in self.bids if p >= ap and p != bp]
+        asks_to_drop = [p for p in self.asks if p <= bp and p != ap]
+        for p in bids_to_drop:
+            self.bids.pop(p, None)
+        for p in asks_to_drop:
+            self.asks.pop(p, None)
+        # Refresh top-1 cache to validated values; subsequent get_top1
+        # short-circuits the resolve walk.
+        self._best_bid_p = bp
+        self._best_ask_p = ap
+        return len(bids_to_drop) + len(asks_to_drop)
 
     def _resolve_top_non_crossing(self):
         """Walk sorted bids (desc) and asks (asc) simultaneously, skipping

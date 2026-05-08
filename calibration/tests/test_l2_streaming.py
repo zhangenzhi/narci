@@ -370,6 +370,113 @@ def test_stale_state_taker_volumes_remain_live():
     assert s2["taker_buy_vol"] == 0.7, "stale read should expose current taker vol"
 
 
+def test_prune_dust_strips_cross_levels_at_batch_close():
+    """Snapshot batch with dust above ask + below bid → first non-snapshot
+    event triggers prune; cross levels removed, validated top kept."""
+    rec = L2Reconstructor(depth_limit=10, prune_snapshot_dust=True)
+    rec.reset()
+    ts = 1000
+    # Real bids 100/99/98, dust bid 110 (above market)
+    for p, q in [(110, 0.05), (100, 1.0), (99, 1.0), (98, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    # Real asks 101/102/103, dust ask 95 (below market)
+    for p, q in [(95, 0.05), (101, 1.0), (102, 1.0), (103, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+
+    # Trigger batch close with a non-snapshot event.
+    rec.apply_event(2000, 0, 99.5, 0.3)
+
+    # Dust gone, real levels (incl. the new 99.5) remain.
+    assert sorted(rec.bids) == [98, 99, 99.5, 100], sorted(rec.bids)
+    assert sorted(rec.asks) == [101, 102, 103], sorted(rec.asks)
+    top1 = rec.get_top1()
+    assert top1["best_bid"] == 100
+    assert top1["best_ask"] == 101
+    assert top1["mid_price"] == 100.5
+
+
+def test_prune_disabled_by_default_keeps_dust():
+    """Default constructor (prune off) keeps the recorder's dust intact."""
+    rec = L2Reconstructor(depth_limit=10)  # no flag
+    rec.reset()
+    ts = 1000
+    for p, q in [(110, 0.05), (100, 1.0), (99, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    for p, q in [(95, 0.05), (101, 1.0), (102, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+    rec.apply_event(2000, 0, 99.5, 0.3)
+    # Dust still present.
+    assert 110 in rec.bids
+    assert 95 in rec.asks
+
+
+def test_prune_dust_no_op_on_clean_book():
+    """A clean book (no crossing) survives unchanged after prune."""
+    rec = L2Reconstructor(depth_limit=10, prune_snapshot_dust=True)
+    rec.reset()
+    ts = 1000
+    for p, q in [(100, 1.0), (99, 1.0), (98, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    for p, q in [(101, 1.0), (102, 1.0), (103, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+    rec.apply_event(2000, 0, 99.5, 0.3)
+    assert sorted(rec.bids) == [98, 99, 99.5, 100]
+    assert sorted(rec.asks) == [101, 102, 103]
+
+
+def test_prune_dust_returns_count():
+    """Manual prune_dust() returns the number of levels removed."""
+    rec = L2Reconstructor(depth_limit=10, prune_snapshot_dust=False)
+    rec.reset()
+    ts = 1000
+    for p, q in [(110, 0.05), (100, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    for p, q in [(95, 0.05), (101, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+    n = rec.prune_dust()
+    assert n == 2, f"expected 2 dust levels removed (110 and 95), got {n}"
+    n2 = rec.prune_dust()  # idempotent on clean book
+    assert n2 == 0
+
+
+def test_prune_dust_keeps_validated_top_levels():
+    """The validated bp/ap themselves are NEVER pruned, even if equal to
+    a comparison threshold."""
+    rec = L2Reconstructor(depth_limit=10, prune_snapshot_dust=True)
+    rec.reset()
+    ts = 1000
+    # Tight spread book: bp=100 ap=101, plus dust 105 (>ap) + 96 (<bp)
+    for p, q in [(105, 0.01), (100, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    for p, q in [(96, 0.01), (101, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+    rec.apply_event(2000, 0, 99.5, 0.3)
+    assert 100 in rec.bids and 101 in rec.asks  # validated top kept
+    assert 105 not in rec.bids  # dust removed
+    assert 96 not in rec.asks
+
+
+def test_prune_composes_with_staleness():
+    """Prune lowers the failure rate; staleness fallback catches the residual."""
+    rec = L2Reconstructor(depth_limit=10, book_staleness_seconds=10.0,
+                          prune_snapshot_dust=True)
+    rec.reset()
+    ts = 1000
+    for p, q in [(110, 0.05), (100, 1.0)]:
+        rec.apply_event(ts, 3, p, q)
+    for p, q in [(95, 0.05), (101, 1.0)]:
+        rec.apply_event(ts, 4, p, q)
+    # Close batch with diff event → triggers prune.
+    rec.apply_event(2000, 0, 99.5, 0.3)
+    assert rec.get_top1()["best_bid"] == 100  # clean
+
+    # Now wipe ask 101 → invalid, but staleness fallback should kick in.
+    rec.apply_event(3000, 1, 101, 0.0)
+    t = rec.get_top1()
+    assert t is not None
+    assert t.get("stale") is True  # fallback engaged
+
+
 def test_stale_recovery_re_freshens_cache():
     rec = L2Reconstructor(depth_limit=5, book_staleness_seconds=10.0)
     rec.reset()
