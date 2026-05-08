@@ -56,8 +56,15 @@ def vision_to_narci(vision_path: Path) -> pd.DataFrame:
 
 
 def backfill_day(symbol: str, market: str, day: str,
-                 *, dry_run: bool = False, exchange: str = "binance") -> dict:
+                 *, dry_run: bool = False, exchange: str = "binance",
+                 force: bool = False) -> dict:
     """Merge vision aggTrades into the cold daily for one (symbol, day).
+
+    By default, days with >1000 existing trades are skipped (assume
+    already-backfilled). Pass force=True to drop existing trades and
+    replace with the full Vision archive — used for partial-live days
+    where recording died mid-day (e.g., 0423 16:30:53 UTC), so cold has
+    real but incomplete trade data and Vision's full day is preferred.
 
     Returns a summary dict.
     """
@@ -78,7 +85,7 @@ def backfill_day(symbol: str, market: str, day: str,
 
     cold_df = pd.read_parquet(cold_path)
     n_trade_before = int((cold_df["side"] == 2).sum())
-    if n_trade_before > 1000:
+    if n_trade_before > 1000 and not force:
         return {"day": day, "status": "skip_already_has_trades",
                 "n_trade_before": n_trade_before}
 
@@ -121,11 +128,15 @@ def main():
     ap.add_argument("--days", required=True,
                     help="comma-separated YYYYMMDD list")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="bypass skip-if-already-has-trades guard. Drops "
+                         "existing side=2 from cold and replaces with full "
+                         "Vision day. Use for partial-live days.")
     args = ap.parse_args()
 
     days = [d.strip() for d in args.days.split(",") if d.strip()]
     print(f"Backfilling {args.symbol} {args.market} on {len(days)} days "
-          f"{'(DRY RUN)' if args.dry_run else ''}")
+          f"{'(DRY RUN)' if args.dry_run else ''}{' (FORCE)' if args.force else ''}")
     print(f"  cold root: {COLD}/{args.exchange}/{args.market}")
     print(f"  vision  : {OFFICIAL}/{args.market}/aggTrades/{args.symbol}")
     print()
@@ -133,7 +144,8 @@ def main():
     summaries = []
     for d in days:
         result = backfill_day(args.symbol, args.market, d,
-                               dry_run=args.dry_run, exchange=args.exchange)
+                               dry_run=args.dry_run, exchange=args.exchange,
+                               force=args.force)
         summaries.append(result)
         if result["status"] == "ok" or result["status"] == "dry_run":
             print(f"  {d}: book {result['n_book']:>11,}  +trades {result['n_trade_added']:>9,}  "
