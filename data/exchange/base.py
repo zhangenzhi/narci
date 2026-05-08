@@ -33,6 +33,12 @@ class ExchangeAdapter(ABC):
     def ws_url(self, symbols: list[str], interval_ms: int = 100) -> str:
         """构造 WebSocket 订阅 URL。symbols 为交易所原生符号（lower）。"""
 
+    def ws_urls(self, symbols: list[str], interval_ms: int = 100) -> list[str]:
+        """所有需要并行连接的 WS URL 列表。默认单条；交易所拆分流时（如
+        Binance UM 把 depth/trade 切到不同端点）覆盖此方法返回多条，
+        recorder 会为每条 URL 起一个 task，共享 buffer 与状态。"""
+        return [self.ws_url(symbols, interval_ms)]
+
     def subscribe_messages(self, symbols: list[str]) -> list[dict]:
         """
         连接 WS 后需要发送的订阅消息列表（JSON dict，recorder 会 json.dumps）。

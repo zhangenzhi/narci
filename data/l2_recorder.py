@@ -80,7 +80,7 @@ class L2Recorder:
         self.stream_aligned = {s: False for s in self.symbols}
         self.running = True
 
-        self.ws_url = self.adapter.ws_url(self.symbols, self.interval)
+        self.ws_urls = self.adapter.ws_urls(self.symbols, self.interval)
 
         print(f"🔧 配置完成 | 交易所: {self.adapter.name} | 市场: {self.adapter.market_type}")
         print(f"🔧 交易对: {[s.upper() for s in self.symbols]}")
@@ -141,26 +141,32 @@ class L2Recorder:
             else:
                 book[price] = qty
 
-    async def record_stream(self):
+    async def record_stream(self, url: str):
         import websockets  # 惰性导入
+        # 多 WS 时，只有 depth 流的重连需要重置 orderbook 状态机 + 重新拉 snapshot；
+        # 单纯 trade 流（如 Binance UM /market）的重连不能动 depth alignment 状态。
+        carries_depth = "@depth" in url
+        label = url.split("?")[0].rsplit("/", 2)[-2]  # 'public' / 'market' / 'stream'
         while self.running:
             try:
-                async with websockets.connect(self.ws_url) as ws:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 WebSocket 已连接")
+                async with websockets.connect(url) as ws:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 WS 已连接 [{label}]")
 
-                    for sym in self.symbols:
-                        self.is_initialized[sym] = False
-                        self.stream_aligned[sym] = False
-                        self.pre_align_buffer[sym] = []
-                        self.orderbooks[sym] = {"bids": {}, "asks": {}}
+                    if carries_depth:
+                        for sym in self.symbols:
+                            self.is_initialized[sym] = False
+                            self.stream_aligned[sym] = False
+                            self.pre_align_buffer[sym] = []
+                            self.orderbooks[sym] = {"bids": {}, "asks": {}}
 
                     # 发送订阅消息（Coincheck 等需要主动订阅的交易所）
                     for sub in self.adapter.subscribe_messages(self.symbols):
                         await ws.send(json.dumps(sub))
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 已订阅 {sub}")
 
-                    for sym in self.symbols:
-                        asyncio.create_task(self.init_symbol_snapshot(sym))
+                    if carries_depth:
+                        for sym in self.symbols:
+                            asyncio.create_task(self.init_symbol_snapshot(sym))
 
                     async for message in ws:
                         msg = json.loads(message)
@@ -178,7 +184,7 @@ class L2Recorder:
                             self.buffers[sym].extend(records)
 
             except Exception as e:
-                print(f"❌ 连接异常: {e}，{self.retry_wait}s 后重试...")
+                print(f"❌ WS [{label}] 异常: {e}，{self.retry_wait}s 后重试...")
                 await asyncio.sleep(self.retry_wait)
 
     async def _handle_depth(self, sym: str, data: dict):
@@ -299,13 +305,17 @@ class L2Recorder:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._handle_shutdown(s)))
 
-        record_task = asyncio.create_task(self.record_stream())
+        record_tasks = [
+            asyncio.create_task(self.record_stream(url))
+            for url in self.ws_urls
+        ]
         save_task = asyncio.create_task(self.save_loop())
 
         await self._shutdown_event.wait()
-        record_task.cancel()
+        for t in record_tasks:
+            t.cancel()
         save_task.cancel()
-        for t in (record_task, save_task):
+        for t in record_tasks + [save_task]:
             try:
                 await t
             except (asyncio.CancelledError, Exception):

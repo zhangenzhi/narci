@@ -28,11 +28,14 @@ class BinanceAdapter(ExchangeAdapter):
         },
         "um_futures": {
             # Binance restructured futures WS endpoints around 2026-04-23 into
-            # category-prefixed routes (/public, /market, /private). aggTrade,
-            # markPrice and kline now require /market/; old /stream still
-            # delivers depth but silently drops aggTrade. /market/stream handles
-            # depth too, so one URL covers everything.
-            "ws":       "wss://fstream.binance.com/market/stream?streams={streams}",
+            # category-prefixed routes (/public, /market, /private). 30s probes
+            # in 2026-05-08 confirmed the streams are strictly split:
+            #   /public, /stream  → depth only (0 aggTrade in 119 msgs)
+            #   /market           → aggTrade only (0 depth in 234 msgs)
+            # So UM needs TWO concurrent WS connections, see ws_urls() below.
+            # The single-URL `ws` here is the depth endpoint, used as fallback
+            # for code paths that only call ws_url().
+            "ws":       "wss://fstream.binance.com/public/stream?streams={streams}",
             "snapshot": "https://fapi.binance.com/fapi/v1/depth?symbol={symbol_upper}&limit=1000",
         },
     }
@@ -51,12 +54,32 @@ class BinanceAdapter(ExchangeAdapter):
     # WebSocket
     # ------------------------------------------------------------------ #
 
+    # UM futures had its WS streams strictly split across endpoints in
+    # 2026-04-23 (depth on /public, aggTrade on /market). Other markets
+    # (spot, binance.jp) still serve combined streams on one URL.
+    _UM_DEPTH_TPL = "wss://fstream.binance.com/public/stream?streams={streams}"
+    _UM_TRADE_TPL = "wss://fstream.binance.com/market/stream?streams={streams}"
+
     def ws_url(self, symbols: list[str], interval_ms: int = 100) -> str:
+        # Single-URL fallback. For UM, return the depth-only URL.
+        if self.market_type == "um_futures":
+            depth_streams = [f"{s.lower()}@depth@{interval_ms}ms" for s in symbols]
+            return self._UM_DEPTH_TPL.format(streams="/".join(depth_streams))
         streams = []
         for s in symbols:
             streams.append(f"{s.lower()}@depth@{interval_ms}ms")
             streams.append(f"{s.lower()}@aggTrade")
         return self.ws_tpl.format(streams="/".join(streams))
+
+    def ws_urls(self, symbols: list[str], interval_ms: int = 100) -> list[str]:
+        if self.market_type == "um_futures":
+            depth_streams = [f"{s.lower()}@depth@{interval_ms}ms" for s in symbols]
+            trade_streams = [f"{s.lower()}@aggTrade" for s in symbols]
+            return [
+                self._UM_DEPTH_TPL.format(streams="/".join(depth_streams)),
+                self._UM_TRADE_TPL.format(streams="/".join(trade_streams)),
+            ]
+        return [self.ws_url(symbols, interval_ms)]
 
     async def fetch_snapshot(self, symbol: str) -> dict:
         import aiohttp  # 惰性导入，避免离线场景下无 aiohttp 也能使用纯解析逻辑
@@ -153,6 +176,11 @@ class BinanceSpotAdapter(BinanceAdapter):
 
 
 class BinanceUmFuturesAdapter(BinanceAdapter):
+    """UM futures: depth and aggTrade live on different WS endpoints since
+    2026-04-23. The dual-URL behaviour is implemented in BinanceAdapter
+    keyed on market_type, so the recorder factory can return either this
+    subclass or BinanceAdapter(market_type='um_futures') interchangeably."""
+
     def __init__(self, **kwargs):
         super().__init__(market_type="um_futures", **kwargs)
 
