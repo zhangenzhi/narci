@@ -7,15 +7,23 @@ import numpy as np
 _ITEMGETTER_0 = operator.itemgetter(0)
 
 class L2Reconstructor:
-    def __init__(self, depth_limit=20):
+    def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0):
         """
         :param depth_limit: 还原 L2 时保留的深度档位数量
+        :param book_staleness_seconds: when get_top1/get_state can't produce
+            a fresh non-crossing top, fall back to the most recent valid
+            cached result if its age is within this tolerance. Default 0
+            disables fallback (strict NaN). Used to mask the BJ "short-run
+            NaN" pattern where cross-spread / dust transients briefly
+            invalidate the book — the staleness window keeps features
+            valid for ~10s of recovery time. Per-call override available.
         """
         self.depth_limit = depth_limit
+        self.book_staleness_seconds = book_staleness_seconds
         self.bids = {}
         self.asks = {}
-        self.is_ready = False 
-        
+        self.is_ready = False
+
         # 用于聚合采样期间内的 L1 逐笔主动买卖成交量
         self.period_taker_buy_vol = 0.0
         self.period_taker_sell_vol = 0.0
@@ -183,6 +191,16 @@ class L2Reconstructor:
         # cross-venue features like basis_um_bps via stuck top-1.
         self._last_snap_bid_ts = -1
         self._last_snap_ask_ts = -1
+        # Last-valid caches for stale-fallback (P1 fix 2026-05-08).
+        # Populated at end of successful get_top1 / get_state. Returned
+        # (with `stale=True`) when a later call can't compute a fresh
+        # value but the cached one is within book_staleness_seconds.
+        self._last_valid_top1 = None
+        self._last_valid_top1_ts = -1
+        # get_state cache is keyed by top_n (different callers may ask
+        # for different depths; the top-5 cache is unsuitable for top-10).
+        self._last_valid_state_by_n: dict = {}
+        self._last_valid_state_ts_by_n: dict = {}
 
     def apply_event(self, ts, side, price, qty):
         """Apply a single L2 event to the running orderbook state.
@@ -258,10 +276,10 @@ class L2Reconstructor:
         self.period_taker_buy_vol = 0.0
         self.period_taker_sell_vol = 0.0
 
-    def get_top1(self):
+    def get_top1(self, allow_stale_seconds: float | None = None):
         """Fast O(1) top-of-book accessor maintained incrementally inside
         apply_event. Returns dict with keys:
-          best_bid, best_ask, mid_price, spread, spread_bps,
+          ts, best_bid, best_ask, mid_price, spread, spread_bps,
           bid_qty_top1, ask_qty_top1, imbalance_top1, microprice
         Or None if book not ready / empty.
 
@@ -275,38 +293,69 @@ class L2Reconstructor:
         non-crossing pair is found, and refresh the cache. O(N log N) on
         first call after crossing detected; O(1) afterwards until next
         crossing event.
+
+        Stale fallback (P1 fix 2026-05-08): when the book can't produce
+        a fresh non-crossing top (book empty or cross-walk fails), fall
+        back to the last valid result if its age (in apply_event ts
+        space) is within `allow_stale_seconds`. Returned dict has
+        `stale=True` and `stale_age_ms=int` so callers can audit. If
+        `allow_stale_seconds` is None, uses the constructor-level
+        `book_staleness_seconds`. Pass 0 to force strict (no fallback).
         """
+        if allow_stale_seconds is None:
+            allow_stale_seconds = self.book_staleness_seconds
+
         bp = self._best_bid_p
         ap = self._best_ask_p
-        if not self.is_ready or not self.bids or not self.asks:
-            return None
-        if bp is None or ap is None or bp >= ap:
-            bp, ap = self._resolve_top_non_crossing()
-            if bp is None:
-                return None
-            # cache the cleaned values; next event will validate again
-            self._best_bid_p = bp
-            self._best_ask_p = ap
-        bq = self.bids[bp]
-        aq = self.asks[ap]
-        mid = (bp + ap) / 2.0
-        spread = ap - bp
-        bq_aq = bq + aq
-        microprice = (bp * aq + ap * bq) / bq_aq if bq_aq > 0 else mid
-        return {
-            "ts": self._last_ts,
-            "best_bid": bp,
-            "best_ask": ap,
-            "mid_price": mid,
-            "spread": spread,
-            "spread_bps": spread / mid * 10000.0,
-            "bid_qty_top1": bq,
-            "ask_qty_top1": aq,
-            "imbalance_top1": (bq - aq) / bq_aq if bq_aq > 0 else 0.0,
-            "microprice": microprice,
-        }
+        fresh = None
+        if self.is_ready and self.bids and self.asks:
+            if bp is None or ap is None or bp >= ap:
+                bp, ap = self._resolve_top_non_crossing()
+                if bp is not None:
+                    # cache the cleaned values; next event will validate again
+                    self._best_bid_p = bp
+                    self._best_ask_p = ap
+            if bp is not None and ap is not None and bp < ap:
+                bq = self.bids[bp]
+                aq = self.asks[ap]
+                mid = (bp + ap) / 2.0
+                spread = ap - bp
+                bq_aq = bq + aq
+                microprice = (bp * aq + ap * bq) / bq_aq if bq_aq > 0 else mid
+                fresh = {
+                    "ts": self._last_ts,
+                    "best_bid": bp,
+                    "best_ask": ap,
+                    "mid_price": mid,
+                    "spread": spread,
+                    "spread_bps": spread / mid * 10000.0,
+                    "bid_qty_top1": bq,
+                    "ask_qty_top1": aq,
+                    "imbalance_top1": (bq - aq) / bq_aq if bq_aq > 0 else 0.0,
+                    "microprice": microprice,
+                }
 
-    def get_state(self, top_n=5):
+        if fresh is not None:
+            # cache for future stale-fallback. Store a copy so future mutation
+            # by the caller doesn't poison the cache.
+            self._last_valid_top1 = dict(fresh)
+            self._last_valid_top1_ts = self._last_ts
+            return fresh
+
+        # No fresh value. Try stale fallback.
+        if (allow_stale_seconds > 0
+                and self._last_valid_top1 is not None
+                and self._last_valid_top1_ts >= 0):
+            age_ms = self._last_ts - self._last_valid_top1_ts
+            if 0 <= age_ms <= allow_stale_seconds * 1000:
+                stale = dict(self._last_valid_top1)
+                stale["ts"] = self._last_ts
+                stale["stale"] = True
+                stale["stale_age_ms"] = int(age_ms)
+                return stale
+        return None
+
+    def get_state(self, top_n=5, allow_stale_seconds: float | None = None):
         """Snapshot the current top-N book + derived metrics.
 
         Returns None if not ready (no snapshot ingested yet) or book empty.
@@ -320,52 +369,81 @@ class L2Reconstructor:
 
         Cost: O(N log N) sorts of bids/asks dicts each call. Don't call in
         the inner loop; once per quote refresh is fine.
+
+        Stale fallback (P1 fix 2026-05-08): same semantics as
+        get_top1(allow_stale_seconds=...). Cache is keyed by top_n —
+        callers asking for a different depth get an independent cache.
+        Stale dicts gain `stale=True` + `stale_age_ms`.
         """
-        if not self.is_ready or not self.bids or not self.asks:
-            return None
-        # Use heapq partial-sort O(N log K) instead of full sort O(N log N).
-        # For typical UM book (~20k levels) and top_n=5, this is ~30× faster.
-        # operator.itemgetter beats lambda by ~2× in CPython for hot loops.
-        bids_top = heapq.nlargest(top_n, self.bids.items(), key=_ITEMGETTER_0)
-        asks_top = heapq.nsmallest(top_n, self.asks.items(), key=_ITEMGETTER_0)
-        if not bids_top or not asks_top:
-            return None
-        b1_p, b1_q = bids_top[0]
-        a1_p, a1_q = asks_top[0]
-        if b1_p >= a1_p:
-            # crossed book (transient during snapshot ingestion)
-            return None
-        mid = (b1_p + a1_p) / 2.0
-        microprice = (b1_p * a1_q + a1_p * b1_q) / (b1_q + a1_q) if (b1_q + a1_q) > 0 else mid
-        spread = a1_p - b1_p
-        spread_bps = spread / mid * 10000.0
-        imb1 = (b1_q - a1_q) / (b1_q + a1_q) if (b1_q + a1_q) > 0 else 0.0
-        b5_sum = sum(q for _, q in bids_top)
-        a5_sum = sum(q for _, q in asks_top)
-        imb5 = (b5_sum - a5_sum) / (b5_sum + a5_sum) if (b5_sum + a5_sum) > 0 else 0.0
+        if allow_stale_seconds is None:
+            allow_stale_seconds = self.book_staleness_seconds
 
-        is_consistent = self._snapshot_batch_ts is None or self._last_ts != self._snapshot_batch_ts
+        fresh = None
+        if self.is_ready and self.bids and self.asks:
+            # Use heapq partial-sort O(N log K) instead of full sort O(N log N).
+            # For typical UM book (~20k levels) and top_n=5, this is ~30× faster.
+            # operator.itemgetter beats lambda by ~2× in CPython for hot loops.
+            bids_top = heapq.nlargest(top_n, self.bids.items(), key=_ITEMGETTER_0)
+            asks_top = heapq.nsmallest(top_n, self.asks.items(), key=_ITEMGETTER_0)
+            if bids_top and asks_top:
+                b1_p, b1_q = bids_top[0]
+                a1_p, a1_q = asks_top[0]
+                if b1_p < a1_p:
+                    mid = (b1_p + a1_p) / 2.0
+                    microprice = (b1_p * a1_q + a1_p * b1_q) / (b1_q + a1_q) if (b1_q + a1_q) > 0 else mid
+                    spread = a1_p - b1_p
+                    spread_bps = spread / mid * 10000.0
+                    imb1 = (b1_q - a1_q) / (b1_q + a1_q) if (b1_q + a1_q) > 0 else 0.0
+                    b5_sum = sum(q for _, q in bids_top)
+                    a5_sum = sum(q for _, q in asks_top)
+                    imb5 = (b5_sum - a5_sum) / (b5_sum + a5_sum) if (b5_sum + a5_sum) > 0 else 0.0
+                    is_consistent = self._snapshot_batch_ts is None or self._last_ts != self._snapshot_batch_ts
+                    fresh = {
+                        "ts": self._last_ts,
+                        "mid_price": mid,
+                        "microprice": microprice,
+                        "spread": spread,
+                        "spread_bps": spread_bps,
+                        "imbalance_top1": imb1,
+                        "imbalance_top5": imb5,
+                        "bid_qty_top1": b1_q,
+                        "ask_qty_top1": a1_q,
+                        "bid_qty_top5_sum": b5_sum,
+                        "ask_qty_top5_sum": a5_sum,
+                        "best_bid": b1_p,
+                        "best_ask": a1_p,
+                        "bids_top": bids_top,
+                        "asks_top": asks_top,
+                        "taker_buy_vol": self.period_taker_buy_vol,
+                        "taker_sell_vol": self.period_taker_sell_vol,
+                        "is_consistent": is_consistent,
+                    }
 
-        return {
-            "ts": self._last_ts,
-            "mid_price": mid,
-            "microprice": microprice,
-            "spread": spread,
-            "spread_bps": spread_bps,
-            "imbalance_top1": imb1,
-            "imbalance_top5": imb5,
-            "bid_qty_top1": b1_q,
-            "ask_qty_top1": a1_q,
-            "bid_qty_top5_sum": b5_sum,
-            "ask_qty_top5_sum": a5_sum,
-            "best_bid": b1_p,
-            "best_ask": a1_p,
-            "bids_top": bids_top,
-            "asks_top": asks_top,
-            "taker_buy_vol": self.period_taker_buy_vol,
-            "taker_sell_vol": self.period_taker_sell_vol,
-            "is_consistent": is_consistent,
-        }
+        if fresh is not None:
+            # Cache an independent copy (callers may mutate). bids_top /
+            # asks_top are already fresh lists from heapq, safe to share.
+            cached = dict(fresh)
+            self._last_valid_state_by_n[top_n] = cached
+            self._last_valid_state_ts_by_n[top_n] = self._last_ts
+            return fresh
+
+        if allow_stale_seconds > 0:
+            cached = self._last_valid_state_by_n.get(top_n)
+            cached_ts = self._last_valid_state_ts_by_n.get(top_n, -1)
+            if cached is not None and cached_ts >= 0:
+                age_ms = self._last_ts - cached_ts
+                if 0 <= age_ms <= allow_stale_seconds * 1000:
+                    stale = dict(cached)
+                    stale["ts"] = self._last_ts
+                    stale["stale"] = True
+                    stale["stale_age_ms"] = int(age_ms)
+                    # taker volumes are accumulators — return current live
+                    # values (not cached stale ones) so flow features stay
+                    # accurate even when book is briefly invalid.
+                    stale["taker_buy_vol"] = self.period_taker_buy_vol
+                    stale["taker_sell_vol"] = self.period_taker_sell_vol
+                    return stale
+        return None
 
     def _resolve_top_non_crossing(self):
         """Walk sorted bids (desc) and asks (asc) simultaneously, skipping

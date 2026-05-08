@@ -275,6 +275,120 @@ def test_replay_dataframe_round_trip():
     assert state["best_ask"] == 100.5, state["best_ask"]
 
 
+def test_stale_fallback_disabled_by_default_returns_none():
+    """Default constructor (no staleness) preserves strict NaN-on-invalid."""
+    rec = L2Reconstructor(depth_limit=5)
+    rec.reset()
+    rec.apply_event(1000, 3, 100.0, 1.0)
+    rec.apply_event(1000, 4, 101.0, 1.0)
+    assert rec.get_top1() is not None
+    # wipe asks → invalid
+    rec.apply_event(1100, 1, 101.0, 0.0)
+    assert rec.get_top1() is None
+    assert rec.get_state(top_n=5) is None
+
+
+def test_stale_top1_fallback_within_window_returns_cached_with_stale_flag():
+    rec = L2Reconstructor(depth_limit=5, book_staleness_seconds=10.0)
+    rec.reset()
+    rec.apply_event(1000, 3, 100.0, 1.0)
+    rec.apply_event(1000, 4, 101.0, 1.0)
+    fresh = rec.get_top1()
+    assert "stale" not in fresh
+    assert fresh["mid_price"] == 100.5
+
+    # Invalidate book by removing only ask side.
+    rec.apply_event(1500, 1, 101.0, 0.0)
+    stale = rec.get_top1()
+    assert stale is not None, "should fall back to cached top1"
+    assert stale.get("stale") is True
+    assert stale.get("stale_age_ms") == 500
+    assert stale["mid_price"] == 100.5
+
+    # Past tolerance — ts+12s, allow=10s.
+    rec.apply_event(13000, 0, 100.0, 1.0)
+    expired = rec.get_top1()
+    assert expired is None, "should not fall back beyond tolerance"
+
+
+def test_stale_top1_per_call_override():
+    rec = L2Reconstructor(depth_limit=5)  # constructor default 0
+    rec.reset()
+    rec.apply_event(1000, 3, 100.0, 1.0)
+    rec.apply_event(1000, 4, 101.0, 1.0)
+    rec.get_top1()
+
+    rec.apply_event(1500, 1, 101.0, 0.0)
+    # Without per-call override → strict
+    assert rec.get_top1() is None
+    # With per-call override → stale fallback
+    stale = rec.get_top1(allow_stale_seconds=5.0)
+    assert stale is not None
+    assert stale.get("stale") is True
+
+
+def test_stale_state_fallback_keyed_by_top_n():
+    """Cache for top_n=5 must NOT serve a top_n=10 request, since the
+    top-5 cache lacks levels 6-10 the caller asked for."""
+    rec = L2Reconstructor(depth_limit=10, book_staleness_seconds=10.0)
+    rec.reset()
+    for p in (100.0, 99.0, 98.0):
+        rec.apply_event(1000, 3, p, 1.0)
+    for p in (101.0, 102.0, 103.0):
+        rec.apply_event(1000, 4, p, 1.0)
+    s5 = rec.get_state(top_n=5)
+    assert s5 is not None and "stale" not in s5
+
+    # invalidate
+    for p in (101.0, 102.0, 103.0):
+        rec.apply_event(1500, 1, p, 0.0)
+
+    # top_n=5 has cached → returns stale
+    s5_stale = rec.get_state(top_n=5)
+    assert s5_stale is not None and s5_stale.get("stale") is True
+    # top_n=10 was never cached → no fallback
+    s10 = rec.get_state(top_n=10)
+    assert s10 is None
+
+
+def test_stale_state_taker_volumes_remain_live():
+    """Taker volumes should reflect current accumulators even on stale read,
+    not the (now-stale) cached values — flow-style features stay accurate."""
+    rec = L2Reconstructor(depth_limit=5, book_staleness_seconds=10.0)
+    rec.reset()
+    rec.apply_event(1000, 3, 100.0, 1.0)
+    rec.apply_event(1000, 4, 101.0, 1.0)
+    s = rec.get_state(top_n=5)  # cache
+    assert s["taker_buy_vol"] == 0.0
+
+    # invalidate book + ingest a trade after.
+    rec.apply_event(1500, 1, 101.0, 0.0)
+    rec.apply_event(1600, 2, 100.5, 0.7)  # buyer maker → taker_buy += 0.7
+
+    s2 = rec.get_state(top_n=5)
+    assert s2.get("stale") is True
+    assert s2["taker_buy_vol"] == 0.7, "stale read should expose current taker vol"
+
+
+def test_stale_recovery_re_freshens_cache():
+    rec = L2Reconstructor(depth_limit=5, book_staleness_seconds=10.0)
+    rec.reset()
+    rec.apply_event(1000, 3, 100.0, 1.0)
+    rec.apply_event(1000, 4, 101.0, 1.0)
+    rec.get_top1()
+    rec.apply_event(1500, 1, 101.0, 0.0)
+    assert rec.get_top1().get("stale") is True
+    # Recover: re-add ask
+    rec.apply_event(2000, 4, 101.0, 1.0)
+    fresh = rec.get_top1()
+    assert "stale" not in fresh
+    # Now invalidate again — should fall back to the *new* cache, not the old.
+    rec.apply_event(2500, 1, 101.0, 0.0)
+    new_stale = rec.get_top1()
+    assert new_stale is not None
+    assert new_stale.get("stale_age_ms") == 500  # 2500 - 2000
+
+
 if __name__ == "__main__":
     fns = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     failed = 0

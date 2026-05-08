@@ -85,13 +85,20 @@ def build_segments(day: str, segment_sec: int = DEFAULT_SEGMENT_SEC) -> list[tup
 
 
 def build_segment_worker(args: tuple,
-                          warmup_sec: int = DEFAULT_WARMUP_SEC) -> dict:
+                          warmup_sec: int = DEFAULT_WARMUP_SEC,
+                          book_staleness_seconds: float = 0.0) -> dict:
     """Worker: process events in [seg_start - warmup, seg_end), emit
-    feature rows for CC trades in [seg_start, seg_end)."""
+    feature rows for CC trades in [seg_start, seg_end).
+
+    book_staleness_seconds: P1 fix 2026-05-08. Forwarded to FeatureBuilder
+    so transient book invalidation (BJ short-run NaN, ~57 events median)
+    falls back to last-valid top1/state instead of emitting NaN. Default 0
+    keeps strict behaviour."""
     day, seg_start_ms, seg_end_ms = args
     read_start_ms = seg_start_ms - warmup_sec * 1000
 
-    fb = FeatureBuilder(lookback_seconds=warmup_sec)
+    fb = FeatureBuilder(lookback_seconds=warmup_sec,
+                        book_staleness_seconds=book_staleness_seconds)
 
     # Collect events from all 3 venues in time range using parquet filter
     rows: list[tuple] = []
@@ -166,6 +173,7 @@ def replay_days_parallel(
     warmup_sec: int = DEFAULT_WARMUP_SEC,
     max_hours_per_day: float | None = None,
     start_hour: float = 0.0,
+    book_staleness_seconds: float = 0.0,
     verbose: bool = True,
 ) -> dict:
     """Top-level: split given days into segments, run workers in parallel,
@@ -191,8 +199,14 @@ def replay_days_parallel(
         print(f"  pool size: {n_workers}")
 
     t0 = time.time()
+    if book_staleness_seconds > 0:
+        from functools import partial
+        worker_fn = partial(build_segment_worker,
+                            book_staleness_seconds=book_staleness_seconds)
+    else:
+        worker_fn = build_segment_worker
     with mp.get_context("spawn").Pool(n_workers) as pool:
-        results = pool.map(build_segment_worker, all_segments)
+        results = pool.map(worker_fn, all_segments)
     elapsed = time.time() - t0
 
     if verbose:

@@ -226,6 +226,14 @@ class _VenueState:
     def __post_init__(self):
         self.book.reset()
 
+    @classmethod
+    def with_staleness(cls, book_staleness_seconds: float):
+        """Construct a venue state whose L2Reconstructor accepts stale
+        book reads up to N seconds (P1 fix 2026-05-08)."""
+        v = cls(book=L2Reconstructor(depth_limit=10,
+                                      book_staleness_seconds=book_staleness_seconds))
+        return v
+
 
 class FeatureBuilder:
     """Real-time feature pipeline.
@@ -244,7 +252,19 @@ class FeatureBuilder:
     """
 
     def __init__(self, lookback_seconds: int = 300,
-                 metric_sample_interval_ms: int = 500):
+                 metric_sample_interval_ms: int = 500,
+                 book_staleness_seconds: float = 0.0):
+        """
+        :param book_staleness_seconds: P1 fix 2026-05-08. When > 0, each
+            venue's L2Reconstructor will fall back to its last valid
+            top1/state snapshot during transient book invalidation
+            (cross/dust/empty-side) up to this many seconds. Mitigates
+            BJ "short-run NaN" pattern (143 runs/day, median 57 events
+            ≈ a few seconds; staleness=10 catches all but the worst).
+            Stale reads are flagged with `stale=True` in the returned
+            dict; downstream FB features still treat them as valid
+            numbers. Default 0 = strict (NaN on any invalid book).
+        """
         self._lookback_ms = lookback_seconds * 1000
         # B0' fix (2026-05-06): throttle _record_book_metric per venue.
         # UM has 20k-200k levels (recorder doesn't delete stale levels) so
@@ -252,10 +272,11 @@ class FeatureBuilder:
         # cost. 500ms gives 10 samples per 5s rolling window — adequate
         # for averaging and 10× fewer than 100ms.
         self._metric_sample_interval_ms = metric_sample_interval_ms
+        self._book_staleness_seconds = book_staleness_seconds
         self._venues: dict[str, _VenueState] = {
-            "cc": _VenueState(),
-            "bj": _VenueState(),
-            "um": _VenueState(),
+            "cc": _VenueState.with_staleness(book_staleness_seconds),
+            "bj": _VenueState.with_staleness(book_staleness_seconds),
+            "um": _VenueState.with_staleness(book_staleness_seconds),
         }
         self._last_metric_ts: dict[str, int] = {"cc": 0, "bj": 0, "um": 0}
         # Snapshot of last get_features for sequence builder.
