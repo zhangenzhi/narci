@@ -153,7 +153,11 @@ class L2Recorder:
         import websockets  # 惰性导入
         # 多 WS 时，只有 depth 流的重连需要重置 orderbook 状态机 + 重新拉 snapshot；
         # 单纯 trade 流（如 Binance UM /market）的重连不能动 depth alignment 状态。
-        carries_depth = "@depth" in url
+        # 判定规则：含 @aggTrade 且不含 @depth 的 URL 是「trade-only」（只 UM
+        # /market 这一种）；其他都视为 depth-bearing（含 Coincheck 这类没有
+        # URL 流参数、靠 subscribe message 订阅 orderbook 的 case）。
+        trade_only = "@aggTrade" in url and "@depth" not in url
+        carries_depth = not trade_only
         label = url.split("?")[0].rsplit("/", 2)[-2]  # 'public' / 'market' / 'stream'
         while self.running:
             try:

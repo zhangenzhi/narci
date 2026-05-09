@@ -270,6 +270,36 @@ def test_alignment_does_not_re_snapshot_when_events_purely_behind():
     # Note: in this code path, buffer ends up containing the just-tried event.
 
 
+def test_carries_depth_heuristic():
+    """Regression: 2026-05-09 saw Coincheck recorder fully broken because
+    record_stream's `carries_depth = "@depth" in url` heuristic was True
+    only for Binance-style URLs containing `@depth` in the streams query
+    string. Coincheck uses `wss://ws-api.coincheck.com` (no path
+    parameters; subscribes via JSON messages) so carries_depth was False
+    → init_symbol_snapshot was skipped → is_initialized stayed False
+    forever → all depth events queued in pre_align_buffer (capped at
+    2000, then dropped) → no events ever made it into the book → save
+    loop's `not stream_aligned` guard skipped the symbol indefinitely."""
+    cases = [
+        # (url, expected_carries_depth, label)
+        ("wss://fstream.binance.com/public/stream?streams=btcusdt@depth@100ms", True,
+         "UM /public depth-only"),
+        ("wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade", False,
+         "UM /market trade-only"),
+        ("wss://stream.binance.com:9443/stream?streams=btcjpy@depth@100ms/btcjpy@aggTrade", True,
+         "binance spot combined"),
+        ("wss://data-stream.binance.vision/stream?streams=btcjpy@depth@100ms/btcjpy@aggTrade", True,
+         "binance.jp combined"),
+        ("wss://ws-api.coincheck.com", True,
+         "Coincheck — no URL path, subscribes via JSON"),
+    ]
+    for url, expected, label in cases:
+        trade_only = "@aggTrade" in url and "@depth" not in url
+        carries_depth = not trade_only
+        assert carries_depth == expected, \
+            f"{label}: url={url!r} expected carries_depth={expected} got {carries_depth}"
+
+
 def test_snapshot_refresh_on_save_default_off():
     """Default constructor (no config, no flag) preserves legacy
     behavior: snapshot_refresh_on_save=False."""
