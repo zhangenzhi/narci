@@ -183,6 +183,93 @@ def test_refresh_clears_pre_align_before_await(recorder):
     asyncio.run(race())
 
 
+class _BinanceLikeAdapter(_StubAdapter):
+    """Stub that emulates Binance U/u alignment for testing _handle_depth."""
+
+    def try_align(self, snapshot_update_id, event):
+        return event["U"] <= snapshot_update_id + 1 <= event["u"]
+
+    def get_update_id(self, event):
+        return event["u"]
+
+
+def test_alignment_retry_uses_newest_event_not_oldest():
+    """Regression: pre-fix _handle_depth checked combined[0].u (oldest)
+    against snapshot.lastUpdateId+1, so when pre_align_buffer held
+    stale events from a P1-A REST refresh await window, the re-snapshot
+    trigger never fired and the symbol stayed permanently
+    stream_aligned=False after every save_loop. Caused ETHUSDT to drop
+    out of recording 5h+ on AWS-SG 2026-05-09. The fix uses
+    combined[-1].u (newest)."""
+    adapter = _BinanceLikeAdapter({"bids": [], "asks": []})
+    tmpdir = tempfile.mkdtemp(prefix="narci_test_")
+    rec = L2Recorder(config_path="/nonexistent.yaml", symbol="btcusdt",
+                     adapter=adapter)
+    rec.save_dir = tmpdir
+
+    sym = "btcusdt"
+    # Simulate post-REST state: snapshot lastUpdateId=100,
+    # pre_align_buffer has stale events with u < 101 (events captured
+    # during the REST await; older than the snapshot).
+    rec.last_update_ids[sym] = 100
+    rec.is_initialized[sym] = True
+    rec.stream_aligned[sym] = False
+    rec.pre_align_buffer[sym] = [
+        {"U": 90, "u": 95},   # stale 1 — u=95, before snapshot+1=101
+        {"U": 96, "u": 99},   # stale 2 — u=99
+    ]
+
+    # New WS event arrives with u FAR past snapshot — alignment window
+    # was missed entirely. With the bug, combined[0].u=95 < 101 →
+    # re-snapshot trigger doesn't fire; symbol stays stuck.
+    new_event = {"U": 500, "u": 510}
+    initial_fetch_count = adapter.fetch_count
+
+    try:
+        asyncio.run(rec._handle_depth(sym, new_event))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # After fix: re-snapshot trigger fired (fetch_snapshot called on the
+    # adapter). The init_symbol_snapshot coroutine completes within
+    # asyncio.run, so by the time control returns is_initialized may be
+    # back to True — what we verify is that the REST fetch was invoked,
+    # which the buggy code path would NOT have done.
+    assert adapter.fetch_count > initial_fetch_count, \
+        "newest-event check should have triggered re-snapshot REST fetch"
+
+
+def test_alignment_does_not_re_snapshot_when_events_purely_behind():
+    """Counter-case: if all combined events have u < lastUpdateId+1
+    (purely behind the snapshot, just buffering catch-up), do NOT
+    trigger re-snapshot — wait for stream to advance."""
+    adapter = _BinanceLikeAdapter({"bids": [], "asks": []})
+    tmpdir = tempfile.mkdtemp(prefix="narci_test_")
+    rec = L2Recorder(config_path="/nonexistent.yaml", symbol="btcusdt",
+                     adapter=adapter)
+    rec.save_dir = tmpdir
+
+    sym = "btcusdt"
+    rec.last_update_ids[sym] = 100
+    rec.is_initialized[sym] = True
+    rec.stream_aligned[sym] = False
+    rec.pre_align_buffer[sym] = []
+
+    # Brand-new event with u still behind the snapshot.
+    behind = {"U": 95, "u": 98}
+
+    try:
+        asyncio.run(rec._handle_depth(sym, behind))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # Stay in waiting state; do NOT re-snapshot.
+    assert rec.is_initialized[sym] is True
+    assert rec.stream_aligned[sym] is False
+    # Event was buffered (not yet aligned).
+    # Note: in this code path, buffer ends up containing the just-tried event.
+
+
 def test_snapshot_refresh_on_save_default_off():
     """Default constructor (no config, no flag) preserves legacy
     behavior: snapshot_refresh_on_save=False."""

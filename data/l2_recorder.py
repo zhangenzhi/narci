@@ -214,13 +214,21 @@ class L2Recorder:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {sym.upper()} 深度流对齐成功")
                     return
 
-            # 对齐失败：偏移过大 -> 重新拉快照
-            if combined and self.adapter.get_update_id(combined[0]) > self.last_update_ids[sym] + 1:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大，重新拉取快照")
-                self.is_initialized[sym] = False
-                self.stream_aligned[sym] = False
-                self.pre_align_buffer[sym] = []
-                asyncio.create_task(self.init_symbol_snapshot(sym))
+            # 对齐失败：判断 stream 是否已经走过 snapshot 的对齐窗口。
+            # 检查 NEWEST 事件 (combined[-1].u) 而不是 oldest，因为
+            # P1-A REST 重拉之后 pre_align_buffer 可能含 await 期间累积的
+            # 旧事件 (u < snapshot.lastUpdateId+1)；用 combined[0].u 检查
+            # 永远是 stale-event 的 u，re-snapshot trigger 永远不 fire，
+            # symbol 卡死在 stream_aligned=False 直到 WS 重连。
+            # 用 NEWEST 才能正确识别「stream 已 overshoot snapshot」的情况。
+            if combined:
+                newest_u = self.adapter.get_update_id(combined[-1])
+                if newest_u > self.last_update_ids[sym] + 1:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大 (newest u={newest_u}, snapshot last_id+1={self.last_update_ids[sym]+1})，重新拉快照")
+                    self.is_initialized[sym] = False
+                    self.stream_aligned[sym] = False
+                    self.pre_align_buffer[sym] = []
+                    asyncio.create_task(self.init_symbol_snapshot(sym))
             return
 
         # 不需要对齐 或 已对齐 -> 直接处理
