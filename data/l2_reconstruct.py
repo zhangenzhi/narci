@@ -8,7 +8,8 @@ _ITEMGETTER_0 = operator.itemgetter(0)
 
 class L2Reconstructor:
     def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0,
-                 prune_snapshot_dust: bool = False):
+                 prune_snapshot_dust: bool = False,
+                 incremental_ready_threshold: int = 5):
         """
         :param depth_limit: 还原 L2 时保留的深度档位数量
         :param book_staleness_seconds: when get_top1/get_state can't produce
@@ -28,10 +29,23 @@ class L2Reconstructor:
             levels; legitimate deep liquidity is kept. Default False
             preserves old behavior. See docs for staleness fallback (P1)
             for how this composes with the cache-fallback path.
+        :param incremental_ready_threshold: P3 fix 2026-05-09. Pre-fix
+            `is_ready` flipped True only on side=3/4 (snapshot) events.
+            BJ-style venues with long save-interval (600s) and segment
+            replay with 300s warmup → 50% of segments never see a
+            snapshot during warmup → is_ready=False permanently → all
+            get_top1/get_state calls return None even though incrementals
+            had filled bids+asks to thousands of levels. Now: when both
+            sides have ≥ this many levels (via any combination of
+            incrementals/snapshots), is_ready is set True. Default 5
+            matches typical top_n=5 query depth. Set to 1 for fastest
+            bootstrap or 0 to disable incremental-bootstrap entirely
+            (keeps strict snapshot-only semantics).
         """
         self.depth_limit = depth_limit
         self.book_staleness_seconds = book_staleness_seconds
         self.prune_snapshot_dust = prune_snapshot_dust
+        self.incremental_ready_threshold = max(0, int(incremental_ready_threshold))
         self.bids = {}
         self.asks = {}
         self.is_ready = False
@@ -261,6 +275,14 @@ class L2Reconstructor:
             if side == 3:
                 self.is_ready = True
                 self._snapshot_batch_ts = ts
+            elif (not self.is_ready
+                    and self.incremental_ready_threshold > 0
+                    and len(self.bids) >= self.incremental_ready_threshold
+                    and len(self.asks) >= self.incremental_ready_threshold):
+                # P3 fix: bootstrap is_ready from incrementals so segments
+                # that don't span a 600s snapshot batch in their warmup
+                # window can still produce features. Sticky once set.
+                self.is_ready = True
         elif side in (1, 4):
             if side == 4 and ts != self._last_snap_ask_ts:
                 # New snapshot batch — atomically replace ask book.
@@ -278,6 +300,12 @@ class L2Reconstructor:
             if side == 4:
                 self.is_ready = True
                 self._snapshot_batch_ts = ts
+            elif (not self.is_ready
+                    and self.incremental_ready_threshold > 0
+                    and len(self.bids) >= self.incremental_ready_threshold
+                    and len(self.asks) >= self.incremental_ready_threshold):
+                # P3 fix: see mirror branch on side=0/3 above.
+                self.is_ready = True
         elif side == 2:
             if qty > 0:
                 self.period_taker_buy_vol += qty

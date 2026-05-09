@@ -477,6 +477,84 @@ def test_prune_composes_with_staleness():
     assert t.get("stale") is True  # fallback engaged
 
 
+def test_incremental_bootstrap_flips_ready_at_threshold():
+    """P3 fix 2026-05-09: pure-incremental bootstrap. nyx found that
+    BJ-style venues with 600s snapshot batch period leave is_ready=False
+    for ~50% of 5-min-warmup segments, defeating the staleness fallback."""
+    rec = L2Reconstructor(incremental_ready_threshold=5)
+    rec.reset()
+    assert rec.is_ready is False
+
+    # 4 levels each side — below threshold
+    for p in range(100, 104):
+        rec.apply_event(1000, 0, float(p), 1.0)
+    for p in range(105, 109):
+        rec.apply_event(1000, 1, float(p), 1.0)
+    assert rec.is_ready is False, "below threshold should not flip"
+
+    # 5th level on each side — flip
+    rec.apply_event(1001, 0, 99.0, 1.0)
+    rec.apply_event(1001, 1, 110.0, 1.0)
+    assert rec.is_ready is True
+
+
+def test_incremental_bootstrap_is_sticky_after_deletes():
+    """Once is_ready is True via incrementals, subsequent deletes that
+    drop level count below threshold should not unflip it."""
+    rec = L2Reconstructor(incremental_ready_threshold=5)
+    rec.reset()
+    for p in range(100, 105):
+        rec.apply_event(1000, 0, float(p), 1.0)
+    for p in range(106, 111):
+        rec.apply_event(1000, 1, float(p), 1.0)
+    assert rec.is_ready is True
+
+    # Delete 4 of 5 bids — book has only 1 bid level now
+    for p in range(100, 104):
+        rec.apply_event(1001, 0, float(p), 0.0)
+    assert rec.is_ready is True, "is_ready is sticky once set"
+
+
+def test_incremental_bootstrap_threshold_zero_disables():
+    """incremental_ready_threshold=0 → snapshot-only legacy semantics."""
+    rec = L2Reconstructor(incremental_ready_threshold=0)
+    rec.reset()
+    for p in range(100, 200):
+        rec.apply_event(1000, 0, float(p), 1.0)
+    for p in range(200, 300):
+        rec.apply_event(1000, 1, float(p), 1.0)
+    assert rec.is_ready is False, "threshold=0 should not flip on incrementals"
+    rec.apply_event(2000, 3, 99.0, 1.0)  # snapshot still works
+    assert rec.is_ready is True
+
+
+def test_incremental_bootstrap_one_side_below_threshold():
+    """Only one side reaching threshold should NOT flip is_ready."""
+    rec = L2Reconstructor(incremental_ready_threshold=5)
+    rec.reset()
+    for p in range(100, 110):  # 10 bids
+        rec.apply_event(1000, 0, float(p), 1.0)
+    for p in range(150, 152):  # 2 asks
+        rec.apply_event(1000, 1, float(p), 1.0)
+    assert rec.is_ready is False, "one-sided readiness should not flip"
+
+
+def test_incremental_bootstrap_unblocks_get_top1():
+    """End-to-end: pure incrementals should produce a valid get_top1
+    result (which was the actual P3 user-visible failure)."""
+    rec = L2Reconstructor(incremental_ready_threshold=5)
+    rec.reset()
+    # No snapshot — just incrementals.
+    for p in (100, 99, 98, 97, 96):
+        rec.apply_event(1000, 0, float(p), 1.0)
+    for p in (101, 102, 103, 104, 105):
+        rec.apply_event(1000, 1, float(p), 1.0)
+    top = rec.get_top1()
+    assert top is not None, "incremental-bootstrapped book should answer get_top1"
+    assert top["best_bid"] == 100.0
+    assert top["best_ask"] == 101.0
+
+
 def test_stale_recovery_re_freshens_cache():
     rec = L2Reconstructor(depth_limit=5, book_staleness_seconds=10.0)
     rec.reset()

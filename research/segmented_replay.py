@@ -87,7 +87,8 @@ def build_segments(day: str, segment_sec: int = DEFAULT_SEGMENT_SEC) -> list[tup
 def build_segment_worker(args: tuple,
                           warmup_sec: int = DEFAULT_WARMUP_SEC,
                           book_staleness_seconds: float = 0.0,
-                          prune_snapshot_dust: bool = False) -> dict:
+                          prune_snapshot_dust: bool = False,
+                          incremental_ready_threshold: int = 5) -> dict:
     """Worker: process events in [seg_start - warmup, seg_end), emit
     feature rows for CC trades in [seg_start, seg_end).
 
@@ -97,13 +98,23 @@ def build_segment_worker(args: tuple,
     keeps strict behaviour.
 
     prune_snapshot_dust: P1-C fix 2026-05-08. When True, strip cross-side
-    dust at every snapshot batch close. Pairs cleanly with staleness."""
+    dust at every snapshot batch close. Pairs cleanly with staleness.
+
+    incremental_ready_threshold: P3 fix 2026-05-09. Number of levels
+    each side must reach (via incrementals OR snapshots) before
+    L2Reconstructor.is_ready flips True. Default 5 unblocks BJ-style
+    venues where the warmup window doesn't span a 600s snapshot
+    batch — the pre-fix behavior left is_ready=False permanently for
+    ~50% of segments, defeating the staleness fallback (cache stays
+    empty so fresh-fail can't fall back). Pass 0 to disable
+    (snapshot-only legacy behavior)."""
     day, seg_start_ms, seg_end_ms = args
     read_start_ms = seg_start_ms - warmup_sec * 1000
 
     fb = FeatureBuilder(lookback_seconds=warmup_sec,
                         book_staleness_seconds=book_staleness_seconds,
-                        prune_snapshot_dust=prune_snapshot_dust)
+                        prune_snapshot_dust=prune_snapshot_dust,
+                        incremental_ready_threshold=incremental_ready_threshold)
 
     # Collect events from all 3 venues in time range using parquet filter
     rows: list[tuple] = []
@@ -180,6 +191,7 @@ def replay_days_parallel(
     start_hour: float = 0.0,
     book_staleness_seconds: float = 0.0,
     prune_snapshot_dust: bool = False,
+    incremental_ready_threshold: int = 5,
     verbose: bool = True,
 ) -> dict:
     """Top-level: split given days into segments, run workers in parallel,
@@ -205,11 +217,13 @@ def replay_days_parallel(
         print(f"  pool size: {n_workers}")
 
     t0 = time.time()
-    if book_staleness_seconds > 0 or prune_snapshot_dust:
+    if (book_staleness_seconds > 0 or prune_snapshot_dust
+            or incremental_ready_threshold != 5):
         from functools import partial
         worker_fn = partial(build_segment_worker,
                             book_staleness_seconds=book_staleness_seconds,
-                            prune_snapshot_dust=prune_snapshot_dust)
+                            prune_snapshot_dust=prune_snapshot_dust,
+                            incremental_ready_threshold=incremental_ready_threshold)
     else:
         worker_fn = build_segment_worker
     with mp.get_context("spawn").Pool(n_workers) as pool:

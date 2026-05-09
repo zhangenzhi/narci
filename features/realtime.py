@@ -228,13 +228,18 @@ class _VenueState:
 
     @classmethod
     def with_staleness(cls, book_staleness_seconds: float,
-                       prune_snapshot_dust: bool = False):
+                       prune_snapshot_dust: bool = False,
+                       incremental_ready_threshold: int = 5):
         """Construct a venue state whose L2Reconstructor accepts stale
         book reads up to N seconds (P1 fix 2026-05-08) and/or strips
-        cross-side dust at snapshot batch close (P1-C fix 2026-05-08)."""
-        v = cls(book=L2Reconstructor(depth_limit=10,
-                                      book_staleness_seconds=book_staleness_seconds,
-                                      prune_snapshot_dust=prune_snapshot_dust))
+        cross-side dust at snapshot batch close (P1-C fix 2026-05-08)
+        and/or bootstraps is_ready from incrementals (P3 fix 2026-05-09)."""
+        v = cls(book=L2Reconstructor(
+            depth_limit=10,
+            book_staleness_seconds=book_staleness_seconds,
+            prune_snapshot_dust=prune_snapshot_dust,
+            incremental_ready_threshold=incremental_ready_threshold,
+        ))
         return v
 
 
@@ -257,7 +262,8 @@ class FeatureBuilder:
     def __init__(self, lookback_seconds: int = 300,
                  metric_sample_interval_ms: int = 500,
                  book_staleness_seconds: float = 0.0,
-                 prune_snapshot_dust: bool = False):
+                 prune_snapshot_dust: bool = False,
+                 incremental_ready_threshold: int = 5):
         """
         :param book_staleness_seconds: P1 fix 2026-05-08. When > 0, each
             venue's L2Reconstructor will fall back to its last valid
@@ -286,10 +292,14 @@ class FeatureBuilder:
         self._metric_sample_interval_ms = metric_sample_interval_ms
         self._book_staleness_seconds = book_staleness_seconds
         self._prune_snapshot_dust = prune_snapshot_dust
+        self._incremental_ready_threshold = incremental_ready_threshold
         self._venues: dict[str, _VenueState] = {
-            "cc": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust),
-            "bj": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust),
-            "um": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust),
+            "cc": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust,
+                                              incremental_ready_threshold),
+            "bj": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust,
+                                              incremental_ready_threshold),
+            "um": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust,
+                                              incremental_ready_threshold),
         }
         self._last_metric_ts: dict[str, int] = {"cc": 0, "bj": 0, "um": 0}
         # Snapshot of last get_features for sequence builder.
