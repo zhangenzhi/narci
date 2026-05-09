@@ -80,33 +80,60 @@ def cmd_compact(symbol, target_date=None):
             print(f"  - {d}")
         return
 
-    # 如果 symbol=ALL，自动发现所有交易对并逐个处理
+    # 如果 symbol=ALL：按 raw_dir 分组发现，避免跨交易所同名 symbol collision
+    # （例如 BTCJPY 同时存在 binance/spot 全球版 和 binance_jp/spot 日本版，
+    # 之前只 break 在第一个匹配 dir 上，第二个 dir 永远 silently 跳过）
     if symbol.upper() == "ALL":
-        discovered = set()
+        per_dir_syms: dict[str, list[str]] = {}
         for raw_dir in raw_dirs:
+            local = set()
             for f in os.listdir(raw_dir):
-                m = re.match(r"([A-Za-z0-9]+)_RAW_", f)
+                m = re.match(r"([A-Za-z0-9_]+)_RAW_\d{8}_\d{6}\.parquet$", f)
                 if m:
-                    discovered.add(m.group(1).upper())
-        if not discovered:
+                    local.add(m.group(1).upper())
+            if local:
+                per_dir_syms[raw_dir] = sorted(local)
+
+        if not per_dir_syms:
             print("⚠️ 未发现任何交易对的 RAW 文件。")
             return
-        print(f"🔍 [自动发现] 共检测到 {len(discovered)} 个交易对: {sorted(discovered)}")
-        for sym in sorted(discovered):
-            cmd_compact(sym, target_date)
+
+        total = sum(len(v) for v in per_dir_syms.values())
+        print(f"🔍 [自动发现] {len(per_dir_syms)} 个 raw_dir，共 {total} 个 (sym × venue) 组合")
+        for raw_dir, syms in per_dir_syms.items():
+            print(f"  📂 {raw_dir} → {syms}")
+
+        for raw_dir, syms in per_dir_syms.items():
+            for sym in syms:
+                _compact_one_dir(sym, target_date, raw_dir, official_dir,
+                                 cold_dir, retain_days)
         return
 
-    # 在所有候选目录中查找该交易对的文件
-    raw_dir = None
+    # 单 symbol 模式：遍历所有匹配的 raw_dir，每个都跑一遍
+    matched_dirs = []
     for d in raw_dirs:
         files_in_dir = os.listdir(d)
         if any(re.match(rf"{symbol}_RAW_", f, re.IGNORECASE) for f in files_in_dir):
-            raw_dir = d
-            break
+            matched_dirs.append(d)
 
-    if raw_dir is None:
+    if not matched_dirs:
         print(f"⚠️ 未在任何数据目录中找到 {symbol} 的 RAW 文件。")
         return
+    if len(matched_dirs) > 1:
+        print(f"ℹ️ {symbol} 在 {len(matched_dirs)} 个 raw_dir 中存在，全部 compact:")
+        for d in matched_dirs:
+            print(f"  📂 {d}")
+
+    for raw_dir in matched_dirs:
+        _compact_one_dir(symbol, target_date, raw_dir, official_dir,
+                         cold_dir, retain_days)
+    return
+
+
+def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retain_days):
+    """Compact one (symbol, raw_dir) combination across all dates with fragments."""
+    from data.daily_compactor import DailyCompactor
+    symbol = symbol.upper()
 
     # 扫描指定交易对的 1min RAW 文件
     files = os.listdir(raw_dir)
@@ -116,16 +143,25 @@ def cmd_compact(symbol, target_date=None):
     dates_found = set()
     file_counts = {}
     
+    # 自动 case-fix：只在 full prefix 仅大小写不同时才 rename
+    # （避免 split('_')[0] 把多 token 符号误删 - 历史上 BTC_JPY 被 split
+    # 成 "BTC" 然后 prepend 整个 "BTC_JPY"，把文件改成 BTC_JPY_jpy_RAW_...）
+    full_prefix_pattern = re.compile(
+        rf"^([A-Za-z0-9_]+)_RAW_\d{{8}}_\d{{6}}\.parquet$"
+    )
     for f in files:
         match = date_pattern.match(f)
         if match:
-            # 自动修复机制：如果发现由于 recorder 导致的小写前缀，自动将文件重命名为大写。
-            actual_prefix = f.split('_')[0]
-            if actual_prefix != symbol.upper():
-                new_f = f.replace(actual_prefix, symbol.upper(), 1)
-                os.rename(os.path.join(raw_dir, f), os.path.join(raw_dir, new_f))
-                f = new_f
-                
+            m_full = full_prefix_pattern.match(f)
+            if m_full:
+                full_prefix = m_full.group(1)
+                if (full_prefix != symbol.upper()
+                        and full_prefix.upper() == symbol.upper()):
+                    new_f = symbol.upper() + f[len(full_prefix):]
+                    os.rename(os.path.join(raw_dir, f),
+                              os.path.join(raw_dir, new_f))
+                    f = new_f
+
             d_str = match.group(1)
             dates_found.add(d_str)
             file_counts[d_str] = file_counts.get(d_str, 0) + 1
@@ -201,6 +237,7 @@ def cmd_compact(symbol, target_date=None):
             retain_days=retain_days,
             source=source,
             market_type=market_type,
+            exchange=exchange,
         )
 
         compactor.run()

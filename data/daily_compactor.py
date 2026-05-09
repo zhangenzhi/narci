@@ -33,16 +33,22 @@ class DailyCompactor:
                  cold_dir: str | None = None,
                  retain_days: int = 7,
                  source: HistoricalSource | None = None,
-                 market_type: str = "um_futures"):
+                 market_type: str = "um_futures",
+                 exchange: str | None = None):
         """
         :param symbol: 交易对，如 ETHUSDT / eth_jpy
         :param target_date: datetime.date
         :param raw_dir: RAW 1min 碎片目录
         :param official_dir: 拉取的官方对比文件落脚点
-        :param cold_dir: 冷数据归档目录（None 则不归档）
+        :param cold_dir: 冷数据归档根目录（None 则不归档）
         :param retain_days: 聚合后保留最近 N 天碎片
         :param source: 交叉校验用的 HistoricalSource（None 则跳过校验）
         :param market_type: "spot" | "um_futures"，供 source 构造 URL 用
+        :param exchange: "binance" | "binance_jp" | "coincheck"。若提供，
+            cold tier 写入 `{cold_dir}/{exchange}/{market_type}/` 子目录
+            （和 backfill_vision_trades.py 的 layout 对齐，避免不同源同符号
+            collision，例如 binance.com 全球 BTCJPY 跟 binance.jp BTCJPY）。
+            若为 None 则写 flat `cold_dir/`（向后兼容旧 layout）。
         """
         self.symbol = symbol.upper()
         self.target_date = target_date
@@ -51,10 +57,16 @@ class DailyCompactor:
 
         self.raw_dir = raw_dir
         self.official_dir = official_dir
-        self.cold_dir = cold_dir
         self.retain_days = retain_days
         self.source = source
         self.market_type = market_type
+        self.exchange = exchange
+
+        # cold tier 子目录路径：cold/{exchange}/{market_type}/
+        if cold_dir and exchange:
+            self.cold_dir = os.path.join(cold_dir, exchange, market_type)
+        else:
+            self.cold_dir = cold_dir
 
         self.daily_file_path = os.path.join(
             self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_DAILY.parquet"
