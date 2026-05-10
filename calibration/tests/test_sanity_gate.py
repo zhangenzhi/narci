@@ -25,6 +25,35 @@ def test_um_trades_dead_window():
         assert "trades-dead" in reason(d, "binance_um", "BTCUSDT")
 
 
+def test_um_trades_dead_05_06_07_blacklist():
+    """v1.2 (2026-05-10): 0506+0507 UM also caught the recorder bug
+    (running on /market/stream which dropped depth; dual-WS fix
+    deployed mid-0507). Vision-backfilled but day-level blacklisted
+    because depth coverage is also degraded for these days."""
+    for d in ("20260506", "20260507"):
+        assert is_blacklisted(d, "binance_um", "BTCUSDT"), d
+        assert is_blacklisted(d, "binance_um", "ETHUSDT"), d
+        r = reason(d, "binance_um", "BTCUSDT")
+        assert "Vision-backfilled" in r
+        assert "dual-WS" in r
+
+
+def test_um_05_08_NOT_blacklisted_only_flagged():
+    """0508 partial CC outage is documented in comments only, not
+    blacklisted. UM/BJ on 0508 are normal, CC trades ~50% of normal."""
+    assert not is_blacklisted("20260508", "binance_um", "BTCUSDT")
+    assert not is_blacklisted("20260508", "coincheck", "BTC_JPY")
+    assert not is_blacklisted("20260508", "binance_jp", "BTCJPY")
+
+
+def test_um_05_02_NOT_blacklisted_low_volume_weekend():
+    """0502 low across all 3 venues is documented as real low-volume
+    weekend (not a recorder bug). Keep usable."""
+    assert not is_blacklisted("20260502", "binance_um", "BTCUSDT")
+    assert not is_blacklisted("20260502", "coincheck", "BTC_JPY")
+    assert not is_blacklisted("20260502", "binance_jp", "BTCJPY")
+
+
 def test_bj_partial_outage():
     assert is_blacklisted("20260428", "binance_jp", "BTCJPY")
     assert "outage" in reason("20260428", "binance_jp", "BTCJPY")

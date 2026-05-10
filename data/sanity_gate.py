@@ -17,32 +17,58 @@ manifest.json.notes for reproducibility.
 from __future__ import annotations
 
 
-BLACKLIST_VERSION = "v1.1"
+BLACKLIST_VERSION = "v1.2"
 
 
 # Known-bad windows. Each entry: (yyyymmdd, exchange, symbol, reason).
 # Use "*" for wildcard.
 _BLACKLIST: list[tuple[str, str, str, str]] = [
-    # Binance UM aggTrade chain dead 04-24 to 04-28 (5 days).
-    # Discovered by nyx 2026-05-06 cross-validation; was previously
-    # documented as 04-24~26 in NARCI_INTEGRATION.md but the actual
-    # window is wider.
-    ("20260424", "binance_um", "*", "trades-dead (recorder bug, all UM symbols)"),
-    ("20260425", "binance_um", "*", "trades-dead (recorder bug)"),
-    ("20260426", "binance_um", "*", "trades-dead (recorder bug)"),
-    ("20260427", "binance_um", "*", "trades-dead (recorder bug)"),
-    ("20260428", "binance_um", "*", "trades-dead (recorder bug)"),
+    # Binance UM aggTrade chain dead 04-24 to 04-28 (5 days). Recorder
+    # subscribed to /stream which silently dropped aggTrade after the
+    # 2026-04-23 endpoint split. Vision-backfilled via
+    # `data.backfill_vision_trades` (commits 2654f93 + 553a1f2). Entries
+    # remain blacklisted because: (a) live depth recording also had
+    # quality issues during this window, and (b) Vision aggTrade
+    # aggregation count differs from the recorder's live count, so the
+    # signal density is non-uniform vs neighboring days.
+    ("20260424", "binance_um", "*", "trades-dead recorder bug; Vision-backfilled"),
+    ("20260425", "binance_um", "*", "trades-dead recorder bug; Vision-backfilled"),
+    ("20260426", "binance_um", "*", "trades-dead recorder bug; Vision-backfilled"),
+    ("20260427", "binance_um", "*", "trades-dead recorder bug; Vision-backfilled"),
+    ("20260428", "binance_um", "*", "trades-dead recorder bug; Vision-backfilled"),
 
     # Binance JP BTCJPY 04-28: trades=2103 vs historical median ~37k (6%
     # of expected). Likely partial-day outage; also blacklist.
     ("20260428", "binance_jp", "BTCJPY",
      "trades count 2103 << median 37k (6% of expected); partial outage"),
 
-    # Earlier sub-day issues (from cross-val analysis 2026-04-29):
-    # 04-23: trade content deficit ~30% across BTC/BNB on Binance Vision.
-    # Not blacklisted at day-level (still usable) but flagged for awareness.
+    # Binance UM aggTrade dead again 05-06 + 05-07 (recorder running on
+    # /market/stream which delivers ONLY aggTrade — depth went silent;
+    # save_loop hung 27h waiting for depth alignment). Dual-WS fix
+    # `4582d02` deployed mid-05-07, hence both days caught the bug.
+    # Vision aggTrades backfilled via `data.backfill_vision_trades` on
+    # 2026-05-10 (commit pending). Day-level blacklist because depth
+    # incremental coverage is also degraded for these days (UM 05-06
+    # total rows 56M vs typical 90-120M; 05-07 only 12M rows).
+    ("20260506", "binance_um", "*",
+     "trades-dead pre dual-WS fix; Vision-backfilled; depth coverage also low"),
+    ("20260507", "binance_um", "*",
+     "trades-dead pre dual-WS fix; Vision-backfilled; depth coverage 12% of normal"),
+
+    # Sub-day issues — flagged for awareness, NOT blacklisted at
+    # day-level. nyx training pipelines should treat these days as
+    # usable but downweight if needed.
+    #
     # 04-18: cross-day duplicates across symbols. Edge-dedup applied
     # downstream rather than blacklisting.
+    # 04-23: trade content deficit ~30% across BTC/BNB on Binance Vision
+    # (cross-val 2026-04-29). nyx treats as OOS test day.
+    # 05-02: ALL three venues simultaneously low (UM 40%, BJ 47%,
+    # CC 35% of typical trades). Looks like real low-volume weekend, not
+    # a recorder bug. Keep usable.
+    # 05-08: CC trades 17K (50% of normal); BJ + UM normal. Single-venue
+    # partial outage on CC; usable but watch for asymmetric bias if
+    # multi-venue training.
 ]
 
 
