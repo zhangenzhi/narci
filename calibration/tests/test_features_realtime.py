@@ -41,6 +41,44 @@ def test_feature_names_include_baseline():
     assert "hour_sin" in FEATURE_NAMES
 
 
+def test_v4_um_flow_features_exist():
+    """v4 (2026-05-10): UM signed trade flow at 4 horizons."""
+    for fn in ("um_flow_50ms", "um_flow_100ms", "um_flow_500ms", "um_flow_5s"):
+        assert fn in FEATURE_NAMES, fn
+    assert FEATURES_VERSION >= "v4"
+
+
+def test_v4_um_flow_signs_match_taker_direction():
+    """Per narci convention side=2 qty<0 = taker BUY, qty>0 = taker SELL.
+    flow() returns Σ(taker_buy - taker_sell). Net buy aggression should
+    be positive."""
+    fb = FeatureBuilder()
+    ts0 = 1_700_000_000_000
+    # seed both sides
+    for v in ("cc", "bj", "um"):
+        fb.update_event(v, ts0, 3, 100.0, 1.0)
+        fb.update_event(v, ts0, 3, 99.0, 1.0)
+        fb.update_event(v, ts0, 4, 101.0, 1.0)
+        fb.update_event(v, ts0, 4, 102.0, 1.0)
+    # 3 taker BUYs (qty<0) of 0.1 each, 1 taker SELL (qty>0) of 0.05
+    fb.update_event("um", ts0 + 100, 2, 100.5, -0.10)   # buy
+    fb.update_event("um", ts0 + 200, 2, 100.5, -0.10)   # buy
+    fb.update_event("um", ts0 + 300, 2, 100.5, -0.10)   # buy
+    fb.update_event("um", ts0 + 4000, 2, 100.5, +0.05)  # sell
+
+    feats = fb.get_features(ts0 + 5000)
+    # 5s window catches all 4: 3*0.10 buys - 0.05 sell = +0.25
+    assert abs(feats["um_flow_5s"] - 0.25) < 1e-9, feats["um_flow_5s"]
+    # 500ms window from ts0+5000 = cutoff ts0+4500. Only ts0+4000 within
+    # range? No: ts0+4000 < cutoff ts0+4500 → not included. So 0.
+    assert feats["um_flow_500ms"] == 0.0, feats["um_flow_500ms"]
+
+
+def test_v4_feature_count_increased_by_4():
+    """v3 had 31 features; v4 adds 4 um_flow → 35."""
+    assert len(FEATURE_NAMES) == 35
+
+
 def test_get_features_returns_dict_after_seeding():
     fb = FeatureBuilder()
     _seed(fb)

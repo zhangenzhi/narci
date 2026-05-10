@@ -46,10 +46,20 @@ from data.l2_reconstruct import L2Reconstructor
 # reintroduce basis_um_bps when an independent USDT/JPY ticker source is
 # wired into the recorder layer.
 #
+# Bumped v3 → v4 on 2026-05-10: added UM signed trade flow features at
+# four horizons (50ms / 100ms / 500ms / 5s). nyx 2026-05-10 lead-lag
+# study on 10 days showed signed flow gives ~50ms more lead than mid
+# (peak +25ms / 50% cliff +200ms vs +150ms for mid). Existing
+# um_imb_1s / um_imb_30s_norm are imbalance ratios in [-1, +1];
+# um_vol_5s is mid volatility (abs_log_return_sum); um_n_5s is count.
+# None of these expose the raw signed quantity flow. flow() method on
+# _TradeWindow already computes Σ(buys - sells) — these features just
+# expose it at multiple horizons. 31 → 35 feature names.
+#
 # Models trained against vN must retrain against vN+1 — manifest required-
 # version pin (narci_features_version_required) is enforced by
 # load_alpha_model.
-FEATURES_VERSION = "v3"
+FEATURES_VERSION = "v4"
 
 
 # ------------------------------------------------------------------ #
@@ -63,6 +73,10 @@ BASELINE_FEATURES = [
     # UM trade-based
     "r_um", "r_um_2s", "r_um_5s", "r_um_10s",
     "um_imb_1s", "um_imb_30s_norm", "um_n_5s", "um_vol_5s",
+    # UM signed trade flow (v4 — independent lead signal vs mid; ~50ms
+    # extra horizon per nyx 2026-05-10 lead-lag study, peak +25ms /
+    # 50% cliff +200ms). Σ(taker_buy_qty - taker_sell_qty) over window.
+    "um_flow_50ms", "um_flow_100ms", "um_flow_500ms", "um_flow_5s",
     # BJ trade-based
     "r_bj", "bj_imb_1s", "bj_flow_5s",
     # CC own
@@ -423,6 +437,15 @@ class FeatureBuilder:
         feats["um_imb_30s_norm"] = um.trades.imbalance(ts_ms, 30_000)
         feats["um_n_5s"]   = float(um.trades.count(ts_ms, 5000))
         feats["um_vol_5s"] = um.prices.abs_log_return_sum(ts_ms, 5000)
+        # v4 signed trade flow at multiple horizons. Σ(taker_buy_qty -
+        # taker_sell_qty) raw — positive = aggressive buy pressure.
+        # Per nyx 2026-05-10 lead-lag study, signed flow gives ~50ms
+        # more lead than mid; 50ms/100ms/500ms windows directly target
+        # the +25ms peak / +200ms cliff zone identified in 10-day pool.
+        feats["um_flow_50ms"]  = um.trades.flow(ts_ms, 50)
+        feats["um_flow_100ms"] = um.trades.flow(ts_ms, 100)
+        feats["um_flow_500ms"] = um.trades.flow(ts_ms, 500)
+        feats["um_flow_5s"]    = um.trades.flow(ts_ms, 5000)
 
         # --- BJ trade-based ---
         feats["r_bj"] = r_bj
