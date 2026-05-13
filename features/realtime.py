@@ -360,7 +360,20 @@ class FeatureBuilder:
                 # consuming throttle so the FIRST sample after batch
                 # completion still fires.
                 book = v.book
-                if book.is_ready and book.bids and book.asks:
+                # P2.1 fix 2026-05-13: also gate on snapshot batch being
+                # closed. Pre-fix, the first side=3 event in a fresh
+                # snapshot batch fired _record_book_metric with only one
+                # bid level applied (heapq nlargest yields the dust deep
+                # bid as "best", micropx -> -2938 bps). The bad entry sat
+                # in book_metric_history for 5s, poisoning cc_micro_dev_5s
+                # to -1469 on the first ~2 trade samples after segment
+                # start. _snapshot_batch_ts is set non-None throughout
+                # side=3/4 application and cleared by the first 0/1/2
+                # event after (which also runs prune_dust). Skip-without-
+                # consuming-throttle is intentional — we want the very
+                # next non-batch event to be the first sample.
+                if (book.is_ready and book.bids and book.asks
+                        and book._snapshot_batch_ts is None):
                     self._last_metric_ts[venue] = ts_ms
                     self._record_book_metric(v, ts_ms)
         if ts_ms > self._last_ts_ms:

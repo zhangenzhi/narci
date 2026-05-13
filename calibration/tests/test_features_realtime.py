@@ -151,9 +151,14 @@ def test_tier2_features_finite_after_book_updates():
         fb.update_event(v, ts, 3, 99, 0.3)
         fb.update_event(v, ts, 4, 101, 0.4)
         fb.update_event(v, ts, 4, 102, 0.2)
+        # P2.1 contract: close the snapshot batch via a diff event so the
+        # first _record_book_metric sample fires (mid-batch sampling
+        # produces dust-bid outliers — see test_no_mid_batch_micro_dev_outlier).
+        fb.update_event(v, ts + 1, 0, 100.5, 0.5)
     # also feed UM (basis_um needs UM mid)
     fb.update_event("um", ts, 3, 100, 0.5)
     fb.update_event("um", ts, 4, 101, 0.5)
+    fb.update_event("um", ts + 1, 0, 100.5, 0.5)
     # need at least one trade for r_cc lag
     for v in ("cc", "bj", "um"):
         for k in range(5):
@@ -221,26 +226,28 @@ def test_metric_sample_throttle_caps_at_interval():
     throttle, and so the next event tried again. Profile showed 67,651
     metric attempts on a 3-min UM slice (94x over the expected ~720).
 
-    This test feeds 1000 side=4 events at the SAME ts after the book is
-    fully populated and asserts that book_metric_history grows by AT MOST
-    a small constant (1-2), not 1000."""
+    This test seeds the book, closes the snapshot batch with a diff
+    event, then injects 1000 side=4 events at a NEW snapshot ts and
+    asserts that book_metric_history grows by AT MOST 1 (not 1000)."""
     from features import FeatureBuilder
 
     fb = FeatureBuilder(metric_sample_interval_ms=500)
     base_ts = 1_700_000_000_000
-    # Seed both sides.
+    # Seed both sides via snapshot.
     fb.update_event("um", base_ts, 3, 100.0, 1.0)
     fb.update_event("um", base_ts, 4, 101.0, 1.0)
-    # Now book is non-empty on both sides; this single sample should fire.
+    # Close batch + advance throttle by 500ms via a diff event.
+    fb.update_event("um", base_ts + 500, 0, 100.5, 0.5)
     initial = len(fb._venues["um"].book_metric_history)
-    assert initial >= 1, "expected at least one metric sample after seed"
+    assert initial >= 1, "expected at least one metric sample after batch close"
 
     # Inject 1000 side=4 events at the SAME ts (simulating a snapshot batch).
     for i in range(1000):
-        fb.update_event("um", base_ts, 4, 110.0 + i, 0.1)
+        fb.update_event("um", base_ts + 1000, 4, 110.0 + i, 0.1)
 
     final = len(fb._venues["um"].book_metric_history)
     # Throttle limits to 1 sample per 500ms; same-ts events all blocked.
+    # P2.1 additionally suppresses sampling DURING the batch.
     assert final - initial <= 1, (
         f"throttle bypass regression: {final - initial} samples added during "
         f"same-ts snapshot batch (expected ≤ 1)"
@@ -248,9 +255,10 @@ def test_metric_sample_throttle_caps_at_interval():
 
 
 def test_metric_sample_skipped_when_one_side_empty():
-    """The refined throttle gate: don't burn the throttle window on a
-    sample attempt when one side of the book is still empty (mid-init).
-    This way the FIRST sample fires as soon as both sides arrive."""
+    """The throttle gate must not burn its window on a sample attempt
+    when one side of the book is still empty (mid-init). P2.1 extends
+    this to "also when we are inside a snapshot batch": the first
+    sample fires only after a non-snapshot event closes the batch."""
     from features import FeatureBuilder
 
     fb = FeatureBuilder(metric_sample_interval_ms=500)
@@ -262,10 +270,66 @@ def test_metric_sample_skipped_when_one_side_empty():
     # No sample possible (asks empty), throttle should NOT lock.
     assert len(fb._venues["bj"].book_metric_history) == 0
 
-    # Now add ask side at SAME ts. Throttle should still be unlocked, so
-    # this event fires the sample.
+    # Add ask side at SAME ts. Both sides are now populated, but the
+    # snapshot batch is still open (P2.1) — no sample yet.
     fb.update_event("bj", base_ts, 4, 101.0, 1.0)
+    assert len(fb._venues["bj"].book_metric_history) == 0, (
+        "should not sample inside a snapshot batch"
+    )
+
+    # A diff event closes the batch — first sample fires here.
+    fb.update_event("bj", base_ts + 1, 0, 100.5, 0.5)
     assert len(fb._venues["bj"].book_metric_history) >= 1
+
+
+def test_no_mid_batch_micro_dev_outlier():
+    """P2.1 fix 2026-05-13 (segment-0 outlier).
+
+    Reproduces the day-boundary cc_micro_dev_5s = -1469 outlier that
+    nyx flagged. Pre-fix mechanism:
+      1. Snapshot batch arrives sorted by (ts, -side) then by price
+         ascending → side=4 events fully populate asks first, then
+         side=3 events arrive lowest-price first.
+      2. The first side=3 event adds the deepest dust bid (e.g. 60% of
+         market price) → book has 1 bid level + 347 ask levels.
+      3. Pre-P2.1 throttle gate passes (both sides non-empty) →
+         _record_book_metric fires → micropx weighted heavily to dust
+         bid → micro_dev_bps ~= -2900 written to history.
+      4. 5s rolling later picks up this entry, polluting cc_micro_dev_5s
+         for the next 5 seconds.
+    """
+    from features import FeatureBuilder
+
+    fb = FeatureBuilder(metric_sample_interval_ms=500)
+    base_ts = 1_700_000_000_000
+
+    # Simulate the snapshot batch in the worst-case order: asks first
+    # (small to large), then bids (small to large — so dust bid lands
+    # before legitimate top bids).
+    for p in [101.0, 102.0, 105.0, 110.0]:          # ask side, ascending
+        fb.update_event("cc", base_ts, 4, p, 1.0)
+    # Bid side: first event is the deep dust bid, then legit ones.
+    fb.update_event("cc", base_ts, 3, 50.0, 0.001)  # dust deep bid
+    fb.update_event("cc", base_ts, 3, 95.0, 1.0)
+    fb.update_event("cc", base_ts, 3, 99.0, 1.0)
+    fb.update_event("cc", base_ts, 3, 100.0, 1.0)
+
+    # Batch is still open at this point — no sample should have fired.
+    assert len(fb._venues["cc"].book_metric_history) == 0, (
+        "P2.1 contract: no sample inside open snapshot batch"
+    )
+
+    # A diff event closes the batch. With prune_snapshot_dust default
+    # off, the dust bid stays in the book, but get_state heapq.nlargest
+    # picks the TOP-5 = legit bids → micropx is sane.
+    fb.update_event("cc", base_ts + 100, 0, 99.5, 0.5)
+    hist = fb._venues["cc"].book_metric_history
+    assert len(hist) >= 1, "expected sample after batch close"
+    md = hist[-1][3]  # micro_dev_bps
+    assert abs(md) < 50, (
+        f"micro_dev_bps after batch close should be sane, got {md} "
+        f"(pre-fix would write ~ -2900 from the dust-only top-1 state)"
+    )
 
 
 def test_stats_shape():
