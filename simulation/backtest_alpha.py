@@ -13,9 +13,12 @@ At every CC trade event, the strategy:
   1. Calls model.predict(fb) → alpha in bps
   2. Cancels any existing live quote (one-quote policy, v1)
   3. If |alpha| > threshold, places a maker quote on the side aligned
-     with alpha sign:
-       alpha > 0  → BUY at best_bid (compete for queue)
-       alpha < 0  → SELL at best_ask
+     with alpha sign, using `quote_strategy`:
+       "join_back"     — alpha > 0 → BUY at best_bid (back of queue)
+                         alpha < 0 → SELL at best_ask
+       "improve_1_tick"— alpha > 0 → BUY at best_bid + tick
+                         alpha < 0 → SELL at best_ask - tick
+                         (falls back to join_back if would cross)
   4. Quote auto-cancels after quote_lifetime_sec if unfilled
 
 After replay, PnL is computed from broker fills:
@@ -51,6 +54,39 @@ VENUE_SOURCES = [
     ("binance_jp",  "spot",       "BTCJPY",  "bj"),
     ("binance",     "um_futures", "BTCUSDT", "um"),
 ]
+
+QUOTE_STRATEGIES = ("join_back", "improve_1_tick")
+
+
+def _compute_quote_price(
+    side: str, best_bid: float, best_ask: float,
+    strategy: str, tick_size: float,
+) -> float:
+    """Decide the limit price for a post-only maker quote.
+
+    join_back     : post at the current best (BUY @ bid, SELL @ ask).
+                    Joins the back of the existing queue.
+    improve_1_tick: post one tick inside the spread (BUY @ bid+tick,
+                    SELL @ ask-tick). Falls back to join_back when the
+                    spread is already one tick wide and improving would
+                    cross the book.
+
+    nyx's 2026-05-13 sweep showed improve_1_tick lifts 05-04 OOS edge
+    from +2.17 → +16.21 bps because front-of-queue dodges adverse
+    selection. Production binding strategy for CC echo.
+    """
+    if strategy == "join_back":
+        return best_bid if side == "BUY" else best_ask
+    if strategy == "improve_1_tick":
+        if side == "BUY":
+            improved = best_bid + tick_size
+            return improved if improved < best_ask else best_bid
+        else:  # SELL
+            improved = best_ask - tick_size
+            return improved if improved > best_bid else best_ask
+    raise ValueError(
+        f"unknown quote_strategy {strategy!r}; expected one of {QUOTE_STRATEGIES}"
+    )
 
 
 def _stream_cold_file(path: Path, venue: str,
@@ -133,6 +169,7 @@ def backtest_alpha_model(
     lookback_seconds: int = 300,
     warmup_seconds: int = 300,            # skip quote placement during warmup
     max_hours: float | None = None,       # smoke knob; None = full day(s)
+    quote_strategy: str = "join_back",    # "join_back" | "improve_1_tick"
     verbose: bool = True,
 ) -> dict:
     """Backtest an AlphaModel by streaming events through narci's
@@ -148,10 +185,20 @@ def backtest_alpha_model(
     :param alpha_threshold_bps: |alpha| below this → no quote (stay flat)
     :param quote_lifetime_sec: cancel unfilled quote after this many sec
     :param lookback_seconds: FeatureBuilder lookback
+    :param quote_strategy: "join_back" (default, conservative — joins
+        the back of the queue at the current best) or "improve_1_tick"
+        (posts one tick inside the spread; falls back to join_back when
+        spread is already one tick wide). Per nyx 2026-05-13 sweep,
+        improve_1_tick is the production-binding strategy for CC echo
+        (+11.3x PnL vs join_back on 05-04).
 
     :return: dict with daily_pnl, sharpe, fills, decisions, cancels,
              plus aggregate stats.
     """
+    if quote_strategy not in QUOTE_STRATEGIES:
+        raise ValueError(
+            f"quote_strategy must be one of {QUOTE_STRATEGIES}, got {quote_strategy!r}"
+        )
     model: AlphaModel = load_alpha_model(Path(model_path))
     if symbol_spec is None:
         symbol_spec = _make_default_symbol_spec(symbol, exchange)
@@ -238,8 +285,10 @@ def backtest_alpha_model(
                 live_oid = None
 
             quote_side = "BUY" if alpha_bps > 0 else "SELL"
-            # Post-only safe: BUY at best_bid, SELL at best_ask.
-            quote_price = best_bid if quote_side == "BUY" else best_ask
+            quote_price = _compute_quote_price(
+                quote_side, best_bid, best_ask,
+                quote_strategy, symbol_spec.tick_size,
+            )
 
             client_oid = f"bt_{ts_ms}_{n_quotes_placed}"
             placed = broker.place_limit(
@@ -301,6 +350,7 @@ def backtest_alpha_model(
         "alpha_threshold_bps": alpha_threshold_bps,
         "quote_size": quote_size,
         "quote_lifetime_sec": quote_lifetime_sec,
+        "quote_strategy": quote_strategy,
         # Raw events for downstream analysis
         "decisions": decisions,
         "fills": fills,
@@ -336,6 +386,12 @@ if __name__ == "__main__":
                     help="only replay first N hours (smoke)")
     ap.add_argument("--warmup-sec", type=int, default=300,
                     help="skip quoting during first N seconds (FB bootstrap)")
+    ap.add_argument("--quote-strategy", choices=QUOTE_STRATEGIES,
+                    default="join_back",
+                    help="maker price placement: 'join_back' joins the "
+                         "current best (back of queue); 'improve_1_tick' "
+                         "posts one tick inside the spread for front-of-"
+                         "queue priority (per nyx 2026-05-13, +11.3x PnL).")
     args = ap.parse_args()
     days = args.days.split(",")
     backtest_alpha_model(
@@ -346,4 +402,5 @@ if __name__ == "__main__":
         quote_lifetime_sec=args.quote_lifetime,
         warmup_seconds=args.warmup_sec,
         max_hours=args.hours,
+        quote_strategy=args.quote_strategy,
     )
