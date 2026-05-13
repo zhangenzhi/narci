@@ -1,6 +1,7 @@
 recorder:
-  # 交易对名称列表 (Binance 现货全部 JPY 交易对，截至 2026-04-15 via exchangeInfo)
-  # 共 24 对，主打日元计价策略覆盖
+  # 交易对名称列表
+  # JPY 对 (24 个, 截至 2026-04-15 via exchangeInfo) — 主打日元计价策略覆盖
+  # USDT 对 (2 个, 2026-05-13 加) — 期现 basis (UM perp vs binance global spot) feature 用
   symbols:
     - "BTCJPY"
     - "ETHJPY"
@@ -26,6 +27,9 @@ recorder:
     - "LPTJPY"
     - "IOTXJPY"
     - "TRUMPJPY"
+    # 2026-05-13: USDT 对，期现 basis 用
+    - "BTCUSDT"
+    - "ETHUSDT"
   
   # 市场类型: "spot" (现货) 或 "um_futures" (U本位合约)
   market_type: "spot"
