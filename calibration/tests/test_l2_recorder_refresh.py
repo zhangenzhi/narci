@@ -314,6 +314,160 @@ def test_snapshot_refresh_on_save_default_off():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_watchdog_thresholds_default():
+    """Watchdog config defaults to safe values when no config is supplied."""
+    adapter = _StubAdapter({"bids": [], "asks": []})
+    tmpdir = tempfile.mkdtemp(prefix="narci_test_")
+    try:
+        rec = L2Recorder(config_path="/nonexistent.yaml", symbol="btcjpy",
+                         adapter=adapter)
+        assert rec.watchdog_check_interval_sec == 5
+        assert rec.depth_stale_threshold_sec == 180
+        assert rec.trade_stale_threshold_sec == 1800
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_watchdog_forces_reconnect_on_silent_depth_channel():
+    """The 2026-05-08 CC bug: on a single WS that carries both depth and
+    trade channels, the depth channel silently died (no orderbook events
+    for 15h) while the trade channel kept pushing. Watchdog must detect
+    via per-channel staleness and force the WS to reconnect.
+
+    This test feeds a mock WS that delivers trade events at 0.1s
+    cadence but NEVER a depth event. With depth_stale_threshold = 0.5s,
+    record_stream should break out of its inner recv loop within ~0.5s
+    and re-enter the outer reconnect path (which in this stub triggers
+    a fresh init_symbol_snapshot call → adapter.fetch_count increments)."""
+    import json as _json
+
+    adapter = _StubAdapter({"bids": [["100", "1"]], "asks": [["101", "1"]]})
+    tmpdir = tempfile.mkdtemp(prefix="narci_test_")
+    try:
+        # parse_message must classify our injected trade messages as "trade"
+        def _parse(msg):
+            return ("btcjpy", "trade", msg)
+        adapter.parse_message = _parse
+
+        rec = L2Recorder(config_path="/nonexistent.yaml", symbol="btcjpy",
+                         adapter=adapter)
+        rec.save_dir = tmpdir
+        rec.watchdog_check_interval_sec = 1     # check ~1Hz so the test is fast
+        rec.depth_stale_threshold_sec = 1       # 1s budget for depth silence
+        rec.trade_stale_threshold_sec = 60      # don't trip on trade
+        rec.retry_wait = 0                      # zero backoff so we see reconnect quickly
+
+        # Mock websocket: yields trade messages on .recv(); never a depth msg.
+        class _MockWS:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): return False
+            async def send(self, _): return None
+            async def recv(self):
+                await asyncio.sleep(0.1)
+                # An arbitrary trade-like payload; our patched parse_message
+                # classifies whatever this is as "trade".
+                return _json.dumps({"trade": [["1700000000000", 1, "btcjpy",
+                                                  "100", "0.01", "buy"]]})
+
+        connect_count = 0
+        def _fake_connect(_url):
+            nonlocal connect_count
+            connect_count += 1
+            return _MockWS()
+
+        import websockets as _ws_mod
+        orig_connect = _ws_mod.connect
+        _ws_mod.connect = _fake_connect
+        try:
+            async def run_short():
+                task = asyncio.create_task(
+                    rec.record_stream("wss://ws-api.coincheck.com"))
+                await asyncio.sleep(3.0)        # depth stale should fire at ~1s
+                rec.running = False
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            asyncio.run(run_short())
+        finally:
+            _ws_mod.connect = orig_connect
+
+        # In 3 seconds at threshold=1s + check_interval=1s, we should have
+        # cycled the connection at least twice.
+        assert connect_count >= 2, (
+            f"expected ≥2 reconnects in 3s, got {connect_count} — watchdog "
+            f"did not detect silent depth channel"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_watchdog_does_not_trip_when_depth_flows():
+    """Symmetric: when depth events ARE flowing (every 0.2s, well under
+    the 1s threshold), the watchdog should NOT force a reconnect."""
+    import json as _json
+
+    adapter = _StubAdapter({"bids": [["100", "1"]], "asks": [["101", "1"]]})
+    tmpdir = tempfile.mkdtemp(prefix="narci_test_")
+    try:
+        def _parse(msg):
+            return ("btcjpy", "depth", msg)
+        adapter.parse_message = _parse
+
+        rec = L2Recorder(config_path="/nonexistent.yaml", symbol="btcjpy",
+                         adapter=adapter)
+        rec.save_dir = tmpdir
+        rec.watchdog_check_interval_sec = 1
+        rec.depth_stale_threshold_sec = 1
+        rec.trade_stale_threshold_sec = 60
+        rec.retry_wait = 0
+        rec.is_initialized["btcjpy"] = True
+        rec.stream_aligned["btcjpy"] = True
+
+        class _MockWS:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *_): return False
+            async def send(self, _): return None
+            async def recv(self):
+                await asyncio.sleep(0.2)
+                return _json.dumps({"bids": [["100.5", "1"]], "asks": []})
+
+        connect_count = 0
+        def _fake_connect(_url):
+            nonlocal connect_count
+            connect_count += 1
+            return _MockWS()
+
+        import websockets as _ws_mod
+        orig_connect = _ws_mod.connect
+        _ws_mod.connect = _fake_connect
+        try:
+            async def run_short():
+                task = asyncio.create_task(
+                    rec.record_stream("wss://ws-api.coincheck.com"))
+                await asyncio.sleep(3.0)
+                rec.running = False
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            asyncio.run(run_short())
+        finally:
+            _ws_mod.connect = orig_connect
+
+        # Should have stayed connected the whole 3s — exactly 1 connection.
+        assert connect_count == 1, (
+            f"watchdog false-positive: forced {connect_count - 1} unnecessary "
+            f"reconnects while depth was flowing every 200ms"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))

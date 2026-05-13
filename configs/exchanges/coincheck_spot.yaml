@@ -35,6 +35,15 @@ recorder:
   retry:
     wait_seconds: 5
 
+  # 2026-05-13 watchdog：CC 单 WS 上 orderbook channel 会静默死亡
+  # （2026-05-08 实测 15h depth 缺失，trade 仍正常推送）。watchdog 在
+  # ws.recv() 上加超时；超过 depth_stale_threshold_sec 没收到 depth 事件
+  # 就强制断连，外层 retry loop 会触发 REST snapshot + 重订阅。
+  # check_interval 是检测频率，threshold 是真实预算。
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180      # 3 min depth 静默 → 强制重连
+  trade_stale_threshold_sec: 1800     # 30 min trade 静默 → 兼顾低流动性 alt
+
   # Coincheck API 端点（如需代理或私有化部署可覆盖）
   endpoints:
     spot:

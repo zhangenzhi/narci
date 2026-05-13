@@ -71,6 +71,22 @@ class L2Recorder:
         self.snapshot_refresh_on_save = bool(
             self.config.get("snapshot_refresh_on_save", False)
         )
+        # 2026-05-13: per-WS channel-staleness watchdog. Catches silent
+        # channel deaths (the 05-08 CC orderbook channel hung for 15h
+        # while the trade channel kept pushing). On any WS, if no event
+        # of the expected type arrives within the threshold, force-close
+        # the connection so the outer retry loop reconnects + re-aligns.
+        # check_interval is how often we wake up to test staleness; the
+        # threshold is the actual budget.
+        self.watchdog_check_interval_sec = int(
+            self.config.get("watchdog_check_interval_sec", 5)
+        )
+        self.depth_stale_threshold_sec = int(
+            self.config.get("depth_stale_threshold_sec", 180)
+        )
+        self.trade_stale_threshold_sec = int(
+            self.config.get("trade_stale_threshold_sec", 1800)
+        )
 
         # 4. 落盘路径：{save_dir}/{exchange}/{market_type}/l2/
         base_dir = self.config.get("save_dir", "./replay_buffer/realtime")
@@ -157,7 +173,14 @@ class L2Recorder:
         # /market 这一种）；其他都视为 depth-bearing（含 Coincheck 这类没有
         # URL 流参数、靠 subscribe message 订阅 orderbook 的 case）。
         trade_only = "@aggTrade" in url and "@depth" not in url
+        depth_only = "@depth" in url and "@aggTrade" not in url
         carries_depth = not trade_only
+        # Watchdog expectations: which event types should this WS deliver?
+        # Used to enable per-type staleness checks (catches silent channel
+        # death — e.g. CC 2026-05-08 orderbook channel hung 15h while
+        # trade channel kept pushing).
+        expects_depth = not trade_only
+        expects_trade = not depth_only
         label = url.split("?")[0].rsplit("/", 2)[-2]  # 'public' / 'market' / 'stream'
         while self.running:
             try:
@@ -180,7 +203,45 @@ class L2Recorder:
                         for sym in self.symbols:
                             asyncio.create_task(self.init_symbol_snapshot(sym))
 
-                    async for message in ws:
+                    # Watchdog state — reset on every (re)connect.
+                    last_depth_msg_t = time.time()
+                    last_trade_msg_t = time.time()
+                    forced_reconnect_reason: str | None = None
+
+                    while self.running:
+                        try:
+                            message = await asyncio.wait_for(
+                                ws.recv(),
+                                timeout=self.watchdog_check_interval_sec,
+                            )
+                        except asyncio.TimeoutError:
+                            message = None
+
+                        now = time.time()
+
+                        # Per-channel staleness check. Break to outer retry
+                        # loop on stale; the websockets `async with` will
+                        # cleanly close before reconnect.
+                        if expects_depth:
+                            idle = now - last_depth_msg_t
+                            if idle > self.depth_stale_threshold_sec:
+                                forced_reconnect_reason = (
+                                    f"depth 静默 {idle:.0f}s > "
+                                    f"{self.depth_stale_threshold_sec}s"
+                                )
+                                break
+                        if expects_trade:
+                            idle = now - last_trade_msg_t
+                            if idle > self.trade_stale_threshold_sec:
+                                forced_reconnect_reason = (
+                                    f"trade 静默 {idle:.0f}s > "
+                                    f"{self.trade_stale_threshold_sec}s"
+                                )
+                                break
+
+                        if message is None:
+                            continue
+
                         msg = json.loads(message)
                         sym, event_type, data = self.adapter.parse_message(msg)
 
@@ -190,10 +251,16 @@ class L2Recorder:
                             continue
 
                         if event_type == "depth":
+                            last_depth_msg_t = now
                             await self._handle_depth(sym, data)
                         elif event_type == "trade":
+                            last_trade_msg_t = now
                             records = self.adapter.standardize_event("trade", data)
                             self.buffers[sym].extend(records)
+
+                    if forced_reconnect_reason:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                              f"⚠️ WS [{label}] {forced_reconnect_reason}，强制重连")
 
             except Exception as e:
                 print(f"❌ WS [{label}] 异常: {e}，{self.retry_wait}s 后重试...")
