@@ -238,6 +238,124 @@ def test_min_notional_enforced():
     assert any("min_notional" in d.get("reason", "") for d in b.sim_decisions)
 
 
+# ---------------------------------------------------------------- #
+# P3.1 fix 2026-05-13 — price-penetration fill
+# ---------------------------------------------------------------- #
+
+def test_buy_filled_by_penetrating_trade_below_quote():
+    """nyx P3.1 (2026-05-13): a sell-taker walking through the bid stack
+    must fill our BUY before the trade print reaches a lower price.
+
+    Setup: BUY quote at 100. A trade prints at 99 (below us, qty>0 =
+    aggressive seller).
+    Required: order filled at OUR price 100 (NOT 99), inventory +qty.
+    Pre-fix: order skipped (strict price == trade_price), 0 fills."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "p3-buy", "BUY", 100, 0.05)
+    assert cid == "p3-buy"
+
+    # Penetrating sell-taker trade: trade_qty>0 (buyer maker = seller hit
+    # the bid stack), price 99 < our BUY price 100.
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 1.0)  # large sweep
+
+    assert "p3-buy" not in b.active_orders, "BUY should be filled by penetration"
+    assert b.inventory == 0.05
+    # Fill price = our quote price, not the lower trade print.
+    assert b.cash == -0.05 * 100, f"expected fill at 100, cash={b.cash}"
+    assert len(b.sim_fills) == 1
+    fill = b.sim_fills[0]
+    assert fill["fill_price"] == 100, f"fill price should be quote price 100, got {fill['fill_price']}"
+
+
+def test_sell_filled_by_penetrating_trade_above_quote():
+    """Symmetric case: SELL quote at 101, trade prints at 102 (above us).
+    Required: filled at 101 (our price)."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    # Need inventory to sell. Buy first.
+    b.place_limit(ts, "p3-buyseed", "BUY", 100, 0.1)
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 1.0)   # penetration fills the buy
+    assert b.inventory == 0.1
+
+    ts += 1_000_000
+    cid = b.place_limit(ts, "p3-sell", "SELL", 101, 0.05)
+    assert cid == "p3-sell"
+
+    # Penetrating buy-taker: trade_qty<0, price 102 > our SELL 101.
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 102, -1.0)
+
+    assert "p3-sell" not in b.active_orders
+    assert abs(b.inventory - 0.05) < 1e-9
+    fill = [f for f in b.sim_fills if f["client_oid"] == "p3-sell"][0]
+    assert fill["fill_price"] == 101, f"sell fill at quote 101 (not trade 102), got {fill['fill_price']}"
+
+
+def test_no_fill_when_trade_in_our_favor():
+    """The opposite direction must NOT fill. BUY at 100, trade prints
+    at 101 (above us). No bid-side liquidity was consumed at our level,
+    so we are not filled.
+
+    Equivalent: a buy-taker walked into the ask side; that does not
+    interact with bids."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "p3-favor", "BUY", 100, 0.05)
+    assert cid == "p3-favor"
+
+    ts += 1_000_000
+    # trade_qty<0 (seller maker = buyer hit ask), price 101 — touches ask
+    # side, not our BUY. Even if we conjured a buyer-maker trade at 101
+    # (trade_qty>0 at 101 above our BUY), it would still not fill us
+    # because 101 > 100 means our level wasn't touched.
+    b.apply_market_event(ts, 2, 101, 1.0)
+
+    assert "p3-favor" in b.active_orders, "BUY should not fill on trade above us"
+    assert b.inventory == 0
+
+
+def test_penetration_does_not_double_fill_with_remaining_quantity():
+    """A single penetrating trade with massive qty fills our order once,
+    not multiple times. qty_remaining tracking still correct."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "p3-once", "BUY", 100, 0.03)
+
+    ts += 1_000_000
+    # Huge sweep penetrates well past us
+    b.apply_market_event(ts, 2, 98, 10.0)
+
+    assert b.inventory == 0.03  # exactly our order size, no double-fill
+    fills_for_us = [f for f in b.sim_fills if f["client_oid"] == "p3-once"]
+    assert len(fills_for_us) == 1
+    assert fills_for_us[0]["fill_qty"] == 0.03
+
+
+def test_same_price_queue_path_unchanged():
+    """The pre-existing same-price queue eat-down still works after the
+    P3.1 fix (regression check for case 1 path)."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    cid = b.place_limit(ts, "p3-queue", "BUY", 99, 0.1)
+    o = b.active_orders["p3-queue"]
+    assert o.queue_ahead_qty == 0.5
+
+    # Consume 0.4 at same price — queue 0.5 → 0.1, no fill.
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.4)
+    assert abs(o.queue_ahead_qty - 0.1) < 1e-9
+    assert "p3-queue" in b.active_orders
+
+    # Another 0.2 finishes queue then 0.1 fills.
+    ts += 1_000_000
+    b.apply_market_event(ts, 2, 99, 0.2)
+    assert "p3-queue" not in b.active_orders
+    assert abs(b.inventory - 0.1) < 1e-9
+
+
 if __name__ == "__main__":
     fns = [v for k, v in globals().items() if k.startswith("test_") and callable(v)]
     failed = 0

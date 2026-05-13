@@ -318,9 +318,27 @@ class MakerSimBroker:
         affected, eat through queues, and fill what's left.
 
         narci convention: trade_qty > 0 → buyer maker → aggressive seller hit
-        a BID. So our BUY orders at trade_price are eligible for fill.
-        trade_qty < 0 → seller maker → aggressive buyer hit an ASK; our
-        SELL orders at trade_price eligible.
+        a BID. So our BUY orders are eligible for fill. trade_qty < 0 →
+        seller maker → aggressive buyer hit an ASK; our SELL orders eligible.
+
+        Two fill cases, both physically required:
+
+        Case 1 — same price (`order.price == trade_price`): standard queue
+        consumption. The taker walked into our price level. Our position
+        depends on queue_ahead_qty.
+
+        Case 2 — price penetration (P3.1 fix 2026-05-13). The taker walked
+        PAST our price to a worse level:
+          - BUY  side: trade printed below our quote
+          - SELL side: trade printed above our quote
+        For the printer to print past us, all liquidity at our price had
+        to be consumed first — including us. So our quote is necessarily
+        filled at our own price (NOT trade_price), with queue_ahead_qty
+        becoming irrelevant. This case is logically required regardless
+        of counterfactual / improve-1-tick assumptions; it is a property
+        of how a price gets penetrated in any orderbook. Without this
+        path, simulator severely undercounts fills on `improve_1_tick`
+        strategies (nyx 2026-05-13: 1 fill vs ~10-25 expected on 05-04).
         """
         if trade_qty > 0:
             target_side = "BUY"
@@ -331,31 +349,45 @@ class MakerSimBroker:
         else:
             return
 
-        # Iterate active orders at exact price (FIFO within this filter is
-        # fine for v1; in reality multiple of our orders at same price is
-        # rare for naive maker)
+        # Iterate active orders matching the trade side.
         for cid in list(self.active_orders.keys()):
             if remaining <= 1e-12:
                 break
             order = self.active_orders[cid]
             if order.state != "ACTIVE":
                 continue
-            if order.side != target_side or order.price != trade_price:
+            if order.side != target_side:
                 continue
 
-            # First eat away queue ahead
-            consumed = min(remaining, order.queue_ahead_qty)
-            order.queue_ahead_qty -= consumed
-            remaining -= consumed
-            if remaining <= 1e-12 or order.queue_ahead_qty > 1e-12:
-                continue
+            if order.price == trade_price:
+                # Case 1: same price — work through queue.
+                consumed = min(remaining, order.queue_ahead_qty)
+                order.queue_ahead_qty -= consumed
+                remaining -= consumed
+                if remaining <= 1e-12 or order.queue_ahead_qty > 1e-12:
+                    continue
 
-            # Fill the order with what's left of the trade
-            fill_qty = min(remaining, order.qty_remaining)
-            if fill_qty <= 1e-12:
-                continue
-            self._apply_fill(ts, order, fill_qty, trade_price)
-            remaining -= fill_qty
+                fill_qty = min(remaining, order.qty_remaining)
+                if fill_qty <= 1e-12:
+                    continue
+                self._apply_fill(ts, order, fill_qty, trade_price)
+                remaining -= fill_qty
+
+            elif ((target_side == "BUY" and trade_price < order.price)
+                  or (target_side == "SELL" and trade_price > order.price)):
+                # Case 2: penetration — trade printed past our price.
+                # Our quote is necessarily filled at our own price.
+                # queue_ahead_qty is moot (entire level was consumed
+                # to reach the penetrated print).
+                fill_qty = min(remaining, order.qty_remaining)
+                if fill_qty <= 1e-12:
+                    continue
+                self._apply_fill(ts, order, fill_qty, order.price)
+                order.queue_ahead_qty = 0.0
+                remaining -= fill_qty
+
+            # Case 3: trade is in our favor (better than our quote) —
+            # taker did not reach our level. No fill.
 
     def _apply_fill(self, ts: int, order: SimOrder, fill_qty: float,
                     fill_price: float) -> None:
