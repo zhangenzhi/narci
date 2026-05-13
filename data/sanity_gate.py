@@ -69,6 +69,19 @@ _BLACKLIST: list[tuple[str, str, str, str]] = [
     # 05-08: CC trades 17K (50% of normal); BJ + UM normal. Single-venue
     # partial outage on CC; usable but watch for asymmetric bias if
     # multi-venue training.
+    # 05-08 → 05-09: CC depth (orderbook) WS channel silently died at
+    # 2026-05-08 15:06:13 UTC and resumed at 2026-05-09 06:19:35 UTC
+    # (≈ 15h gap). Trades kept flowing throughout. Side-effect: the
+    # 05-09 CC daily file starts at 05-08 15:06 with 15h of trade-only
+    # rows before depth resumes. nyx LOO training still gets ~17h of
+    # full-feature samples per day; but a backtest sliced into [first_ts,
+    # first_ts + 4h] on 05-09 lands entirely in the broken window and
+    # produces 0 finite predictions (CC L2 features all NaN). The
+    # backtest_alpha _multi_venue_anchor_ts fix (max first_ts) ameliorates
+    # the slice anchor but doesn't restore depth in the broken window.
+    # Not day-blacklisted because the remaining 17h is usable; comment-
+    # flagged for awareness. Recorder side: investigate silent CC depth
+    # channel death (likely needs subscribe-ack watchdog like UM dual-WS).
 ]
 
 

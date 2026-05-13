@@ -94,11 +94,11 @@ def _stream_cold_file(path: Path, venue: str,
     """Yield (ts_ms, neg_side, venue, side, price, qty) tuples.
 
     Reads numpy arrays once (faster than to_pylist) then iterates.
-    end_ts_ms: if set, stop yielding once ts >= end_ts_ms (saves work
-    on tail of a day when --hours truncation is requested)."""
+    end_ts_ms: if set, drop rows with ts >= end_ts_ms (saves work on
+    the tail when max_hours truncation is requested)."""
     if end_ts_ms is not None:
         tbl = pq.read_table(str(path),
-                             filters=[("timestamp", "<", end_ts_ms)])
+                            filters=[("timestamp", "<", end_ts_ms)])
     else:
         tbl = pq.read_table(str(path))
     ts = np.asarray(tbl.column("timestamp").to_numpy(zero_copy_only=False),
@@ -114,21 +114,62 @@ def _stream_cold_file(path: Path, venue: str,
         yield (int(ts[i]), -s, venue, s, float(pr[i]), float(qt[i]))
 
 
+def _multi_venue_first_tss(day: str) -> dict[str, int]:
+    """Return {venue: first_event_ts} across VENUE_SOURCES daily files."""
+    out: dict[str, int] = {}
+    for exchange, market, sym, venue in VENUE_SOURCES:
+        p = COLD / exchange / market / f"{sym}_RAW_{day}_DAILY.parquet"
+        if not p.exists():
+            p = COLD / f"{sym}_RAW_{day}_DAILY.parquet"
+        if p.exists():
+            tbl = pq.ParquetFile(str(p)).read_row_group(
+                0, columns=["timestamp"])
+            out[venue] = int(tbl.column("timestamp")[0].as_py())
+    return out
+
+
+def _multi_venue_anchor_ts(day: str) -> int | None:
+    """Return the latest first-event timestamp across all VENUE_SOURCES
+    daily files for `day`, or None if no daily files exist.
+
+    This is the earliest time at which all venues are simultaneously
+    alive — anchoring a max_hours slice here ensures the window contains
+    multi-venue data rather than just one venue's pre-rollover tail.
+
+    Day-skew can be ~hours when one venue's recorder restarted mid-day
+    (the new shard's filename takes the next UTC day, so the resulting
+    daily compaction starts well before midnight): on 2026-05-09 the CC
+    daily file began 2026-05-08 15:06 while BJ started 2026-05-09 00:57
+    — anchoring on CC's first_ts cut a max_hours=4 window entirely
+    before BJ/UM had any data, producing 0 predictions."""
+    first_tss = _multi_venue_first_tss(day)
+    return max(first_tss.values()) if first_tss else None
+
+
 def _stream_days(days: list[str], max_hours: float | None = None):
     iters = []
     end_ts_ms: int | None = None
     if max_hours is not None and days:
-        # Use first day's first ts as canonical start
-        for exchange, market, sym, _ in VENUE_SOURCES:
-            p = COLD / exchange / market / f"{sym}_RAW_{days[0]}_DAILY.parquet"
-            if not p.exists():
-                p = COLD / f"{sym}_RAW_{days[0]}_DAILY.parquet"
-            if p.exists():
-                tbl = pq.ParquetFile(str(p)).read_row_group(
-                    0, columns=["timestamp"])
-                first_ts = int(tbl.column("timestamp")[0].as_py())
-                end_ts_ms = first_ts + int(max_hours * 3_600_000)
-                break
+        first_tss = _multi_venue_first_tss(days[0])
+        if first_tss:
+            anchor_ts = max(first_tss.values())
+            end_ts_ms = anchor_ts + int(max_hours * 3_600_000)
+            # Warn when venues' first_ts span > 1h — usually means one
+            # venue's recorder restarted mid-day and the corresponding
+            # daily file is skewed. The slice may contain stretches of
+            # one-venue-only events that produce all-NaN predictions
+            # until the lagging venue catches up.
+            span_ms = anchor_ts - min(first_tss.values())
+            if span_ms > 3_600_000:
+                import datetime as _dt
+                _fmt = lambda t: _dt.datetime.fromtimestamp(
+                    t/1000, tz=_dt.timezone.utc).strftime("%H:%M:%S")
+                detail = ", ".join(f"{v}={_fmt(t)}" for v, t in
+                                   sorted(first_tss.items()))
+                print(f"[warn] day {days[0]}: venue first_ts span "
+                      f"{span_ms/3_600_000:.1f}h (anchor={_fmt(anchor_ts)}). "
+                      f"Predictions before the lagging venue starts will "
+                      f"be NaN. Details: {detail}", flush=True)
     for d in days:
         for exchange, market, sym, venue in VENUE_SOURCES:
             path = COLD / exchange / market / f"{sym}_RAW_{d}_DAILY.parquet"
