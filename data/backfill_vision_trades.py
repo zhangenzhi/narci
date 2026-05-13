@@ -57,14 +57,24 @@ def vision_to_narci(vision_path: Path) -> pd.DataFrame:
 
 def backfill_day(symbol: str, market: str, day: str,
                  *, dry_run: bool = False, exchange: str = "binance",
-                 force: bool = False) -> dict:
+                 force: bool = False, create_if_missing: bool = False) -> dict:
     """Merge vision aggTrades into the cold daily for one (symbol, day).
 
-    By default, days with >1000 existing trades are skipped (assume
-    already-backfilled). Pass force=True to drop existing trades and
-    replace with the full Vision archive — used for partial-live days
-    where recording died mid-day (e.g., 0423 16:30:53 UTC), so cold has
-    real but incomplete trade data and Vision's full day is preferred.
+    Default behaviour (matches the 04-24 → 04-28 UM trades-dead fix
+    workflow): cold must already exist with depth events; vision aggTrades
+    are merged in to replace any sparse side=2 from the broken recording.
+    Days with >1000 existing trades are skipped (assume already done).
+    Pass force=True to drop existing trades and replace with the full
+    Vision archive — used for partial-live days where recording died
+    mid-day (0423 16:30:53 UTC) so cold has real but incomplete trade
+    data and Vision's full day is preferred.
+
+    create_if_missing=True: when cold doesn't exist, write a NEW
+    trade-only daily file from the Vision archive. Used when a new venue
+    (e.g. BTCUSDT spot, recording started 2026-05-13) needs historical
+    backfill for the days before the recorder was alive. The resulting
+    file has only side=2 rows — depth features will be NaN downstream,
+    but trade-anchored features and last-trade-price-as-mid proxies work.
 
     Returns a summary dict.
     """
@@ -72,8 +82,6 @@ def backfill_day(symbol: str, market: str, day: str,
     if not cold_path.exists():
         # Legacy flat fallback.
         cold_path = COLD / f"{symbol}_RAW_{day}_DAILY.parquet"
-    if not cold_path.exists():
-        return {"day": day, "status": "missing_cold", "cold_path": str(cold_path)}
 
     # Vision date format: 2026-04-25
     yyyy, mm, dd = day[:4], day[4:6], day[6:8]
@@ -83,14 +91,42 @@ def backfill_day(symbol: str, market: str, day: str,
         return {"day": day, "status": "missing_vision",
                 "vision_path": str(vision_path)}
 
+    vision_df = vision_to_narci(vision_path)
+    n_vision = len(vision_df)
+
+    if not cold_path.exists():
+        if not create_if_missing:
+            return {"day": day, "status": "missing_cold",
+                    "cold_path": str(cold_path)}
+        # New trade-only daily file. Target the canonical subdir path even
+        # if the legacy flat fallback was the one that didn't exist —
+        # otherwise we'd create files in the wrong place.
+        cold_path = COLD / exchange / market / f"{symbol}_RAW_{day}_DAILY.parquet"
+        cold_path.parent.mkdir(parents=True, exist_ok=True)
+        merged = vision_df.sort_values(by=["timestamp", "side"],
+                                        ascending=[True, False]).reset_index(drop=True)
+        tmp_path = cold_path.with_suffix(".parquet.tmp")
+        table = pa.Table.from_pandas(merged, preserve_index=False)
+        pq.write_table(table, tmp_path)
+        if not dry_run:
+            tmp_path.replace(cold_path)
+        else:
+            tmp_path.unlink()
+        return {
+            "day": day,
+            "status": "created_trade_only" if not dry_run else "dry_run_create",
+            "cold_path": str(cold_path),
+            "n_book": 0,
+            "n_trade_before": 0,
+            "n_trade_added": n_vision,
+            "n_total_after": len(merged),
+        }
+
     cold_df = pd.read_parquet(cold_path)
     n_trade_before = int((cold_df["side"] == 2).sum())
     if n_trade_before > 1000 and not force:
         return {"day": day, "status": "skip_already_has_trades",
                 "n_trade_before": n_trade_before}
-
-    vision_df = vision_to_narci(vision_path)
-    n_vision = len(vision_df)
 
     # Drop existing (zero or sparse) side=2 from cold; keep only book events.
     book_df = cold_df[cold_df["side"] != 2]
@@ -132,11 +168,22 @@ def main():
                     help="bypass skip-if-already-has-trades guard. Drops "
                          "existing side=2 from cold and replaces with full "
                          "Vision day. Use for partial-live days.")
+    ap.add_argument("--create-if-missing", action="store_true",
+                    help="when cold daily doesn't exist, create a new "
+                         "trade-only file from Vision. Used for new venues "
+                         "(e.g. BTCUSDT spot, recording started 2026-05-13) "
+                         "that need historical backfill before the recorder "
+                         "was alive. Depth-derived features will be NaN; "
+                         "trade flow + last-trade-price proxy still work.")
     args = ap.parse_args()
 
     days = [d.strip() for d in args.days.split(",") if d.strip()]
+    flags = []
+    if args.dry_run: flags.append("DRY RUN")
+    if args.force: flags.append("FORCE")
+    if args.create_if_missing: flags.append("CREATE_IF_MISSING")
     print(f"Backfilling {args.symbol} {args.market} on {len(days)} days "
-          f"{'(DRY RUN)' if args.dry_run else ''}{' (FORCE)' if args.force else ''}")
+          f"{'(' + ', '.join(flags) + ')' if flags else ''}")
     print(f"  cold root: {COLD}/{args.exchange}/{args.market}")
     print(f"  vision  : {OFFICIAL}/{args.market}/aggTrades/{args.symbol}")
     print()
@@ -145,15 +192,18 @@ def main():
     for d in days:
         result = backfill_day(args.symbol, args.market, d,
                                dry_run=args.dry_run, exchange=args.exchange,
-                               force=args.force)
+                               force=args.force,
+                               create_if_missing=args.create_if_missing)
         summaries.append(result)
-        if result["status"] == "ok" or result["status"] == "dry_run":
+        ok_statuses = ("ok", "dry_run", "created_trade_only", "dry_run_create")
+        if result["status"] in ok_statuses:
             print(f"  {d}: book {result['n_book']:>11,}  +trades {result['n_trade_added']:>9,}  "
-                  f"= total {result['n_total_after']:>11,}")
+                  f"= total {result['n_total_after']:>11,}  [{result['status']}]")
         else:
             print(f"  {d}: {result['status']}  ({result})")
     print()
-    n_ok = sum(1 for s in summaries if s["status"] in ("ok", "dry_run"))
+    n_ok = sum(1 for s in summaries
+               if s["status"] in ("ok", "dry_run", "created_trade_only", "dry_run_create"))
     print(f"  ✅ {n_ok}/{len(days)} days backfilled")
     return 0 if n_ok == len(days) else 1
 
