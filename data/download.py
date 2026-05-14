@@ -49,6 +49,15 @@ class HistoricalDownloader:
             return mt
         return [mt]
 
+    def _symbols_for_market(self, market: str) -> list[str]:
+        # symbols can be a flat list (applied to every market) or a dict keyed
+        # by market_type — the latter lets us route JPY pairs to spot only,
+        # since Binance Vision has no um_futures JPY archives.
+        sym = self.config.get("symbols", [])
+        if isinstance(sym, dict):
+            return list(sym.get(market, []))
+        return list(sym)
+
     def generate_tasks(self) -> list[tuple]:
         dr = self.config.get("date_range")
         if not dr:
@@ -65,8 +74,9 @@ class HistoricalDownloader:
 
         tasks = []
         for market in self._resolve_market_types():
+            symbols = self._symbols_for_market(market)
             for date_str in dates:
-                for symbol in self.config["symbols"]:
+                for symbol in symbols:
                     for dtype in self.config["data_types"]:
                         tasks.append((symbol, date_str, dtype, market))
         return tasks
@@ -94,7 +104,7 @@ class HistoricalDownloader:
         print(f"📂 存储路径: {self.base_dir}")
         print(f"🔌 数据源: {self.source.name}")
         print(f"🏪 市场: {self._resolve_market_types()}")
-        print(f"💰 交易对: {self.config['symbols']}")
+        print(f"💰 交易对: {self.config.get('symbols')}")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self.process_task, t): t for t in tasks}

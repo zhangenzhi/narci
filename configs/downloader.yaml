@@ -9,13 +9,29 @@ downloader:
   market_type: "both"
 
   # 任务列表
+  # 支持两种写法:
+  #   1) 平铺列表 (旧) - 对每个 market 都尝试同一组 symbols
+  #   2) 按 market 分组 (推荐) - JPY pair 只在 spot, um_futures 没有 JPY 永续
   symbols:
-    - "BTCUSDT"
-    - "ETHUSDT"
-    - "SOLUSDT"
-    - "BNBUSDT"
-    - "XRPUSDT"
-    - "DOGEUSDT"
+    spot:
+      - "BTCUSDT"
+      - "ETHUSDT"
+      - "SOLUSDT"
+      - "BNBUSDT"
+      - "XRPUSDT"
+      - "DOGEUSDT"
+      - "BTCJPY"
+      - "ETHJPY"
+      - "SOLJPY"
+      - "XRPJPY"
+      - "DOGEJPY"
+    um_futures:
+      - "BTCUSDT"
+      - "ETHUSDT"
+      - "SOLUSDT"
+      - "BNBUSDT"
+      - "XRPUSDT"
+      - "DOGEUSDT"
 
   # 数据类型:
   # - aggTrades (成交数据, 较小)
@@ -27,8 +43,10 @@ downloader:
 
   # 时间范围
   date_range:
-    # 追溯起始日期 (约 6 个月)
-    start_date: "2025-09-01"
+    # 追溯起始日期 (临时缩窄: 2026-05-14 加 bookTicker 后, 外置 SSD 只剩
+    # 170 GiB. 全量 248 天 × 12 USDT × ~75MB ≈ 235 GiB 装不下. 先盖住 narci
+    # v5 basis_um 关键的 04-17→05-09, 后续等腾出空间再回退到 2025-09-01.)
+    start_date: "2026-04-17"
 
     # 结束日期:
     # - "auto": 自动下载到昨天 (适合每日定时任务)
