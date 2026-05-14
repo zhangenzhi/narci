@@ -103,36 +103,42 @@ narci downloader.yaml（commit `c5eac4b`）。后续 cron 自动拉。
 
 ### 请donor 操作（按顺序）
 
-1. **pull narci 拿新的 downloader.yaml**：
+1. **pull narci 拿新配置**：
    ```bash
    ssh donor
    cd ~/narci
    git pull origin main
    ```
-   确认 `configs/downloader.yaml` 的 `data_types` 列表里有 `bookTicker`。
+   确认 `configs/downloader.yaml`:
+     - `data_types` 含 `bookTicker`
+     - `start_date: "2026-04-17"` (已收紧，不再回拉 8 个月历史)
 
-2. **立刻手动跑一次**（不等明天 04:30 cron）：
+2. **立刻手动跑一次**：
    ```bash
    bash deploy/donor/binance_vision_push.sh
    ```
 
-   日志在 `.donor/binance_vision_push.log`。bookTicker 比 aggTrades 大
-   5-10x，所以这一轮会比平时慢，预计 ~30-60 分钟（取决于 donor 网速）。
+   - `aggTrades` 2026-04-17 → 昨天 已经在 gdrive 上，idempotent skip
+   - `bookTicker` 2026-04-17 → 昨天 是这轮的真正工作量
+   - 范围：~28 天 × 6 symbols × 2 markets = ~336 个 zip
+   - bookTicker 比 aggTrades 大 5-10x，预计 ~20-40 分钟拉完，push gdrive 再
+     ~10-20 分钟
 
-3. **回补 nyx 训练池的 23 天 BTCUSDT/ETHUSDT spot bookTicker**
+   日志在 `.donor/binance_vision_push.log`。
 
-   `configs/downloader.yaml` 的 `start_date: "2025-09-01"`，所以这一轮会拉
-   2025-09-01 至昨天的所有 bookTicker。对 v5 basis_um 真正关键的是
-   2026-04-17 → 2026-05-09 这 23 天 spot/{BTCUSDT,ETHUSDT}/bookTicker。
+3. **真正需要的子集**（narci 这边后续会做 backfill）：
+   `spot/{BTCUSDT,ETHUSDT}/bookTicker/` 在 04-17 → 05-09 这 23 天。其它
+   symbols / um_futures 顺便拉了不浪费但 narci 暂不消费。
 
-   donor 拉完 + push gdrive 后，/lustre1 这边会 rclone copy 自动同步
-   到 `replay_buffer/official_validation/spot/bookTicker/`。
-
-4. **通知**：跑完用 `gh issue comment` 之类的方式 ping 一下 narci 这边？
-   或者就把 push log 最后几行 ssh tail 出来：
+4. **通知**：跑完把 push log 最后几行 tail 出来：
    ```bash
-   tail -20 ~/narci/.donor/binance_vision_push.log
+   tail -30 ~/narci/.donor/binance_vision_push.log
    ```
+   或者直接看 gdrive：
+   ```bash
+   rclone lsd gdrive:narci_official/spot/bookTicker
+   ```
+   有 6 个 symbol 子目录就 OK。
 
 ### 我（narci 端）那一步做什么
 
@@ -153,9 +159,11 @@ basis_um_bps 立即变 finite。
 
 ### 资源 / 风险
 
-- **带宽**：bookTicker 每天 BTCUSDT spot ≈ 50-100MB compressed，每天 ETHUSDT
-  spot ≈ 30-60MB。23 天 × 2 sym ≈ 2-3GB 一次性拉，之后每天 ~80-160MB。
-- **存储**：gdrive 不限量；/lustre1 这边 official_validation 增量 ~3GB。
+- **本轮带宽** (04-17 收紧后)：bookTicker 每天 BTCUSDT spot ~50-100MB，
+  ETHUSDT ~30-60MB。28 天 × 6 syms × 2 markets ≈ 8-15GB 一次性拉。之后
+  每天 cron 增量 ~500MB-1GB（6 sym × 2 market）。
+- **存储**：gdrive 不限量；/lustre1 这边 `official_validation` 增量
+  ~8-15GB。
 - **rate limit**：Vision 没有显式 rate limit。`max_workers: 3` 已经在 yaml
   里设了，conservative。
 - **失败重试**：`retry.max_retries: 5`, `backoff_factor: 2`。单天偶尔 fail 不影响整体。

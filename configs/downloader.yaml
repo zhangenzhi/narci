@@ -45,9 +45,15 @@ downloader:
 
   # 时间范围
   date_range:
-    # 追溯起始日期 (临时缩窄: 2026-05-14 加 bookTicker 后, 外置 SSD 只剩
-    # 170 GiB. 全量 248 天 × 12 USDT × ~75MB ≈ 235 GiB 装不下. 先盖住 narci
-    # v5 basis_um 关键的 04-17→05-09, 后续等腾出空间再回退到 2025-09-01.)
+    # 起始日期。2026-05-14 收紧到 2026-04-17，两条原因合一：
+    #   (a) donor 外置 SSD 只剩 170 GiB。全量 248 天 × 12 USDT × ~75MB
+    #       ≈ 235 GiB 装不下。
+    #   (b) v5 basis_um_bps 优先级是 nyx 训练池窗口 04-17→05-09
+    #       (commit 555bb30)。先盖这一段。
+    # aggTrades 已 backfill 到 2024-03-01，download_day idempotent 会
+    # skip 已存在的，不重复扫。
+    # 后续等 donor SSD 腾出空间，再回退到 2025-09-01 拉更长 bookTicker
+    # 历史；training pool 想扩到 2026-03-06 也是同样路径。
     start_date: "2026-04-17"
 
     # 结束日期:
