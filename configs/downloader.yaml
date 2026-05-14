@@ -35,11 +35,13 @@ downloader:
 
   # 数据类型:
   # - aggTrades (成交数据, 较小)
-  # - bookTicker (顶档逐笔 best_bid/ask, 用于 v5 perp-spot basis 历史回补;
-  #   2026-05-14 加, 大约比 aggTrades 多 5-10x 体积)
+  # NOTE: bookTicker 在 Vision 上拿不到我们要的范围 ——
+  #   spot daily/bookTicker/ 从未存在 (只有 aggTrades/klines/trades),
+  #   futures/um daily/bookTicker/ 最后一天是 2024-03-30, 已停更 2 年多.
+  #   2026-05-14 临时撤掉, 避免每天 cron 跑 459 个 404. 详见
+  #   deploy/donor/NARCI_DONOR_INTERFACE.md "bookTicker 不可用" 段.
   data_types:
     - "aggTrades"
-    - "bookTicker"
 
   # 时间范围
   date_range:

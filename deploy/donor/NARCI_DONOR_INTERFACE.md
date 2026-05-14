@@ -45,13 +45,52 @@ bash deploy/donor/binance_vision_push.sh
 | Symbol | Market | Data type | 用途 |
 |---|---|---|---|
 | BTCUSDT / ETHUSDT / SOLUSDT / BNBUSDT / XRPUSDT / DOGEUSDT | spot + um_futures | aggTrades | trade backfill |
-| BTCUSDT / ETHUSDT / SOLUSDT / BNBUSDT / XRPUSDT / DOGEUSDT | spot + um_futures | **bookTicker** (NEW 2026-05-14) | basis_um_bps 历史 backfill |
-
-`bookTicker` 是 2026-05-14 加的，跟 aggTrades 同一个 cron 走，donor 不用改 cron。
+| BTCJPY / ETHJPY / SOLJPY / XRPJPY / DOGEJPY | spot only | aggTrades | Coincheck 主战场参考 |
 
 ---
 
-## 2026-05-14: 请求 bookTicker 加速回补
+## ⚠️ bookTicker 不可用（donor 端 2026-05-14 实测）
+
+narci commit `c5eac4b` 和 `abdb9f5` 假设 Vision 有 spot bookTicker，donor
+端 pull + 手动 trigger 一次实测后发现 **Vision 上根本拿不到我们要的
+bookTicker**：
+
+| 路径 | 实际情况 |
+|---|---|
+| `data/spot/daily/bookTicker/` | **从未存在** — spot daily 只有 aggTrades / klines / trades，S3 listing 直接没有 bookTicker prefix |
+| `data/futures/um/daily/bookTicker/` | 存在，**但最后一天是 2024-03-30**，已停更 2 年多。S3 marker pagination 验证 2024-03-31 之后无任何 .zip |
+
+直接验证命令：
+
+```bash
+curl -s "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?delimiter=/&prefix=data/spot/daily/" | grep -oE "<Prefix>[^<]+</Prefix>"
+# → aggTrades / klines / trades  (没有 bookTicker)
+
+curl -s "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision?prefix=data/futures/um/daily/bookTicker/BTCUSDT/&marker=data/futures/um/daily/bookTicker/BTCUSDT/BTCUSDT-bookTicker-2024-04-01.zip" | grep -c "<Key>"
+# → 0 (2024-03-31 之后无任何 key)
+```
+
+因此 v5 `basis_um_bps` 用 Vision bookTicker 回补 2026-04-17 → 05-09 这条
+路线走不通。
+
+**donor 端处理（2026-05-14）**：从 `configs/downloader.yaml`
+的 `data_types` 撤回 `bookTicker`（见同次 commit），避免每天 cron 跑 459 个
+无用 404。继续只拉 aggTrades。
+
+**narci 端需要重新评估**：
+
+- 选 1：用 Tardis.dev（已经在 `data/historical/tardis.py` 接好，支持 L2
+  depth + bookTicker，但是收费的）
+- 选 2：让 recorder 实时录 spot bookTicker WS（`@bookTicker` channel），
+  从今天开始有数据，2026-04-17 → 05-09 这段无法 backfill
+- 选 3：用 aggTrades 推算 mid（last-trade-price proxy），精度差但能跑
+
+`data/backfill_vision_bookticker.py` 这个脚本本身是对的（CSV schema、
+narci side=3/4 转换都对），只是源数据没有，所以暂时跑不出结果。
+
+---
+
+## 2026-05-14: 请求 bookTicker 加速回补（已 BLOCKED，见上方"bookTicker 不可用"）
 
 **背景**：narci v5 加了 `basis_um_bps = log(um_mid / bs_mid) * 1e4` 期现 basis
 feature (commit `555bb30`)。BS = Binance global spot BTCUSDT/ETHUSDT。
