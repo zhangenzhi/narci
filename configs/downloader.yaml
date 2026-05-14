@@ -19,8 +19,11 @@ downloader:
 
   # 数据类型:
   # - aggTrades (成交数据, 较小)
+  # - bookTicker (顶档逐笔 best_bid/ask, 用于 v5 perp-spot basis 历史回补;
+  #   2026-05-14 加, 大约比 aggTrades 多 5-10x 体积)
   data_types:
     - "aggTrades"
+    - "bookTicker"
 
   # 时间范围
   date_range:
