@@ -75,8 +75,11 @@ def test_v4_um_flow_signs_match_taker_direction():
 
 
 def test_v5_feature_count():
-    """v3 had 31 features; v4 added 4 um_flow → 35; v5 adds basis_um_bps → 36."""
-    assert len(FEATURE_NAMES) == 36
+    """v3 had 31 features; v4 added 4 um_flow → 35; v5 adds basis_um_bps
+    (strict, NaN when no BS depth) + basis_um_bps_trade_proxy (uses BS
+    last_trade_price as a lossy fallback for Vision-backfilled trade-
+    only days) → 37."""
+    assert len(FEATURE_NAMES) == 37
 
 
 def test_get_features_returns_dict_after_seeding():
@@ -149,6 +152,45 @@ def test_basis_um_finite_and_signed_correctly():
     assert not math.isnan(b)
     # log(100/99) * 1e4 ≈ 100.5
     assert 90.0 < b < 110.0, f"expected ~+100 bps perp premium, got {b}"
+
+
+def test_basis_um_trade_proxy_finite_on_trade_only_bs():
+    """v5 trade-proxy fallback: when BS has only trades (Vision-backfilled
+    day, no depth), strict basis_um_bps is NaN but basis_um_bps_trade_proxy
+    computes from bs.prices.latest()."""
+    fb = FeatureBuilder()
+    ts = 1_700_000_000_000
+
+    # UM full book around 100
+    fb.update_event("um", ts, 3, 99.5, 1.0)
+    fb.update_event("um", ts, 4, 100.5, 1.0)
+    fb.update_event("um", ts + 1, 0, 99.5, 0.5)
+
+    # BS: trades only, no depth. Last trade at 99.0 → proxy mid = 99.
+    fb.update_event("bs", ts + 100, 2, 99.0, 0.05)
+
+    feats = fb.get_features(ts_ms=ts + 200)
+    # strict basis is NaN (no BS book)
+    assert math.isnan(feats["basis_um_bps"])
+    # proxy uses um_mid=100 / bs_trade=99 → ≈ +100 bps
+    p = feats["basis_um_bps_trade_proxy"]
+    assert not math.isnan(p), "trade proxy should be finite when BS trades exist"
+    assert 90.0 < p < 110.0, f"expected ~+100 bps, got {p}"
+
+
+def test_basis_um_trade_proxy_nan_when_bs_has_no_trades_either():
+    """If BS has neither depth nor trades, even the proxy is NaN."""
+    fb = FeatureBuilder()
+    ts = 1_700_000_000_000
+
+    fb.update_event("um", ts, 3, 99.5, 1.0)
+    fb.update_event("um", ts, 4, 100.5, 1.0)
+    fb.update_event("um", ts + 1, 0, 99.5, 0.5)
+    # NO bs events at all
+
+    feats = fb.get_features(ts_ms=ts + 1)
+    assert math.isnan(feats["basis_um_bps"])
+    assert math.isnan(feats["basis_um_bps_trade_proxy"])
 
 
 def test_hour_features_in_range():

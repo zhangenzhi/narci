@@ -88,14 +88,19 @@ BASELINE_FEATURES = [
     #   basis_um_bps = log(um_mid / bs_mid) * 1e4  (v5 2026-05-14)
     #     UM perp ↔ BS (Binance global spot) USDT-USDT basis. The
     #     classic crypto perp-spot premium signal (positive = perp
-    #     premium = contango, generally bullish-leaning carry). v2 had
-    #     basis_um_bps but it was algebraically the same as basis_bj_bps
-    #     when using BJ as the USDT proxy. Reintroduced now that an
-    #     independent BS recorder is live (AWS-SG, 2026-05-13+).
-    #     Will be NaN whenever the BS book hasn't bootstrapped — most
-    #     pre-2026-05-13 days are Vision-backfilled trade-only, so basis
-    #     is only finite on the 03-06 → 04-16 days that have full L2.
-    "basis_bj_bps", "um_x_basis", "basis_um_bps",
+    #     premium = contango, generally bullish-leaning carry).
+    #     STRICT: NaN whenever the BS book hasn't bootstrapped — most
+    #     pre-2026-05-13 days are Vision-backfilled trade-only (Vision
+    #     bookTicker not available — see deploy/donor/NARCI_DONOR_INTERFACE.md),
+    #     so this is only finite on 2026-05-13+ live recording.
+    #   basis_um_bps_trade_proxy = log(um_mid / bs_last_trade_price) * 1e4
+    #     (v5 2026-05-14, addendum) Lossy fallback that lets the basis
+    #     signal compute even on trade-only days. bs_last_trade alternates
+    #     between bid and ask depending on which side the taker hit, so
+    #     this has ~half-spread noise vs the strict mid version. nyx
+    #     can use both: strict for clean signal where available, proxy
+    #     when only aggTrades-backfilled days are in the training pool.
+    "basis_bj_bps", "um_x_basis", "basis_um_bps", "basis_um_bps_trade_proxy",
 ]
 
 # Tier 1 (hour-of-day + CC own flow)
@@ -526,6 +531,20 @@ class FeatureBuilder:
             feats["basis_um_bps"] = math.log(um_mid / bs_mid) * 10000.0
         else:
             feats["basis_um_bps"] = nan
+
+        # Trade-proxy: when bs.book is absent (Vision-backfilled trade-
+        # only days), substitute bs last_trade_price for bs_mid. UM mid
+        # is always reliable (live recorder has full L2), so the bias
+        # is only on the BS side — at most half-spread on BTCUSDT spot
+        # (~0.5 bps), small compared to typical basis magnitudes.
+        bs_last = bs.prices.latest()
+        bs_trade_px = bs_last[1] if bs_last else nan
+        if um_mid > 0 and bs_trade_px > 0:
+            feats["basis_um_bps_trade_proxy"] = (
+                math.log(um_mid / bs_trade_px) * 10000.0
+            )
+        else:
+            feats["basis_um_bps_trade_proxy"] = nan
 
         # --- Tier 1: time-of-day (UTC) + CC flow ---
         # ts_ms / 1000 / 3600 mod 24
