@@ -59,7 +59,7 @@ from data.l2_reconstruct import L2Reconstructor
 # Models trained against vN must retrain against vN+1 — manifest required-
 # version pin (narci_features_version_required) is enforced by
 # load_alpha_model.
-FEATURES_VERSION = "v4"
+FEATURES_VERSION = "v5"
 
 
 # ------------------------------------------------------------------ #
@@ -81,11 +81,21 @@ BASELINE_FEATURES = [
     "r_bj", "bj_imb_1s", "bj_flow_5s",
     # CC own
     "r_cc_lag1", "r_cc_lag2", "cc_imb_1s",
-    # Basis (v3: removed basis_um_bps + basis_bj_5s — both algebraically
-    # collapsed to basis_bj_bps in v2 because USDT/JPY proxy = bj/um itself.
-    # Will reintroduce basis_um_bps once an independent USDT/JPY ticker
-    # source is wired into the recorder layer.)
-    "basis_bj_bps", "um_x_basis",
+    # Basis
+    #   basis_bj_bps = log(cc_mid / bj_mid) * 1e4
+    #     CC ↔ BJ cross-venue, both JPY-denominated.
+    #   um_x_basis = r_um * basis_bj_bps (interaction).
+    #   basis_um_bps = log(um_mid / bs_mid) * 1e4  (v5 2026-05-14)
+    #     UM perp ↔ BS (Binance global spot) USDT-USDT basis. The
+    #     classic crypto perp-spot premium signal (positive = perp
+    #     premium = contango, generally bullish-leaning carry). v2 had
+    #     basis_um_bps but it was algebraically the same as basis_bj_bps
+    #     when using BJ as the USDT proxy. Reintroduced now that an
+    #     independent BS recorder is live (AWS-SG, 2026-05-13+).
+    #     Will be NaN whenever the BS book hasn't bootstrapped — most
+    #     pre-2026-05-13 days are Vision-backfilled trade-only, so basis
+    #     is only finite on the 03-06 → 04-16 days that have full L2.
+    "basis_bj_bps", "um_x_basis", "basis_um_bps",
 ]
 
 # Tier 1 (hour-of-day + CC own flow)
@@ -314,8 +324,17 @@ class FeatureBuilder:
                                               incremental_ready_threshold),
             "um": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust,
                                               incremental_ready_threshold),
+            # v5 2026-05-14: Binance global spot (USDT pairs) — feeds the
+            # reintroduced basis_um_bps = log(um_mid / bs_mid) * 1e4 perp-
+            # spot basis. BS recorder lives on AWS-SG, recording since
+            # 2026-05-13 06:42 UTC. Historical L2 data 2026-03-06 → 04-17
+            # is in cold tier; 04-17 → 05-09 is trade-only via Vision
+            # backfill (basis NaN those days — only depth-bearing windows
+            # produce finite basis).
+            "bs": _VenueState.with_staleness(book_staleness_seconds, prune_snapshot_dust,
+                                              incremental_ready_threshold),
         }
-        self._last_metric_ts: dict[str, int] = {"cc": 0, "bj": 0, "um": 0}
+        self._last_metric_ts: dict[str, int] = {"cc": 0, "bj": 0, "um": 0, "bs": 0}
         # Snapshot of last get_features for sequence builder.
         self._snapshot_history: deque = deque(maxlen=400)
         # Latest seen ts (max across all venue events)
@@ -433,6 +452,7 @@ class FeatureBuilder:
         cc = self._venues["cc"]
         bj = self._venues["bj"]
         um = self._venues["um"]
+        bs = self._venues["bs"]   # v5: Binance global spot (USDT pairs)
 
         # Helper: short-name latest log returns
         r_um = um.prices.log_return(ts_ms, 1000)
@@ -472,16 +492,24 @@ class FeatureBuilder:
         feats["cc_imb_1s"] = cc.trades.imbalance(ts_ms, 1000)
 
         # --- Basis (cross-venue) ---
-        # v3: only basis_bj_bps remains. basis_um_bps was algebraically
-        # identical (used bj/um as USDT/JPY proxy, which collapsed back to
-        # cc/bj). basis_bj_5s was a placeholder = basis_bj_bps. Both
-        # dropped here to avoid spurious "feature count = 33" while only
-        # 31 carry signal. Reintroduce basis_um when independent USDT/JPY
-        # source is wired (separate ticker recorder).
+        #   basis_bj_bps = log(CC_mid / BJ_mid) * 1e4   (cross-exchange,
+        #     both JPY-denominated).
+        #   um_x_basis = r_um × basis_bj_bps interaction.
+        #   basis_um_bps = log(UM_mid / BS_mid) * 1e4   (v5 2026-05-14)
+        #     UM perp vs Binance global spot USDT-USDT basis (classic
+        #     crypto perp-spot premium). NaN when BS book isn't ready,
+        #     which is the common case on pre-2026-05-13 days that were
+        #     Vision-backfilled trade-only (no depth) and on 04-17 →
+        #     05-12. Finite on 03-06 → 04-16 (full L2 historical) and
+        #     2026-05-13+ (live recording).
         cc_top = cc.book.get_top1()
         bj_top = bj.book.get_top1()
+        um_top = um.book.get_top1()
+        bs_top = bs.book.get_top1()
         cc_mid = cc_top["mid_price"] if cc_top else nan
         bj_mid = bj_top["mid_price"] if bj_top else nan
+        um_mid = um_top["mid_price"] if um_top else nan
+        bs_mid = bs_top["mid_price"] if bs_top else nan
 
         if cc_mid > 0 and bj_mid > 0:
             feats["basis_bj_bps"] = math.log(cc_mid / bj_mid) * 10000.0
@@ -493,6 +521,11 @@ class FeatureBuilder:
             if not math.isnan(feats["r_um"]) and not math.isnan(feats["basis_bj_bps"])
             else nan
         )
+
+        if um_mid > 0 and bs_mid > 0:
+            feats["basis_um_bps"] = math.log(um_mid / bs_mid) * 10000.0
+        else:
+            feats["basis_um_bps"] = nan
 
         # --- Tier 1: time-of-day (UTC) + CC flow ---
         # ts_ms / 1000 / 3600 mod 24

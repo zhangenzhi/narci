@@ -41,6 +41,7 @@ VENUE_SOURCES: list[tuple[str, str, str, str]] = [
     ("coincheck",   "spot",       "BTC_JPY", "cc"),
     ("binance_jp",  "spot",       "BTCJPY",  "bj"),
     ("binance",     "um_futures", "BTCUSDT", "um"),
+    ("binance",     "spot",       "BTCUSDT", "bs"),  # v5: perp-spot basis
 ]
 
 UM_KEEP_SIDES = None  # None = keep everything; (2,3,4) = drop incrementals

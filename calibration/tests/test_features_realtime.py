@@ -74,9 +74,9 @@ def test_v4_um_flow_signs_match_taker_direction():
     assert feats["um_flow_500ms"] == 0.0, feats["um_flow_500ms"]
 
 
-def test_v4_feature_count_increased_by_4():
-    """v3 had 31 features; v4 adds 4 um_flow → 35."""
-    assert len(FEATURE_NAMES) == 35
+def test_v5_feature_count():
+    """v3 had 31 features; v4 added 4 um_flow → 35; v5 adds basis_um_bps → 36."""
+    assert len(FEATURE_NAMES) == 36
 
 
 def test_get_features_returns_dict_after_seeding():
@@ -103,6 +103,52 @@ def test_basis_finite_when_books_aligned():
     feats = fb.get_features()
     # basis_bj_bps should be finite (CC and BJ have same prices)
     assert not math.isnan(feats["basis_bj_bps"])
+
+
+def test_basis_um_nan_when_bs_absent():
+    """v5: basis_um_bps requires BS book ready. With only cc/bj/um
+    seeded, BS book is empty → basis_um_bps must be NaN. Mirrors the
+    pre-2026-05-13 / Vision-backfilled-trade-only days where BS has
+    no depth events."""
+    fb = FeatureBuilder()
+    _seed(fb)   # seeds cc/bj/um, not bs
+    feats = fb.get_features()
+    assert math.isnan(feats["basis_um_bps"])
+
+
+def test_basis_um_finite_and_signed_correctly():
+    """v5: basis_um_bps = log(um_mid / bs_mid) * 1e4.
+
+    Setup UM mid=100 (10000 / 100), BS mid=99 (perp 1% over spot).
+    Expected basis = log(100/99) * 1e4 ≈ +100.5 bps (positive = perp
+    premium, contango)."""
+    fb = FeatureBuilder()
+    ts = 1_700_000_000_000
+
+    # UM around 100
+    fb.update_event("um", ts, 3, 99.5, 1.0)
+    fb.update_event("um", ts, 4, 100.5, 1.0)
+    fb.update_event("um", ts + 1, 0, 99.5, 0.5)
+
+    # BS around 99 (1% lower = spot under perp = contango)
+    fb.update_event("bs", ts, 3, 98.5, 1.0)
+    fb.update_event("bs", ts, 4, 99.5, 1.0)
+    fb.update_event("bs", ts + 1, 0, 98.5, 0.5)
+
+    # Also seed cc/bj so the FB is otherwise healthy (basis_bj path not tested here).
+    fb.update_event("cc", ts, 3, 100, 0.5)
+    fb.update_event("cc", ts, 4, 101, 0.5)
+    fb.update_event("cc", ts + 1, 0, 100.5, 0.5)
+    fb.update_event("bj", ts, 3, 100, 0.5)
+    fb.update_event("bj", ts, 4, 101, 0.5)
+    fb.update_event("bj", ts + 1, 0, 100.5, 0.5)
+
+    feats = fb.get_features(ts_ms=ts + 1)
+    assert "basis_um_bps" in feats
+    b = feats["basis_um_bps"]
+    assert not math.isnan(b)
+    # log(100/99) * 1e4 ≈ 100.5
+    assert 90.0 < b < 110.0, f"expected ~+100 bps perp premium, got {b}"
 
 
 def test_hour_features_in_range():

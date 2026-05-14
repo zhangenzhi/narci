@@ -53,6 +53,7 @@ VENUE_SOURCES = [
     ("coincheck",   "spot",       "BTC_JPY", "cc"),
     ("binance_jp",  "spot",       "BTCJPY",  "bj"),
     ("binance",     "um_futures", "BTCUSDT", "um"),
+    ("binance",     "spot",       "BTCUSDT", "bs"),  # v5: perp-spot basis
 ]
 
 QUOTE_STRATEGIES = ("join_back", "improve_1_tick")
