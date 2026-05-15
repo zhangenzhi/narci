@@ -170,10 +170,13 @@ services:
 
         while true; do
           echo "[cloud-sync] syncing..."
+          # --no-traverse 撤掉 (2026-05-15):rclone GDrive 后端 + --no-traverse
+          # 对新嵌套目录 (如 bitbank/spot/l2/) 会静默 skip,因为 rclone 没去 list
+          # 目标,GDrive 又不会自动建中间 folder。常规每 600s 一次 traverse 在我们
+          # 这种 source-driven 场景代价微小 (~几百 ms),换来新 venue 自动 catch up。
           rclone copy /data "$${RCLONE_REMOTE}" \
             --transfers 4 \
             --log-level NOTICE \
-            --no-traverse \
             --tpslimit 8 \
             --tpslimit-burst 8
           echo "[cloud-sync] done, sleeping $${SYNC_INTERVAL:-600}s"
