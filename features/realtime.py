@@ -59,7 +59,7 @@ from data.l2_reconstruct import L2Reconstructor
 # Models trained against vN must retrain against vN+1 — manifest required-
 # version pin (narci_features_version_required) is enforced by
 # load_alpha_model.
-FEATURES_VERSION = "v5"
+FEATURES_VERSION = "v6"
 
 
 # ------------------------------------------------------------------ #
@@ -79,6 +79,12 @@ BASELINE_FEATURES = [
     "um_flow_50ms", "um_flow_100ms", "um_flow_500ms", "um_flow_5s",
     # BJ trade-based
     "r_bj", "bj_imb_1s", "bj_flow_5s",
+    # CC trade intensity (v6 2026-05-15) — nyx 16-day LOO audit 显示
+    # 这一个特征单独把 LGB R² 从 +6.81% 升到 +11.17%,IR 2.57→4.26
+    # (全 16 个 variant 中 IR 最高);CC sample 点过去 50ms 窗口内 CC
+    # trade count。机制类比 Hawkes self-exciting:50ms 内 5+ 笔 trade
+    # 是 rare burst,强烈预示 informed flow 方向延续 1s。
+    "trade_intensity_burst_50ms",
     # CC own
     "r_cc_lag1", "r_cc_lag2", "cc_imb_1s",
     # Basis
@@ -173,6 +179,22 @@ class _TradeWindow:
     def count(self, now_ms: int, window_ms: int) -> int:
         cutoff = now_ms - window_ms
         return sum(1 for ts, _, _, _ in self.history if ts >= cutoff)
+
+    def burst_count(self, now_ms: int, window_ms: int = 50) -> int:
+        """Count trades in (now_ms - window_ms, now_ms]。
+
+        Used for `trade_intensity_burst_50ms` (v6) — nyx spec § A 要求
+        O(1)-ish 实现。history 已按时间升序 (push 顺序),从右端往左短路
+        遍历即可:K = 窗口内 trade 数 (50ms × CC 稀疏 sparse → 通常 0-5)。
+        比 count() 在 trade 较密、N 较大时更快;在窗口空时 O(1)。
+        """
+        cutoff = now_ms - window_ms
+        n = 0
+        for ts, _, _, _ in reversed(self.history):
+            if ts <= cutoff:
+                break
+            n += 1
+        return n
 
 
 # ------------------------------------------------------------------ #
@@ -489,6 +511,9 @@ class FeatureBuilder:
         feats["r_bj"] = r_bj
         feats["bj_imb_1s"]  = bj.trades.imbalance(ts_ms, 1000)
         feats["bj_flow_5s"] = bj.trades.flow(ts_ms, 5000)
+
+        # --- CC trade intensity (v6) ---
+        feats["trade_intensity_burst_50ms"] = cc.trades.burst_count(ts_ms, 50)
 
         # --- CC own ---
         # r_cc_lag1: log_return at *previous* 1s vs 2s ago
