@@ -1,0 +1,45 @@
+recorder:
+  # ============================================================
+  # bitbank 交易所录制配置 (Phase 1 scaffold — 暂未挂 docker-compose)
+  #
+  # Phase 2 上线条件:
+  #   1. l2_recorder.py 接 socket.io 路径 (扩 ExchangeAdapter ABC 或 special case)
+  #   2. docker-compose.yaml 加 recorder-bitbank service (profile=tokyo, port 8082)
+  #   3. python-socketio[asyncio_client] 进 requirements.txt
+  # ============================================================
+
+  exchange: bitbank
+  market_type: spot
+
+  # bitbank 原生符号格式 btc_jpy (lowercase + underscore,跟 CC 一致)
+  symbols:
+    - "btc_jpy"
+    - "eth_jpy"
+    - "xrp_jpy"
+    - "sol_jpy"
+    - "doge_jpy"
+
+  # bitbank WS 是事件驱动 (socket.io),interval_ms 仅作文档字段
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+
+  # bitbank REST snapshot 公开免签,跟 CC 一样可以每次落盘前重拉
+  # 校准内存 book,扔掉 WS 漏 delete 的 dust
+  snapshot_refresh_on_save: true
+
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  # watchdog 沿用 CC 的阈值;bitbank WS 实际死亡 pattern 待 Phase 2 实测
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180
+  trade_stale_threshold_sec: 1800
+
+  endpoints:
+    spot:
+      ws_url: "https://stream.bitbank.cc"
+      snapshot_url: "https://public.bitbank.cc/{symbol_lower}/depth"

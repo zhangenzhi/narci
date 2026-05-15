@@ -50,6 +50,8 @@ class SymbolSpec:
 
 
 # 粗略默认（生产应从交易所 API 实时拉 exchangeInfo 校准）
+# 默认表保留 CC + Binance 的形状不变,避免破坏现有调用方;bitbank 走单独的
+# BITBANK_SPECS 表,通过 get_spec(symbol, venue="bitbank") 查询。
 DEFAULT_SPECS: dict[str, SymbolSpec] = {
     # Coincheck spot
     "BTC_JPY": SymbolSpec("BTC_JPY", tick_size=1.0, lot_size=0.001, min_notional=500.0),
@@ -65,6 +67,33 @@ DEFAULT_SPECS: dict[str, SymbolSpec] = {
 }
 
 
-def get_spec(symbol: str) -> SymbolSpec:
-    """查表，未知 symbol 返回宽松默认（建议生产代码显式传入）"""
-    return DEFAULT_SPECS.get(symbol.upper(), SymbolSpec(symbol.upper()))
+# bitbank /v1/spot/pairs (实测 2026-05-15):price_digits → tick = 10^-digits;
+# amount_digits → lot = 10^-digits;min_notional 用 bitbank 通用 200 JPY 下限。
+# bitbank BTC/ETH 走 8 位精度,远细于 CC 的 0.001 — 跟 CC 数据混用前要注意 lot 不一致。
+BITBANK_SPECS: dict[str, SymbolSpec] = {
+    "BTC_JPY":  SymbolSpec("BTC_JPY",  tick_size=1.0,    lot_size=1e-8, min_notional=200.0),
+    "ETH_JPY":  SymbolSpec("ETH_JPY",  tick_size=1.0,    lot_size=1e-8, min_notional=200.0),
+    "XRP_JPY":  SymbolSpec("XRP_JPY",  tick_size=0.001,  lot_size=1e-4, min_notional=200.0),
+    "SOL_JPY":  SymbolSpec("SOL_JPY",  tick_size=1.0,    lot_size=1e-8, min_notional=200.0),
+    "DOGE_JPY": SymbolSpec("DOGE_JPY", tick_size=0.001,  lot_size=1e-4, min_notional=200.0),
+}
+
+
+_VENUE_TABLES: dict[str, dict[str, SymbolSpec]] = {
+    "bitbank": BITBANK_SPECS,
+    # CC / Binance 仍用 DEFAULT_SPECS,这里不重复登记
+}
+
+
+def get_spec(symbol: str, venue: str | None = None) -> SymbolSpec:
+    """查表,未知 symbol 返回宽松默认。
+
+    venue=None 走默认表 (向后兼容);传入 venue 时先查 venue 专属表,
+    miss 才回退默认表。这样 bitbank 的 lot 不会污染 CC 的查询。
+    """
+    sym = symbol.upper()
+    if venue:
+        table = _VENUE_TABLES.get(venue.lower())
+        if table and sym in table:
+            return table[sym]
+    return DEFAULT_SPECS.get(sym, SymbolSpec(sym))

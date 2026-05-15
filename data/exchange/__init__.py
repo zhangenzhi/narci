@@ -9,6 +9,7 @@
 from .base import ExchangeAdapter
 from .binance import (BinanceAdapter, BinanceSpotAdapter,
                       BinanceUmFuturesAdapter, BinanceJpAdapter)
+from .bitbank import BitbankAdapter
 from .coincheck import CoincheckAdapter
 
 _REGISTRY = {
@@ -16,6 +17,7 @@ _REGISTRY = {
     "binance_spot": BinanceSpotAdapter,
     "binance_um_futures": BinanceUmFuturesAdapter,
     "binance_jp": BinanceJpAdapter,
+    "bitbank": BitbankAdapter,
     "coincheck": CoincheckAdapter,
 }
 
@@ -47,6 +49,10 @@ def get_adapter(name: str, market_type: str | None = None,
         cc_kwargs = {k: v for k, v in kwargs.items() if k in ()}
         return CoincheckAdapter(**cc_kwargs)
 
+    if name_lower == "bitbank":
+        bb_kwargs = {k: v for k, v in kwargs.items() if k in ()}
+        return BitbankAdapter(**bb_kwargs)
+
     if name_lower in _REGISTRY:
         return _REGISTRY[name_lower](**kwargs)
 
@@ -56,4 +62,5 @@ def get_adapter(name: str, market_type: str | None = None,
     )
 
 
-__all__ = ["ExchangeAdapter", "get_adapter", "BinanceAdapter", "CoincheckAdapter"]
+__all__ = ["ExchangeAdapter", "get_adapter", "BinanceAdapter",
+           "BitbankAdapter", "CoincheckAdapter"]
