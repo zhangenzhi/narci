@@ -1,13 +1,20 @@
 # AWS 双实例部署手册
 
+> ⚠️ **2026-05-15 修正**:本文档之前把 global recorder 写成 `narci-us / us-west-2 / t4g.micro`,
+> 是早期 plan 没跟实际部署同步。**真实生产环境的 global recorder 在 ap-southeast-1
+> (Singapore) 上,规格 t4g.small (2GB)**。narci 仓库代码里的 `AWS-SG` 引用 (例如
+> `features/realtime.py:334`、`tools/probe_um_endpoints.py`、`calibration/tests/
+> test_l2_recorder_refresh.py:202`) 才是 source of truth。echo 团队
+> `docs/INTERFACE_NARCI.md §12.1` 反映了 README 的过时状态 — 修这份的同时也通知 echo。
+
 两台 EC2 分工录制，同推一个 Google Drive：
 
-| 实例 | 区域 | 规格 | Profile | 录什么 | 月成本 |
+| 实例 | 区域 / AZ | 规格 | Profile | 录什么 | 月成本 |
 |---|---|---|---|---|---|
-| **narci-tokyo** | ap-northeast-1 | t4g.small (2GB) | `tokyo` | Coincheck 7 对 JPY 现货 | ~$15 |
-| **narci-us** | us-west-2 | t4g.micro (1GB) | `global` | Binance spot 24 对 + futures 6 对 | ~$8 |
+| **narci-tokyo** (= narci-t4g `i-0d73599f...`) | ap-northeast-1a | t4g.small (2GB) | `tokyo` | Coincheck 7 对 JPY 现货 + Binance JP spot | ~$15 |
+| **narci-sg** (= AWS-SG) | ap-southeast-1 | t4g.small (2GB) | `global` | Binance global spot + UM futures | ~$15 |
 
-总计 ~¥3,500/月，10w 预算可跑 **~28 个月**。
+总计 ~¥4,500/月，10w 预算可跑 **~22 个月**。t4g.medium 升级 (针对 SG box 0504 OOM,见 §故障排查) 会把 SG 月成本拉到 ~$30。
 
 ## 前置一次性准备
 
@@ -79,21 +86,23 @@ aws ssm put-parameter \
 
 两台实例都用同一个 `deploy/aws/user-data.sh`，只需改脚本顶部的 `MY_PROFILE`。
 
-### narci-tokyo（Coincheck）
+### narci-tokyo（Coincheck + Binance JP）
 
-- **区域**: ap-northeast-1
+- **区域**: ap-northeast-1 (Tokyo), AZ `ap-northeast-1a`
 - **AMI**: Amazon Linux 2023 ARM64
 - **规格**: t4g.small（2 vCPU / 2GB）
 - **存储**: gp3 30GB
 - **User data**: 粘贴 `user-data.sh`，设 `MY_PROFILE='tokyo'`，填 GDrive token
+- **跟 echo-air 同 AZ** (echo-air 也在 ap-northeast-1a),< 2 ms hop,用于 echo 的 CC L2 calibration pairing。
 
-### narci-us（Binance）
+### narci-sg（Binance global spot + UM）
 
-- **区域**: us-west-2
+- **区域**: ap-southeast-1 (Singapore)
 - **AMI**: Amazon Linux 2023 ARM64
-- **规格**: t4g.micro（2 vCPU / 1GB）
+- **规格**: t4g.small（2 vCPU / 2GB） — 注意:2GB 对 UM 6 symbol recorder 偏紧,0504 触发过 5h OOM (见 §故障排查 + memory `project_aws_sg_oom`)。生产推荐升 t4g.medium。
 - **存储**: gp3 30GB
 - **User data**: 粘贴 `user-data.sh`，设 `MY_PROFILE='global'`，填**同一个** GDrive token
+- **区域选 Singapore**:历史原因 — 当时为了贴近 Binance UM endpoint (比 Tokyo / us-west-2 都近)。
 
 启动后约 3 分钟完成 bootstrap。SSH 进去验证：
 
@@ -101,7 +110,7 @@ aws ssm put-parameter \
 ssh -i key.pem ec2-user@<EC2-IP>
 source narci/deploy/server-aliases.sh
 export NARCI_HOME=$HOME/narci
-nstatus          # Tokyo: coincheck + cloud-sync; US: spot + umfut + cloud-sync
+nstatus          # Tokyo: coincheck + binance-jp + cloud-sync; SG: spot + umfut + cloud-sync
 nlog             # 看录制输出
 ```
 

@@ -66,11 +66,16 @@ narci 这边的承诺:
 2. **过渡期约定**:在 spec 落地前,**echo 把这三个字段保持空值即可**。
    narci 的 calibration replay 会把空字段当作 "intentionally unpaired"
    (而不是 "missing data") 处理 —— 这块逻辑在 narci 端,echo 不用关心。
-3. **重要拓扑澄清** (写进 spec):**echo-air 后续要 pair 的 narci recorder
-   不是 narci-t4g `i-0d73599f6798cfa1e`** (那个是 binance-global UM
-   recorder),**而是 aws-sg 上的 binance_jp + coincheck 联合 recorder**。
-   两台都在 ap-northeast-1 region,但 **不同 AZ**,跨 AZ hop ~1 ms。CC L2
-   流来自 aws-sg recorder,这点会在 spec 里写死。
+3. **拓扑确认** (写进 spec):**echo-air 的 CC pair target IS narci-t4g**
+   (= narci-tokyo, `i-0d73599f6798cfa1e`, ap-northeast-1a, t4g.small),
+   跑 `recorder-coincheck` + `recorder-binance-jp` 两个容器,**和 echo-air
+   同 AZ**,< 2 ms hop。Binance global spot + UM 在另一台
+   **narci-sg** (= AWS-SG, ap-southeast-1, t4g.small),和 echo-air 跨
+   region,跟 CC pair 无关。Source of truth:`docker-compose.yaml`
+   (profile=tokyo / global) + `deploy/aws/README.md` (已在
+   commit `<本次>` 修正 region 标错的问题)。
+   *(2026-05-15 修正,纠正本文档前一版本错把 narci-t4g 标成 UM recorder、
+   把 CC 标成"aws-sg cross-AZ"的反向错误;详见 §7.1。)*
 
 ### 2.2 Calibration replay 对空 decisions/fills/cancels 的处理
 echo §4 自报 `NaiveMakerStrategy` 没起来,跑成了默认 `EventStrategy`,导致
@@ -191,30 +196,36 @@ narci 这边后续会在 feature cache 里加 `_source` 字段标注是 bookTick
   adapter 已展开,echo 不用关心,但如果 echo 直接读 CC 原始 WS (不通过
   narci),会踩这个坑。
 
-### 4.3 narci CC recorder 不在 narci-t4g
-重复 §2.1.3 提到的拓扑:**narci CC recording 在 aws-sg 那台联合 recorder
-上,不在 echo-air 同 AZ 的 narci-t4g**。
+### 4.3 narci CC recorder 拓扑 (本节 2026-05-15 重写)
+正确拓扑:
 
-跨 AZ 但同 region 的延迟特征:
+| Host | Region / AZ | Records | echo-air → narci latency |
+|---|---|---|---|
+| **narci-t4g** (= narci-tokyo, `i-0d73599f...`) | ap-northeast-1a, t4g.small | Coincheck + Binance JP spot | **< 2 ms (同 AZ)** |
+| **narci-sg** (= AWS-SG) | ap-southeast-1, t4g.small | Binance global spot + UM futures | ~70 ms (跨 region) — 跟 CC pair 无关 |
 
-- echo-air (ap-northeast-1a) ↔ narci-t4g UM recorder (1a): < 2 ms
-- echo-air (ap-northeast-1a) ↔ aws-sg CC recorder (other AZ): ~1 ms (跨 AZ)
-
-如果 echo 的策略对 narci CC 行情有 latency 敏感的依赖,**注意 1 ms 跨 AZ
-hop** —— 但远小于 CC WS 本身的 jitter (CC 公网 WS,典型 RTT 几十 ms),
-所以应该不是实际瓶颈。
+**echo-air 的 CC L2 pair target = narci-t4g** (同 AZ)。narci-sg 上的
+Binance global / UM 数据走 gdrive 冷链交付,不参与 echo 实时 pair。
 
 ### 4.4 narci recorder 健康状态可见
-echo 这边如果想知道 narci recorder 是不是 alive (避免 pair 到一个掉线
-的 narci window):
+echo 这边如果想知道 narci-t4g 上的 CC recorder 是不是 alive (避免 pair
+到一个掉线的 narci window):
 
-- narci-t4g (binance UM): `http://<narci-t4g-private-ip>:8080/health`
-- aws-sg (binance_jp + CC 联合): `http://<aws-sg-private-ip>:8081/health`
-- 端口都在 narci recorder 的 healthcheck (见 `deploy/healthcheck.py`)。
+| Container | Host port | 用途 |
+|---|---|---|
+| `narci-recorder-coincheck` | `8079` on narci-t4g | CC L2 health |
+| `narci-recorder-binance-jp` | `8080` on narci-t4g | Binance JP spot health |
+
+(注:`docker-compose.yaml` 里 recorder-coincheck 映射宿主机 8079,
+recorder-binance-jp 映射 8080;narci 内部容器端口都是 8079。)
+
+narci-sg 上还有 binance-spot:8079 / binance-umfut:8080,但和 echo 的 CC
+pair 无关,跨 region 走 gdrive。
 
 跨 host 私网访问需要 security group 放行 —— echo-air 和 narci-t4g 在同一
-个 `launch-wizard-3` SG (echo 已 confirm),aws-sg 那边 narci 这边会去开
-ingress。完成后写进 §2.1 的 pairing spec。
+个 `launch-wizard-3` SG (echo 已 confirm 共享 SG),narci 这边只需在 SG
+inbound 上为 echo-air private IP 放行 8079/8080。完成后写进 §2.1 的
+pairing spec。
 
 ---
 
@@ -262,3 +273,129 @@ scp -i ~/.ssh/aws-narci.pem -r \
 ### Changelog
 - **2026-05-15** (`84354aa`) — initial cut,响应 echo `INTERFACE_NARCI.md`
   authoritative 2026-05-14 (`03bb63b`)。
+- **2026-05-15** (本次 commit) — §2.1.3 / §4.3 / §4.4 拓扑重写;
+  追加 §7 appendix 回应 echo `INTERFACE_NARCI.md §12` (echo SHA `82622ed`)。
+  同时修 `deploy/aws/README.md` 的 region 错标 (narci-us → narci-sg)。
+
+---
+
+## 7. Appendix — 回应 echo `INTERFACE_NARCI.md §12` (2026-05-15, echo SHA `82622ed`)
+
+### 7.1 Topology — narci §2.1.3 / §4.3 / §4.4 已重写,谁对谁错
+
+echo §12.1 指出本文档前一版本 (narci SHA `429c3eb`) 拓扑错认,**主要责任
+在 narci**。具体:
+
+| 错认点 | 我之前的版本 | 实际正确 | echo 提出的版本 |
+|---|---|---|---|
+| narci-t4g 录什么 | "binance-global UM recorder" ❌ | **CC + Binance JP** ✓ | "CC + Binance JP" ✓ |
+| echo-air CC pair target | "aws-sg, cross-AZ ~1ms" ❌ | **narci-t4g, same AZ < 2ms** ✓ | "narci-t4g, same AZ < 2ms" ✓ |
+| binance global / UM 在哪 | (我隐含说在 narci-t4g) ❌ | **AWS-SG (Singapore, ap-southeast-1)** | "narci-us in us-west-2" ❌ |
+
+**echo 在 CC 拓扑上 100% 对**(narci-t4g = narci-tokyo,同 AZ,< 2ms);
+narci 之前的 §2.1.3 把 CC 和 UM 整个调换了,这是 narci 的错。**已在本次
+commit 修正**。
+
+**但 echo 在 UM 拓扑上 source 取错了** — `deploy/aws/README.md` 写
+"narci-us / us-west-2 / t4g.micro" 是早期 plan,**没跟实际部署同步**。
+narci 仓库代码里 4 处独立引用 `AWS-SG` 才是 source of truth:
+
+- `features/realtime.py:334` — "BS recorder lives on AWS-SG, recording since..."
+- `tools/probe_um_endpoints.py:3,10` — "Run from AWS-SG host" / "AWS-SG egress blocked"
+- `calibration/tests/test_l2_recorder_refresh.py:202` — "out of recording 5h+ on AWS-SG 2026-05-09"
+- (narci-side memory `project_aws_sg_oom`,基于 0507 journalctl 实证)
+
+**已在本次 commit 同步修正 `deploy/aws/README.md`**,把 narci-us /
+us-west-2 / t4g.micro 改成 **narci-sg / ap-southeast-1 / t4g.small**,
+并加 explanatory warning 顶部。echo 后续如果再以 narci 仓库为 source of
+truth,会拿到正确的拓扑。
+
+**对 echo 实操的影响**:零。UM 在 SG 还是 us-west-2 跟 echo CC pair 都
+无关 (跨 region 都没用),CC pair target 已经在 narci-t4g 上,echo §12.1
+"echo-air's CC pair target IS narci-t4g, same AZ" 这条结论本身正确,可以
+按这条往 §2.1 的 pairing spec 推。
+
+### 7.2 A15 — `recorder-bitbank` on narci-tokyo (blocking 0b) ✓ accept
+
+narci 接 A15。选 **(a) 独立 recorder**,理由跟 echo 一致 — cross-check
+echo `RawL2Sidecar` 才有意义。
+
+实施计划:
+
+- 新 adapter `data/exchange/bitbank.py` 实现 `ExchangeAdapter` ABC,
+  WS 协议 socket.io v2 (EIO=3),参照 echo `echo/exchange/bitbank.py` (SHA
+  `6569402`) 的 parser。`python-socketio[asyncio_client]` 加进
+  `requirements.txt`。
+- side 编码沿用 narci 标准:0=bid update, 1=ask update, 2=aggTrade
+  (qty 负值=seller maker), 3=bid snapshot, 4=ask snapshot。
+- 新 config `configs/exchanges/bitbank_spot.yaml` + `configs/bitbank_recorder.yaml`
+  symlink。
+- `docker-compose.yaml` 加 service `recorder-bitbank`,profile=tokyo,
+  宿主机端口 **8082**(8079/8080 已被 CC/BJP 占)。
+- gdrive 路径:`gdrive:narci_raw/realtime/bitbank/spot/l2/`。
+- `daily_compactor.py` 沿用既有 exchange-neutral 流程,bitbank 跟 CC 一样
+  没有官方 Vision 归档,skip validation gracefully。
+
+**时间表**:narci 这边按 echo 的 Phase 0b cutover 排期。echo §12.3 标
+"before Phase 0b cutover" — 请 echo 给一个绝对日期 (例如 "Phase 0b
+cutover ≥ 2026-06-XX"),narci 这边好倒推 ETA。在没拿到日期之前,narci
+按 **2026-06-30 ready (含联调测试)** 自规划。
+
+### 7.3 A16 — Calibration replay venue dispatch (blocking 0b) ✓ accept
+
+narci 接 A16。`MakerSimBroker` + calibration replay 加 venue dispatch
+层,按 `meta.json.exchange` 切换:
+
+- `SymbolSpec` 表 (per-venue tick / lot / minNotional / maker-rebate
+  eligibility)
+- fee schedule (CC `0/0 bps`,bitbank `-2/+12 bps`,future venues TBD)
+- trade-side decoding (CC list-of-lists; bitbank explicit `side`;
+  bitFlyer `executions[]`)
+- order-type matrix (`post_only` 是否支持、IFD/OCO、stop-limit 等)
+
+实现路径:在 `backtest/broker.py` 加 `VenueRegistry`,根据 session 的
+`exchange` 字段在 replay 启动时 inject 对应规则;现有
+`SpotBroker`/`SimulatedBroker` 改成读 registry 而非硬编码 CC 默认。
+
+**时间表**:跟 A15 绑定,同一个 Phase 0b 窗口完成 (2026-06-30 ready)。
+
+### 7.4 A17 — `recorder-gmo` + `recorder-bitflyer` (deferred Phase 0c+)
+
+narci 同意 echo 的 deferred 安排。等 A15 bitbank pattern 稳定再做。
+
+**前置依赖** (narci 这边等的事):
+- echo §8 audit 的 GMO / bitFlyer 协议规范文档化 — 看 echo `tests/
+  ws_compare_jp.py` 是否能转成 narci 这边的 adapter spec
+- bitFlyer 需要 echo 重做一次 JST business-hour audit (echo §12.2 自己
+  flag 了 max 110ms 尾巴可疑)
+- narci A15 落地后跑 ≥ 30 天稳定,再决定下一个 venue 优先级
+
+### 7.5 narci 端反向追踪 — echo §12.3 表的更新建议
+
+echo 表里第二项 "Topology re-cut of `INTERFACE_ECHO.md` §2.1.3 / §4.3 /
+§4.4 — Due: next narci re-cut" — **本次 commit 已 done**。请 echo 下次
+re-cut INTERFACE_NARCI.md 时勾掉 / 删除这行,免得长期挂着。
+
+其它 commitments 状态:
+
+| Item | Status | 备注 |
+|---|---|---|
+| Cross-host pairing spec | 进行中 | due 2026-06-15,在 `docs/CROSS_HOST_PAIRING.md` |
+| Topology re-cut | ✓ done | 本次 commit |
+| A15 `recorder-bitbank` | accepted | due ≤ 2026-06-30,跟 0b cutover 对齐 |
+| A16 venue dispatch | accepted | due ≤ 2026-06-30,跟 A15 同窗口 |
+| A17 GMO + bitFlyer | deferred 0c+ | 等 A15 稳 30 天 |
+| empty-shard semantics | ✓ done in §2.2 | confirmed |
+
+### 7.6 narci 端反向 ask (再次重申)
+
+承接 §3 的请求,**给 echo 的优先级排序**:
+
+1. **(高)** §3.1 — NaiveMakerStrategy 修好后送一个非空 session 样本
+   (Phase 0b 启动前)。
+2. **(高)** §3.2 — Test 6 funding ETA 写进 echo INTERFACE_NARCI §4 (这次
+   re-cut 时顺便加上)。
+3. **(中)** §3.3 — echo-air `/health` HTTP endpoint (Phase 0b 之前 nice
+   to have)。
+4. **(低)** §3.4 — `narci_features_consumed` 字段,v1.2 schema candidate,
+   bitbank/multi-venue 上线后再讨论。
