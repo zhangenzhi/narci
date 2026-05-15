@@ -84,6 +84,94 @@ services:
         max-file: "5"
 
   # =====================================================================
+  # tokyo-extra profile: bitFlyer + GMO recorders
+  # =====================================================================
+  # ⚠️ 这 4 个 recorder **不放在默认 tokyo profile**,因为 t4g.small (2GB)
+  # 加上现有 3 个 recorder + cloud-sync 已经接近内存上限。开 tokyo-extra
+  # 前必须先把 narci-tokyo 升到 t4g.medium (4GB) 或 t4g.large (8GB)。
+  #
+  # 启用方法:
+  #   COMPOSE_PROFILES=tokyo,tokyo-extra docker compose up -d
+  # 或 .env 里设置:
+  #   COMPOSE_PROFILES=tokyo,tokyo-extra
+  #
+  # 资源验证:跑 `deploy/measure_recorder_footprint.sh` 看实例剩余内存
+  # 是否够 4 个 recorder。每个加了 mem_limit=256m 作硬上限保护。
+  # =====================================================================
+
+  recorder-bitflyer-spot:
+    build: .
+    container_name: narci-recorder-bitflyer-spot
+    profiles: [tokyo-extra]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/bitflyer_spot_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8083:8079"
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "5"}
+
+  recorder-bitflyer-fx:
+    build: .
+    container_name: narci-recorder-bitflyer-fx
+    profiles: [tokyo-extra]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/bitflyer_fx_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8084:8079"
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "5"}
+
+  recorder-gmo-spot:
+    build: .
+    container_name: narci-recorder-gmo-spot
+    profiles: [tokyo-extra]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/gmo_spot_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8085:8079"
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "5"}
+
+  recorder-gmo-leverage:
+    build: .
+    container_name: narci-recorder-gmo-leverage
+    profiles: [tokyo-extra]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/gmo_leverage_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8086:8079"
+    mem_limit: 256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "5"}
+
+  # =====================================================================
   # recorder-binance-spot: Binance 国际现货（需非日本 IP）
   # Profile: global
   # =====================================================================

@@ -1,0 +1,37 @@
+recorder:
+  # ============================================================
+  # GMO Coin 現物 (Spot) 录制配置
+  # GMO 現物 symbol 是 single-asset (BTC,不是 BTC_JPY);BTC_JPY 是杠杆。
+  # ============================================================
+  # 上线条件:tokyo-extra profile + t4g.medium+
+
+  exchange: gmo
+  market_type: spot
+
+  symbols:
+    - "BTC"
+    - "ETH"
+    - "XRP"
+
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+
+  # GMO orderbooks 每条都是 full snapshot,save_loop 的 snapshot 注入跟 WS
+  # 流的 snapshot 会重叠;不强求 REST refresh (snapshot already authoritative)
+  snapshot_refresh_on_save: false
+
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180
+  trade_stale_threshold_sec: 1800
+
+  endpoints:
+    spot:
+      ws_url: "wss://api.coin.z.com/ws/public/v1"
+      snapshot_url: "https://api.coin.z.com/public/v1/orderbooks?symbol={symbol_upper}"

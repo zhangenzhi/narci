@@ -115,6 +115,64 @@ VENUE_REGISTRY: dict[str, VenueSpec] = {
         ws_url_hint="wss://fstream.binance.com",
         notes="U 本位永续,2/5 bps 标准费率;UM 双 endpoint /public + /market 拆 depth/trade。",
     ),
+    "bitflyer_spot": VenueSpec(
+        exchange="bitflyer",
+        market_type="spot",
+        maker_fee_bps=15.0,                    # 0.15% spot 默认
+        taker_fee_bps=15.0,
+        supports_post_only=True,
+        supports_ioc=True,
+        supports_fok=True,
+        trade_sign_convention="buy_taker_neg",
+        rest_public_base="https://api.bitflyer.com",
+        ws_url_hint="wss://ws.lightstream.bitflyer.com/json-rpc",
+        notes="bitFlyer 普通现货,JSON-RPC over WebSocket;板深 ≈300 levels。"
+              " 月成交量阶梯费率,15 bps 是入门价。",
+    ),
+    "bitflyer_fx": VenueSpec(
+        exchange="bitflyer",
+        market_type="fx",
+        maker_fee_bps=0.0,                     # Lightning FX 当前无 maker 费
+        taker_fee_bps=0.0,                     # 但有日内 SWAP 利息 (类 funding rate)
+        supports_post_only=True,
+        supports_ioc=True,
+        supports_fok=True,
+        trade_sign_convention="buy_taker_neg",
+        rest_public_base="https://api.bitflyer.com",
+        ws_url_hint="wss://ws.lightstream.bitflyer.com/json-rpc",
+        notes="bitFlyer Lightning FX 永续 (FX_BTC_JPY only),日本最大 BTC 永续。"
+              " 手续费 0/0,但有日内 SWAP 利息 (持仓每 4h 收取约 0.04% 类 funding)。"
+              " 流动性比 spot 强,日成交是 bitFlyer 主战场。",
+    ),
+    "gmo_spot": VenueSpec(
+        exchange="gmo",
+        market_type="spot",
+        maker_fee_bps=-1.0,                    # rebate -0.01% 成交占比 65% 以下
+        taker_fee_bps=5.0,                     # 0.05%
+        supports_post_only=False,              # GMO API 不支持 post_only,只 IOC
+        supports_ioc=True,
+        supports_fok=True,
+        trade_sign_convention="buy_taker_neg",
+        rest_public_base="https://api.coin.z.com/public",
+        ws_url_hint="wss://api.coin.z.com/ws/public/v1",
+        notes="GMO 現物 (single-asset symbol like BTC),WS orderbooks 每条都是全量"
+              " snapshot (无 diff)。",
+    ),
+    "gmo_leverage": VenueSpec(
+        exchange="gmo",
+        market_type="leverage",
+        maker_fee_bps=-1.0,                    # rebate (条件同 spot)
+        taker_fee_bps=5.0,
+        supports_post_only=False,
+        supports_ioc=True,
+        supports_fok=True,
+        trade_sign_convention="buy_taker_neg",
+        rest_public_base="https://api.coin.z.com/public",
+        ws_url_hint="wss://api.coin.z.com/ws/public/v1",
+        notes="GMO レバレッジ取引 (pair symbol BTC_JPY/ETH_JPY 等),最高 2x 杠杆,"
+              " JPY 现金结算。深度 + 活跃度 > 現物,echo 团队偏好的主战场。"
+              " WS orderbooks 同样是全量 snapshot。",
+    ),
 }
 
 

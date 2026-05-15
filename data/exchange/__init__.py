@@ -10,7 +10,9 @@ from .base import ExchangeAdapter
 from .binance import (BinanceAdapter, BinanceSpotAdapter,
                       BinanceUmFuturesAdapter, BinanceJpAdapter)
 from .bitbank import BitbankAdapter
+from .bitflyer import BitflyerAdapter
 from .coincheck import CoincheckAdapter
+from .gmo import GmoAdapter
 
 _REGISTRY = {
     "binance": BinanceAdapter,
@@ -18,7 +20,9 @@ _REGISTRY = {
     "binance_um_futures": BinanceUmFuturesAdapter,
     "binance_jp": BinanceJpAdapter,
     "bitbank": BitbankAdapter,
+    "bitflyer": BitflyerAdapter,
     "coincheck": CoincheckAdapter,
+    "gmo": GmoAdapter,
 }
 
 
@@ -53,6 +57,14 @@ def get_adapter(name: str, market_type: str | None = None,
         bb_kwargs = {k: v for k, v in kwargs.items() if k in ()}
         return BitbankAdapter(**bb_kwargs)
 
+    if name_lower == "bitflyer":
+        # bitflyer 接 market_type='spot'|'fx',recorder save_dir 自动拆
+        return BitflyerAdapter(market_type=market_type or "spot")
+
+    if name_lower == "gmo":
+        # gmo 接 market_type='spot'|'leverage';默认 leverage 因为是主战场
+        return GmoAdapter(market_type=market_type or "leverage")
+
     if name_lower in _REGISTRY:
         return _REGISTRY[name_lower](**kwargs)
 
@@ -63,4 +75,5 @@ def get_adapter(name: str, market_type: str | None = None,
 
 
 __all__ = ["ExchangeAdapter", "get_adapter", "BinanceAdapter",
-           "BitbankAdapter", "CoincheckAdapter"]
+           "BitbankAdapter", "BitflyerAdapter", "CoincheckAdapter",
+           "GmoAdapter"]

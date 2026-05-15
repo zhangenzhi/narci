@@ -1,0 +1,38 @@
+recorder:
+  # ============================================================
+  # bitFlyer 现货 (Spot) 录制配置
+  # ============================================================
+  # 上线条件:tokyo-extra profile + t4g.medium+ (见 deploy/aws/README.md)
+
+  exchange: bitflyer
+  market_type: spot
+
+  # bitFlyer 原生符号格式 BTC_JPY (uppercase + underscore)
+  # 起步只录 BTC + XRP (echo audit 显示这俩是 bitFlyer spot 主流动性)
+  symbols:
+    - "BTC_JPY"
+    - "ETH_JPY"
+    - "XRP_JPY"
+
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+
+  # bitFlyer 有独立 REST snapshot 端点,每次落盘前重拉一次清掉 dust
+  snapshot_refresh_on_save: true
+
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  # watchdog 沿用 CC 配置;bitFlyer 实际 channel 死亡模式待 Phase 2+ 实测
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180
+  trade_stale_threshold_sec: 1800
+
+  endpoints:
+    spot:
+      ws_url: "wss://ws.lightstream.bitflyer.com/json-rpc"
+      snapshot_url: "https://api.bitflyer.com/v1/board?product_code={symbol_upper}"

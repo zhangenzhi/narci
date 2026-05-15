@@ -9,12 +9,50 @@
 
 两台 EC2 分工录制，同推一个 Google Drive：
 
-| 实例 | 区域 / AZ | 规格 | Profile | 录什么 | 月成本 |
+| 实例 | 区域 / AZ | 规格 | Profile(s) | 录什么 | 月成本 |
 |---|---|---|---|---|---|
-| **narci-tokyo** (= narci-t4g `i-0d73599f...`) | ap-northeast-1a | t4g.small (2GB) | `tokyo` | Coincheck 7 对 JPY 现货 + Binance JP spot | ~$15 |
+| **narci-tokyo** (= narci-t4g `i-0d73599f...`) | ap-northeast-1a | t4g.small (2GB) | `tokyo` | Coincheck 7 对 JPY 现货 + Binance JP spot + bitbank spot | ~$15 |
+| **narci-tokyo** (升级后) | ap-northeast-1a | t4g.medium (4GB) | `tokyo,tokyo-extra` | + bitFlyer spot/FX + GMO spot/leverage (4 个 recorder) | ~$30 |
 | **narci-sg** (= AWS-SG) | ap-southeast-1 | t4g.small (2GB) | `global` | Binance global spot + UM futures | ~$15 |
 
-总计 ~¥4,500/月，10w 预算可跑 **~22 个月**。t4g.medium 升级 (针对 SG box 0504 OOM,见 §故障排查) 会把 SG 月成本拉到 ~$30。
+总计 ~¥4,500/月 (基线),开 tokyo-extra 后 ~¥6,000/月 (升级 narci-tokyo 实例)。
+
+## tokyo-extra profile (bitFlyer + GMO)
+
+新增 4 个 recorder (bitflyer-spot / bitflyer-fx / gmo-spot / gmo-leverage)
+覆盖日本所主要 spot + leverage 市场。**默认不启用,因为 t4g.small (2GB) 装不下**。
+
+### 启用前置
+
+1. **测算当前 narci-tokyo 内存余量**:
+   ```bash
+   ssh narci-tokyo
+   cd narci && bash deploy/measure_recorder_footprint.sh
+   ```
+   脚本输出 🟢/🟡/🔴 verdict。
+
+2. **如果 🔴 → 必须先升级实例**:
+   ```bash
+   aws ec2 stop-instances --instance-ids i-0d73599f6798cfa1e
+   aws ec2 modify-instance-attribute --instance-id i-0d73599f6798cfa1e \
+     --instance-type "{\"Value\":\"t4g.medium\"}"
+   aws ec2 start-instances --instance-ids i-0d73599f6798cfa1e
+   ```
+   t4g.small (2GB, $15/月) → t4g.medium (4GB, $30/月)。重启后 IP 会变。
+
+### 启用
+
+```bash
+ssh narci-tokyo
+cd narci && git pull
+# 默认 tokyo profile (3 recorder) + tokyo-extra (4 recorder) 一起起
+COMPOSE_PROFILES=tokyo,tokyo-extra docker compose up -d
+# 或写进 .env:
+echo "COMPOSE_PROFILES=tokyo,tokyo-extra" >> .env
+docker compose up -d
+```
+
+每个 tokyo-extra 容器有 `mem_limit: 256m` 防御性硬上限。
 
 ## 前置一次性准备
 

@@ -1,0 +1,37 @@
+recorder:
+  # ============================================================
+  # GMO Coin レバレッジ (Leverage Trading) 录制配置
+  # echo 团队偏好的主战场 — 深度 + 活跃度高于現物,2x 杠杆,JPY 现金结算
+  # ============================================================
+  # 上线条件:tokyo-extra profile + t4g.medium+
+
+  exchange: gmo
+  market_type: leverage
+
+  # GMO レバレッジ symbol 是 pair 格式 (BTC_JPY 而非 BTC)
+  symbols:
+    - "BTC_JPY"
+    - "ETH_JPY"
+    - "XRP_JPY"
+    - "SOL_JPY"
+
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+
+  snapshot_refresh_on_save: false
+
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180
+  trade_stale_threshold_sec: 1800
+
+  endpoints:
+    leverage:
+      ws_url: "wss://api.coin.z.com/ws/public/v1"
+      snapshot_url: "https://api.coin.z.com/public/v1/orderbooks?symbol={symbol_upper}"

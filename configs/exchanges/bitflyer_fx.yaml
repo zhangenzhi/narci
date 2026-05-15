@@ -1,0 +1,33 @@
+recorder:
+  # ============================================================
+  # bitFlyer Lightning FX (永续合约) 录制配置
+  # 只有 FX_BTC_JPY 一个 symbol (bitFlyer 没有其它 alt FX)
+  # ============================================================
+  # 上线条件:tokyo-extra profile + t4g.medium+
+
+  exchange: bitflyer
+  market_type: fx
+
+  symbols:
+    - "FX_BTC_JPY"
+
+  interval_ms: 100
+
+  save_dir: "./replay_buffer/realtime/"
+  save_interval_sec: 600
+
+  snapshot_refresh_on_save: true
+
+  retain_days: 7
+
+  retry:
+    wait_seconds: 5
+
+  watchdog_check_interval_sec: 5
+  depth_stale_threshold_sec: 180
+  trade_stale_threshold_sec: 1800
+
+  endpoints:
+    fx:
+      ws_url: "wss://ws.lightstream.bitflyer.com/json-rpc"
+      snapshot_url: "https://api.bitflyer.com/v1/board?product_code={symbol_upper}"
