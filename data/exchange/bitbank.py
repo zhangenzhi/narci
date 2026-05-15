@@ -66,12 +66,15 @@ class BitbankAdapter(ExchangeAdapter):
              初始 book,落 side=3/4 records 进 buffer,装 orderbooks 状态机)
           3. socket.io connect + 每个 symbol join 3 rooms
           4. on_message → parse_message → 按 event_type 分发到 recorder
-             已有的 _handle_depth / buffer.extend 路径
-          5. 保活循环,收到 disconnect 或 recorder.running=False 退出
+             已有的 _handle_depth / buffer.extend 路径,同时更新 last_*_msg_t
+          5. 内层 watchdog task:周期性检查 depth/trade 静默,超阈值
+             force-disconnect 让外层重连 (对齐 record_stream 的 watchdog 语义)
+          6. 保活循环,收到 disconnect 或 recorder.running=False 退出
 
-        watchdog (depth_stale_threshold) 暂不实现 —— socket.io 自带 heartbeat
-        + 自动重连可以处理传输层死亡。bitbank 真出现"channel 静默而连接活"的
-        case (类似 CC 0508 事件) 再补 Phase 3。
+        Watchdog 阈值复用 yaml 里的 depth_stale_threshold_sec /
+        trade_stale_threshold_sec / watchdog_check_interval_sec,跟 CC 一致。
+        防御 CC 0508 那种"channel 静默而 socket.io 仍 connected"的 case ——
+        socket.io 自带 heartbeat 只能检测传输层断,无法发现单 room 哑死。
         """
         try:
             import socketio  # type: ignore
@@ -83,6 +86,14 @@ class BitbankAdapter(ExchangeAdapter):
 
         while recorder.running:
             sio: socketio.AsyncClient | None = None
+            watchdog_task: asyncio.Task | None = None
+            # 每轮重置 — 跟 record_stream 在每次 ws_recv loop 入口重置 last_*
+                # _msg_t 的做法对齐
+            ws_state = {
+                "last_depth_msg_t": 0.0,
+                "last_trade_msg_t": 0.0,
+                "forced_reconnect_reason": None,
+            }
             try:
                 # 1. REST snapshot — 每个 symbol 一次,装初始 book + 写
                 # side=3/4 records 进 buffer。recorder 现有方法直接复用。
@@ -102,6 +113,11 @@ class BitbankAdapter(ExchangeAdapter):
                 # 3. join rooms on connect — 库 reconnect 时这个 handler 会再触发
                 @sio.event
                 async def connect():
+                    # 连接成功瞬间初始化 last_*_msg_t,避免 REST snapshot 阶段的
+                    # 等待被算进静默时间。reconnect 时同样会重置 (handler 重触发)。
+                    now = time.time()
+                    ws_state["last_depth_msg_t"] = now
+                    ws_state["last_trade_msg_t"] = now
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                           f"🔌 bitbank socket.io 已连接")
                     for sym in recorder.symbols:
@@ -118,7 +134,7 @@ class BitbankAdapter(ExchangeAdapter):
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                           f"⚠️ bitbank socket.io 断连,等待自动重连")
 
-                # 4. 消息分发
+                # 4. 消息分发 + watchdog 时间戳更新
                 @sio.on("message")
                 async def on_message(payload):
                     pair, event_type, data = self.parse_message(payload)
@@ -127,28 +143,67 @@ class BitbankAdapter(ExchangeAdapter):
                     if pair not in recorder.symbols:
                         return
 
+                    now = time.time()
                     if event_type == "depth":
+                        ws_state["last_depth_msg_t"] = now
                         await recorder._handle_depth(pair, data)
                     elif event_type == "trade":
+                        ws_state["last_trade_msg_t"] = now
                         records = self.standardize_event("trade", data)
                         recorder.buffers[pair].extend(records)
                     elif event_type == "snapshot":
                         # depth_whole 推送 → side=3/4 records 直接落 buffer,
-                        # 不重置 orderbooks 状态机 (depth_diff 继续在原 book 上 apply)
+                        # 不重置 orderbooks 状态机 (depth_diff 继续在原 book 上 apply)。
+                        # 也算 depth 流活动 — 防止只发 whole 不发 diff 的极端情况
+                        # 把 last_depth_msg_t 卡住。
+                        ws_state["last_depth_msg_t"] = now
                         records = self.standardize_event("snapshot", data)
                         recorder.buffers[pair].extend(records)
 
-                # 5. 建立连接
+                # 5. 建立连接 (connect handler 会同步触发,初始化 last_*_msg_t)
                 await sio.connect(
                     self.WS_URL,
                     transports=["websocket"],
                     socketio_path="/socket.io",
                 )
 
-                # 6. 保活循环 — socket.io 在后台处理 callback,这里只 sleep
-                # 等 recorder shutdown 或 sio 永久断连
+                # 6. Watchdog task — 跟 record_stream 的 depth/trade 静默检查对齐
+                async def _watchdog_loop():
+                    while recorder.running and sio.connected:
+                        try:
+                            await asyncio.sleep(recorder.watchdog_check_interval_sec)
+                        except asyncio.CancelledError:
+                            return
+                        now = time.time()
+                        idle_depth = now - ws_state["last_depth_msg_t"]
+                        idle_trade = now - ws_state["last_trade_msg_t"]
+                        reason: str | None = None
+                        if idle_depth > recorder.depth_stale_threshold_sec:
+                            reason = (f"depth 静默 {idle_depth:.0f}s > "
+                                      f"{recorder.depth_stale_threshold_sec}s")
+                        elif idle_trade > recorder.trade_stale_threshold_sec:
+                            reason = (f"trade 静默 {idle_trade:.0f}s > "
+                                      f"{recorder.trade_stale_threshold_sec}s")
+                        if reason:
+                            ws_state["forced_reconnect_reason"] = reason
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                                  f"⚠️ bitbank {reason},强制重连")
+                            try:
+                                await sio.disconnect()
+                            except Exception:
+                                pass
+                            return
+
+                watchdog_task = asyncio.create_task(_watchdog_loop())
+
+                # 7. 保活循环 — socket.io 在后台处理 callback,这里只 sleep
+                # 等 recorder shutdown / sio 永久断连 / watchdog 强制断连
                 while recorder.running and sio.connected:
                     await asyncio.sleep(1)
+
+                if ws_state["forced_reconnect_reason"]:
+                    # watchdog 触发的断连,日志已经打过;外层 except 不会进
+                    pass
 
             except asyncio.CancelledError:
                 raise
@@ -158,6 +213,12 @@ class BitbankAdapter(ExchangeAdapter):
                       f"{recorder.retry_wait}s 后重连")
                 await asyncio.sleep(recorder.retry_wait)
             finally:
+                if watchdog_task is not None and not watchdog_task.done():
+                    watchdog_task.cancel()
+                    try:
+                        await watchdog_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 if sio is not None and sio.connected:
                     try:
                         await sio.disconnect()
