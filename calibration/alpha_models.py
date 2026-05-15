@@ -80,6 +80,16 @@ SAMPLING_MODES = frozenset({
 })
 
 
+# Model output unit (added 2026-05-15): what unit the booster's raw
+# prediction is in. AlphaModel.predict contract is "return bps". narci
+# multiplies by 1e4 iff the raw output is log_return. See Manifest
+# docstring + nyx NARCI_NYX_INTERFACE.md §2026-05-15 bug report.
+MODEL_OUTPUT_UNITS = frozenset({
+    "log_return",              # raw log-return (~1e-4 magnitude); narci × 1e4
+    "bps",                     # already bps; narci pass-through
+})
+
+
 # ------------------------------------------------------------------ #
 # Manifest dataclass
 # ------------------------------------------------------------------ #
@@ -108,6 +118,15 @@ class Manifest:
     # reproduce identical sampling to make sim PnL comparable. Default
     # "1s_grid" maintains backward compat with v1 manifests.
     sampling_mode: str = "1s_grid"
+    # Added 2026-05-15 — declares what unit the model's raw prediction
+    # is in. narci's AlphaModel.predict contract is "return bps"; narci
+    # multiplies by 1e4 iff the raw output is log_return. nyx fit_lgb
+    # now scales y × 1e4 before training (regularization needs bps scale,
+    # see nyx NARCI_NYX_INTERFACE.md §2026-05-15 bug report), so LGB
+    # boosters now output bps directly — set "bps" in their manifest.
+    # OLS / GRU still train in log_return → keep default "log_return".
+    # Backward compat:missing field → "log_return" (old binding behavior).
+    model_output_unit: str = "log_return"
 
     @classmethod
     def from_dict(cls, d: dict) -> "Manifest":
@@ -122,6 +141,11 @@ class Manifest:
             raise ValueError(
                 f"manifest.sampling_mode {sampling_mode!r} not in canonical "
                 f"set {sorted(SAMPLING_MODES)}")
+        model_output_unit = d.get("model_output_unit", "log_return")
+        if model_output_unit not in MODEL_OUTPUT_UNITS:
+            raise ValueError(
+                f"manifest.model_output_unit {model_output_unit!r} not in "
+                f"canonical set {sorted(MODEL_OUTPUT_UNITS)}")
         return cls(
             schema_version=d["schema_version"],
             model_kind=d["model_kind"],
@@ -141,6 +165,7 @@ class Manifest:
             notes=d.get("notes", ""),
             nyx_git_sha=d.get("nyx_git_sha", ""),
             sampling_mode=sampling_mode,
+            model_output_unit=model_output_unit,
         )
 
     def parse_sequence(self) -> Optional[tuple[int, int]]:
@@ -245,12 +270,17 @@ class LGBAlphaModel(AlphaModel):
     def _predict_snapshot(self, x: np.ndarray) -> float:
         # LGB expects 2D input (n_samples, n_features)
         pred = self.booster.predict(x.reshape(1, -1))
-        # AlphaModel.predict contract: returns bps. nyx's canonical
-        # target_kind="cc_trade_event_log_return" → raw log-return space
-        # (~1e-4 magnitude). Multiply by 1e4 to match OLS subclass and
-        # honor the bps-out contract. Bug fix 2026-05-08: backtest
-        # threshold (1.0 bps) was filtering out every prediction because
-        # LGB output stayed in raw-log-return units (~5e-5 typical).
+        # AlphaModel.predict contract: returns bps. nyx fit_lgb now scales
+        # training y × 1e4 (lambda_l1/l2 regularization needs bps scale,
+        # log-return ~5e-5 kills all splits) → booster output already bps.
+        # narci honors the manifest.model_output_unit field:
+        #   "log_return" (default,backward compat) → ×1e4 here
+        #   "bps"                                   → pass-through
+        # 2026-05-15 fix:之前一律 ×1e4,跟 nyx 当前 fit_lgb 冲突,导致
+        # backtest alpha_threshold filter 完全失效 (scale up 10000x);见
+        # nyx NARCI_NYX_INTERFACE.md §2026-05-15 bug report。
+        if self.manifest.model_output_unit == "bps":
+            return float(pred[0])
         return float(pred[0]) * 10000.0
 
 
@@ -286,7 +316,12 @@ class GRUAlphaModel(AlphaModel):
         with torch.no_grad():
             x = torch.from_numpy(arr).float().unsqueeze(0)
             y = self.model(x).cpu().numpy().squeeze()
-        return float(y) * 10000.0  # log-return → bps
+        # Honor manifest.model_output_unit (same convention as LGB,
+        # see _predict_snapshot docstring there). GRU 默认仍是 log_return
+        # (nyx 目前 GRU 训练 y 没做 scaling),manifest 显式 "bps" 才 pass-through。
+        if self.manifest.model_output_unit == "bps":
+            return float(y)
+        return float(y) * 10000.0
 
 
 # ------------------------------------------------------------------ #
