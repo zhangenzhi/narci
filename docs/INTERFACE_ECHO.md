@@ -273,9 +273,11 @@ scp -i ~/.ssh/aws-narci.pem -r \
 ### Changelog
 - **2026-05-15** (`84354aa`) — initial cut,响应 echo `INTERFACE_NARCI.md`
   authoritative 2026-05-14 (`03bb63b`)。
-- **2026-05-15** (本次 commit) — §2.1.3 / §4.3 / §4.4 拓扑重写;
+- **2026-05-15** (`289d61c`) — §2.1.3 / §4.3 / §4.4 拓扑重写;
   追加 §7 appendix 回应 echo `INTERFACE_NARCI.md §12` (echo SHA `82622ed`)。
   同时修 `deploy/aws/README.md` 的 region 错标 (narci-us → narci-sg)。
+- **2026-05-15** (本次 commit) — §7.4 标 A17 "scaffold ready (`18e68b3`),
+  deployment gated by ops capacity";§7.5 状态表更新 A15/A16/A17/cloud-sync 修复进度。
 
 ---
 
@@ -359,16 +361,55 @@ narci 接 A16。`MakerSimBroker` + calibration replay 加 venue dispatch
 
 **时间表**:跟 A15 绑定,同一个 Phase 0b 窗口完成 (2026-06-30 ready)。
 
-### 7.4 A17 — `recorder-gmo` + `recorder-bitflyer` (deferred Phase 0c+)
+### 7.4 A17 — `recorder-gmo` + `recorder-bitflyer` — **scaffold ready (2026-05-15),deployment gated by ops capacity**
 
-narci 同意 echo 的 deferred 安排。等 A15 bitbank pattern 稳定再做。
+narci 没等 A15 稳定就把 A17 全套 scaffold 提前做了 (commit `18e68b3`),
+避免后续回头看时再做。**代码层 ready,部署 gated on narci-tokyo 资源**:
 
-**前置依赖** (narci 这边等的事):
-- echo §8 audit 的 GMO / bitFlyer 协议规范文档化 — 看 echo `tests/
-  ws_compare_jp.py` 是否能转成 narci 这边的 adapter spec
-- bitFlyer 需要 echo 重做一次 JST business-hour audit (echo §12.2 自己
-  flag 了 max 110ms 尾巴可疑)
-- narci A15 落地后跑 ≥ 30 天稳定,再决定下一个 venue 优先级
+#### Scaffold 已完成 (narci 端)
+
+- `data/exchange/bitflyer.py` — JSON-RPC over plain WS,`market_type='spot'|'fx'`
+  双模 (FX 用 `FX_BTC_JPY` symbol)。走标准 `ws_url + parse_message` 路径。
+- `data/exchange/gmo.py` — `market_type='spot'|'leverage'`。**关键差异**:GMO
+  `orderbooks` channel 每条都是 full snapshot 而非 incremental,所以走
+  `custom_stream` hook 自管 book reset (跟 bitbank 同 pattern)。
+- VenueRegistry 4 个 entry:
+  - `bitflyer_spot`: 15/15 bps
+  - `bitflyer_fx`: 0/0 bps + 日内 SWAP funding
+  - `gmo_spot`: -1/+5 bps (rebate-eligible)
+  - `gmo_leverage`: -1/+5 bps (echo 偏好的主战场)
+- 4 yaml configs + 4 symlinks + 4 docker-compose services on **新 profile
+  `tokyo-extra`** (不放默认 tokyo,避免无脑 pull 后 OOM)。
+- 每个新 service `mem_limit: 256m` 防御性硬上限。
+- `deploy/measure_recorder_footprint.sh` — 测当前 narci-tokyo 内存余量,
+  输出 🟢/🟡/🔴 verdict + 升级建议。
+
+#### Deployment 阻塞点 (ops capacity)
+
+narci-tokyo 当前是 **t4g.small (2GB)**,已经跑 3 个 recorder
+(CC + Binance JP + bitbank) + cloud-sync。加 4 个新 recorder 预估额外
+~600MB 需求,**很可能需要先升级到 t4g.medium (4GB, +$15/月)**。
+
+决策树 (narci-tokyo 操作员):
+
+```bash
+ssh narci-tokyo
+cd narci && git pull
+bash deploy/measure_recorder_footprint.sh
+# 🟢 GREEN  → COMPOSE_PROFILES=tokyo,tokyo-extra docker compose up -d
+# 🟡 YELLOW → 分批先开 fx + leverage 2 个主战场
+# 🔴 RED    → 升级 t4g.small → t4g.medium 再开
+```
+
+#### 仍需 echo 配合的项 (Phase 0c+ 前)
+
+- **echo 明确 venue × market 组合**:bitFlyer 走 spot 还是 FX?GMO 走
+  spot 还是 leverage?如果两边都做需要明说 — 影响 narci 是否要 4 个 recorder
+  全开 (vs 选择性开 2 个)。
+- **bitFlyer FX JST business-hour audit** — echo §12.2 自己 flag 的
+  "max 110ms 尾巴可疑",重测后给个 verdict (录 vs 不录)。
+- **bitbank pattern 稳定 30 天** — 这条 narci 自己跟,以 bitbank 录制 24h+
+  无中断 + watchdog 不触发为基线。
 
 ### 7.5 narci 端反向追踪 — echo §12.3 表的更新建议
 
@@ -382,9 +423,10 @@ re-cut INTERFACE_NARCI.md 时勾掉 / 删除这行,免得长期挂着。
 |---|---|---|
 | Cross-host pairing spec | 进行中 | due 2026-06-15,在 `docs/CROSS_HOST_PAIRING.md` |
 | Topology re-cut | ✓ done | 本次 commit |
-| A15 `recorder-bitbank` | accepted | due ≤ 2026-06-30,跟 0b cutover 对齐 |
-| A16 venue dispatch | accepted | due ≤ 2026-06-30,跟 A15 同窗口 |
-| A17 GMO + bitFlyer | deferred 0c+ | 等 A15 稳 30 天 |
+| A15 `recorder-bitbank` | ✓ scaffold + Phase 2 + Phase 3 watchdog done (`e55dd75`/`ac88d28`/`1c8349f`) | 已部署 narci-tokyo,2 个 save cycle 数据已上 gdrive,5 个 symbol 全健康 |
+| A16 venue dispatch | scaffold done (`e55dd75`) | VenueRegistry + apply_to_broker helper ready;broker 完整重构 (默认读 registry) 待 Phase 3 |
+| A17 GMO + bitFlyer | **scaffold ready** (`18e68b3`),deployment gated | bitflyer-spot + bitflyer-fx + gmo-spot + gmo-leverage 4 个 recorder on `tokyo-extra` profile;需要 ops 决定 (capacity verdict) |
+| cloud-sync `--no-traverse` 修复 | ✓ done (`acaf96c`) | 新嵌套目录 (bitbank 首次踩雷) 自动 catch up,免去未来 GMO/bitFlyer 同样的坑 |
 | empty-shard semantics | ✓ done in §2.2 | confirmed |
 
 ### 7.6 narci 端反向 ask (再次重申)
