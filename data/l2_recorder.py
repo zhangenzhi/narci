@@ -104,7 +104,12 @@ class L2Recorder:
         self.stream_aligned = {s: False for s in self.symbols}
         self.running = True
 
-        self.ws_urls = self.adapter.ws_urls(self.symbols, self.interval)
+        # bitbank 等用 socket.io 的 adapter 不走 ws_url 路径,跳过构造。
+        # 见 ExchangeAdapter.uses_custom_stream() 契约。
+        if self.adapter.uses_custom_stream():
+            self.ws_urls = []
+        else:
+            self.ws_urls = self.adapter.ws_urls(self.symbols, self.interval)
 
         print(f"🔧 配置完成 | 交易所: {self.adapter.name} | 市场: {self.adapter.market_type}")
         print(f"🔧 交易对: {[s.upper() for s in self.symbols]}")
@@ -466,10 +471,19 @@ class L2Recorder:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._handle_shutdown(s)))
 
-        record_tasks = [
-            asyncio.create_task(self.record_stream(url))
-            for url in self.ws_urls
-        ]
+        # bitbank 等 socket.io adapter:adapter 自管整个 stream 生命周期
+        # (REST snapshot + connect + room join + 消息分发 + 重连),recorder
+        # 只需要起一个 task 等它跑。常规 WS adapter:每条 URL 一个 task,沿用旧
+        # record_stream 逻辑。
+        if self.adapter.uses_custom_stream():
+            record_tasks = [
+                asyncio.create_task(self.adapter.custom_stream(self))
+            ]
+        else:
+            record_tasks = [
+                asyncio.create_task(self.record_stream(url))
+                for url in self.ws_urls
+            ]
         save_task = asyncio.create_task(self.save_loop())
 
         await self._shutdown_event.wait()

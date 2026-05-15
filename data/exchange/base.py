@@ -101,3 +101,36 @@ class ExchangeAdapter(ABC):
     @abstractmethod
     def to_std(self, native_symbol: str) -> str:
         """交易所原生符号 -> 标准符号（如 ethusdt -> ETH-USDT）。"""
+
+    # ------------------------------------------------------------------ #
+    # 自定义流 hook（非 WS transport,如 socket.io）
+    # ------------------------------------------------------------------ #
+
+    def uses_custom_stream(self) -> bool:
+        """返回 True 时,recorder 不走 ws_url + websockets.connect() 路径,
+        改为 await self.custom_stream(recorder) 由 adapter 自行管理连接。
+
+        默认 False — 现有 Binance/CC adapter 继续走老路。bitbank 这类
+        socket.io v2 transport 需要 override 返回 True。
+        """
+        return False
+
+    async def custom_stream(self, recorder) -> None:
+        """完整接管 stream 生命周期:连接、订阅、消息分发、重连。
+
+        只有 uses_custom_stream() 返回 True 时 recorder 才会调用。
+        实现需要:
+          - 启动时为每个 symbol 调 await recorder.init_symbol_snapshot(sym)
+          - 自管 while recorder.running 的重连 loop
+          - 收到 depth event 时调 await recorder._handle_depth(sym, data)
+          - 收到 trade event 时调 recorder.buffers[sym].extend(
+              self.standardize_event("trade", data))
+          - 收到 snapshot event 时同上,event_type="snapshot"
+
+        默认 raise NotImplementedError;无意接管 stream 的 adapter 不应
+        override uses_custom_stream() — 这两个方法是 in-pair 契约。
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} 标记了 uses_custom_stream=True 但未实现 "
+            f"custom_stream();这两个方法必须成对 override。"
+        )

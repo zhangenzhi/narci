@@ -57,6 +57,33 @@ services:
         max-file: "5"
 
   # =====================================================================
+  # recorder-bitbank: bitbank 现货 JPY（socket.io v2 transport,
+  #   需要 python-socketio[asyncio_client]）
+  # Profile: tokyo
+  # 上线条件:narci-tokyo `git pull && docker compose up -d recorder-bitbank`
+  # 验证:5-10 min recorder soak,检查 replay_buffer/realtime/bitbank/spot/l2/
+  #   下 parquet 落盘正常 (4 列、symbol/side/price/qty 类型对、size 非零)
+  # =====================================================================
+  recorder-bitbank:
+    build: .
+    container_name: narci-recorder-bitbank
+    profiles: [tokyo]
+    command: ["record"]
+    environment:
+      - NARCI_CONFIG=configs/bitbank_recorder.yaml
+    volumes:
+      - narci-data:/app/replay_buffer
+      - ./configs:/app/configs:ro
+    ports:
+      - "8082:8079"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =====================================================================
   # recorder-binance-spot: Binance 国际现货（需非日本 IP）
   # Profile: global
   # =====================================================================
