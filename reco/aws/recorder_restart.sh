@@ -3,9 +3,18 @@
 #
 # 用法:./aws/recorder_restart.sh jp
 #       ./aws/recorder_restart.sh sg
-#       ./aws/recorder_restart.sh jp --pull        # 先 git pull 再 restart
+#       ./aws/recorder_restart.sh jp --pull        # git pull + rebuild image + recreate
 #       ./aws/recorder_restart.sh jp --service recorder-bitbank
 #       ./aws/recorder_restart.sh sg --ps-only     # 仅 docker compose ps,不动 container
+#
+# 实现细节(2026-05-16 后):
+# - 远端命令以 ec2-user 身份跑 (SSM 默认 root,git 拒绝在 ec2-user owned
+#   repo 上跑会报 dubious ownership;ec2-user 已在 docker group 里所以 docker
+#   compose 一样可用)
+# - 自动设 COMPOSE_PROFILES (jp=tokyo,tokyo-extra / sg=global) — 不设的话
+#   profile-gated 服务不会被 recreate
+# - --pull 自动隐含 --build (拉了新代码必然要 rebuild image 才生效,否则
+#   docker 走 cached image,新代码不会进容器)
 #
 # 不需要 SSH key — 走 AWS Systems Manager Run Command。
 # Instance 必须装了 SSM agent (Amazon Linux / Ubuntu 默认带)。
@@ -45,26 +54,38 @@ if [ "$ps_only" = "true" ] && { [ "$do_pull" = "true" ] || [ -n "$service" ]; };
 fi
 
 case "$target" in
-  jp) instance_id="$NARCI_JP_INSTANCE_ID"; region="$AWS_REGION_JP" ;;
-  sg) instance_id="$NARCI_SG_INSTANCE_ID"; region="$AWS_REGION_SG" ;;
-  *)  echo "usage: $0 <jp|sg> [--pull] [--service <name>]" >&2; exit 1 ;;
+  jp) instance_id="$NARCI_JP_INSTANCE_ID"; region="$AWS_REGION_JP"; profiles="tokyo,tokyo-extra" ;;
+  sg) instance_id="$NARCI_SG_INSTANCE_ID"; region="$AWS_REGION_SG"; profiles="global" ;;
+  *)  echo "usage: $0 <jp|sg> [--pull] [--service <name>] [--ps-only]" >&2; exit 1 ;;
 esac
+
+# 远端命令以 ec2-user 身份跑 (SSM 默认 root 会撞 git dubious-ownership)。
+# COMPOSE_PROFILES 必须显式设,否则 profile-gated 服务被忽略。
+run_as_user='sudo -u ec2-user -i bash -c'
+compose_env="COMPOSE_PROFILES=$profiles"
 
 # 组装命令
 cmds=()
-cmds+=("cd $NARCI_DEPLOY_PATH")
 if [ "$ps_only" = "true" ]; then
-  cmds+=("docker compose ps")
+  cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose ps'")
 else
   if [ "$do_pull" = "true" ]; then
-    cmds+=("git pull --ff-only")
-  fi
-  if [ -n "$service" ]; then
-    cmds+=("docker compose restart $service")
+    cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && git pull --ff-only && git log --oneline -3'")
+    # --pull 隐含 --build:新代码必须 rebuild image 才进容器
+    if [ -n "$service" ]; then
+      cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose up -d --build --force-recreate $service'")
+    else
+      cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose up -d --build --force-recreate'")
+    fi
   else
-    cmds+=("docker compose up -d --force-recreate")
+    # 无 --pull:不 rebuild,只 restart 现有 container
+    if [ -n "$service" ]; then
+      cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose restart $service'")
+    else
+      cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose up -d --force-recreate'")
+    fi
   fi
-  cmds+=("docker compose ps")
+  cmds+=("$run_as_user 'cd $NARCI_DEPLOY_PATH && $compose_env docker compose ps'")
 fi
 
 # 拼成 JSON 数组
