@@ -18,7 +18,11 @@ import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 DATA_DIR = "/app/replay_buffer/realtime"
-STALE_THRESHOLD_SEC = 300              # 5 分钟无新文件视为不健康
+# save_interval_sec 在所有 recorder config 是 600,所以两次 save 之间最新
+# 文件年龄会自然走到 ~600s。原值 300 (5min) 系统性低于 save cycle → 半数
+# 时间窗口 /health 翻 unhealthy(narci-reco 624e054 dry-run 在 SG 复现)。
+# 改成 900s = 1.5x save_interval,留余量吸收 IO 抖动 / cron skew。
+STALE_THRESHOLD_SEC = 900              # 15 分钟无新文件视为不健康
 DISK_WARN_PERCENT = 90                 # 磁盘使用超过 90% 告警
 TRADE_WINDOW_SEC = 1800                # 30 分钟检测窗口
 TRADE_WARMUP_SEC = 1800                # 启动后前 30 分钟不检 trade（让缓冲落盘）
