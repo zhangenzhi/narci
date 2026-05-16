@@ -5,6 +5,7 @@
 #       ./aws/recorder_restart.sh sg
 #       ./aws/recorder_restart.sh jp --pull        # 先 git pull 再 restart
 #       ./aws/recorder_restart.sh jp --service recorder-bitbank
+#       ./aws/recorder_restart.sh sg --ps-only     # 仅 docker compose ps,不动 container
 #
 # 不需要 SSH key — 走 AWS Systems Manager Run Command。
 # Instance 必须装了 SSM agent (Amazon Linux / Ubuntu 默认带)。
@@ -29,13 +30,19 @@ shift || true
 
 do_pull="false"
 service=""
+ps_only="false"
 while [ $# -gt 0 ]; do
   case "$1" in
     --pull)    do_pull="true"; shift ;;
     --service) service="$2"; shift 2 ;;
+    --ps-only) ps_only="true"; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
+
+if [ "$ps_only" = "true" ] && { [ "$do_pull" = "true" ] || [ -n "$service" ]; }; then
+  echo "--ps-only 跟 --pull/--service 互斥(只读模式)" >&2; exit 1
+fi
 
 case "$target" in
   jp) instance_id="$NARCI_JP_INSTANCE_ID"; region="$AWS_REGION_JP" ;;
@@ -46,15 +53,19 @@ esac
 # 组装命令
 cmds=()
 cmds+=("cd $NARCI_DEPLOY_PATH")
-if [ "$do_pull" = "true" ]; then
-  cmds+=("git pull --ff-only")
-fi
-if [ -n "$service" ]; then
-  cmds+=("docker compose restart $service")
+if [ "$ps_only" = "true" ]; then
+  cmds+=("docker compose ps")
 else
-  cmds+=("docker compose up -d --force-recreate")
+  if [ "$do_pull" = "true" ]; then
+    cmds+=("git pull --ff-only")
+  fi
+  if [ -n "$service" ]; then
+    cmds+=("docker compose restart $service")
+  else
+    cmds+=("docker compose up -d --force-recreate")
+  fi
+  cmds+=("docker compose ps")
 fi
-cmds+=("docker compose ps")
 
 # 拼成 JSON 数组
 json_cmds=$(printf '"%s",' "${cmds[@]}" | sed 's/,$//')
