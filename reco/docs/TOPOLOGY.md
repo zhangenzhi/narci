@@ -42,14 +42,14 @@ Studio 上的 `reco/.env`(gitignored)。
   - bitbank 现货(2026-05-15 上线)
   - Future: bitFlyer spot+FX / GMO spot+leverage(tokyo-extra profile,机器扩容后)
 - **Docker compose profile**: `tokyo` (+ future `tokyo-extra`)
-- **端口**: 8079 (binance-spot health) / 8081 (coincheck) / 8082 (bitbank)
+- **端口**(实测 2026-05-16): 8079 (coincheck) / 8080 (binance-jp) / 8082 (bitbank)
 - **数据出口**: cloud-sync sidecar → gdrive:narci_raw/realtime/
 
 ### aws-sg (AWS EC2, Singapore region)
 - **Instance type**: t4g(2026-05-07 之后从 t4g.small 升 t4g.medium,因为 UM OOM)
-- **录制范围**: Binance Global UM 期货
+- **录制范围**: Binance Global 现货 + UM 期货 (两个 recorder 共驻)
 - **Docker compose profile**: `global`
-- **端口**: 8080 (binance-umfut health)
+- **端口**(实测 2026-05-16): 8079 (binance-spot global) / 8080 (binance-umfut)
 - **数据出口**: cloud-sync sidecar → gdrive:narci_raw/realtime/binance/um_futures/
 
 ## Links

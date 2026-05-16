@@ -31,20 +31,19 @@ case "$target" in
   *)  echo "usage: $0 <jp|sg>" >&2; exit 1 ;;
 esac
 
-# 拼一段 shell 脚本,在 instance 上跑
-remote_script="$(cat <<EOF
-echo '=== narci-reco health probe ==='
-for port in \$(echo $ports | tr ',' ' '); do
-  echo "--- port \$port ---"
-  curl -sS --max-time 3 "http://localhost:\${port}/health" || echo "[FAIL] port \$port unreachable"
-  echo
+# 组装命令数组,每条一个 JSON 元素 (跟 recorder_restart.sh 同 pattern)。
+# 不能把 for/done 折单行 — newline → ';' 会产生 'do;' 语法错。
+cmds=()
+cmds+=("echo '=== narci-reco health probe ==='")
+for port in $(echo "$ports" | tr ',' ' '); do
+  cmds+=("echo '--- port $port ---'")
+  cmds+=("curl -sS --max-time 3 http://localhost:${port}/health || echo '[FAIL] port $port unreachable'")
 done
-echo '=== docker compose ps ==='
-cd $NARCI_DEPLOY_PATH 2>/dev/null && docker compose ps || echo "[warn] $NARCI_DEPLOY_PATH 不存在"
-EOF
-)"
+cmds+=("echo '=== docker compose ps ==='")
+cmds+=("cd $NARCI_DEPLOY_PATH 2>/dev/null && docker compose ps || echo '[warn] $NARCI_DEPLOY_PATH 不存在'")
 
-parameters="commands=[\"$(echo "$remote_script" | sed 's/"/\\"/g' | tr '\n' ';' | sed 's/;$//')\"]"
+json_cmds=$(printf '"%s",' "${cmds[@]}" | sed 's/,$//')
+parameters="commands=[$json_cmds]"
 
 echo "[narci-reco] target=$target instance=$instance_id region=$region ports=$ports"
 
