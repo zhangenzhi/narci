@@ -178,6 +178,22 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 | 11 | `trade_intensity_burst_50ms` (v6) | ✅ done | `d5d4cc8` — FEATURES_VERSION v5 → v6,38 列 |
 | 12 | LGB `model_output_unit` manifest 字段 | ✅ done | `33a7c31` — 解 ×10000 scale bug |
 
+### 3.1 Binding-level calibration caveats(读 manifest.test_metrics 时注意)
+
+某些已交付 binding 在 production 用前发现训练 recipe 引入了 bias。narci 端
+**不擅自 deprecate** nyx binding,但在本节挂 caveat,提醒任何 narci-side
+脚本/未来 reader 别 over-trust manifest 里的 R²/IR 数字。
+
+| Binding | Caveat | 引用 |
+|---|---|---|
+| `v4burst_v6` (36 cols, LGB) | manifest.test_metrics 报 R² +11.16%,实际 ~3.4pp 是 day-level drift constant(per-day y centering 后 R²[raw] 降到 7.73%)。真实 microstructure alpha 约 **R² 7.73% / IR 2.95**。production 信号分布 sign skew 34/66 → strategy 端 BUY quote 几乎不触发,16-day backtest 0/16 positive day。 | nyx `5fd7625` (`INTERFACE_NYX_NARCI.md 2026-05-17` §C-E) |
+| `v4w_v6_repinned` (35 cols, LGB) | 同 fit_lgb recipe(Huber + L1/L2,未做 per-day centering),理论上有同源 calibration bias;nyx 尚未跑 LOO A/B 量化,narci 这边按"疑似受影响"处理。 | 同上 + 推论 |
+
+**narci 端策略**:
+- `load_alpha_model` **不**因为 caveat 拒绝加载(unit 仍然是 bps,契约合规)
+- backtest / OLS sweep 用这两个 binding 时,**别拿 manifest.test_metrics R² 当 ground truth**
+- nyx 后续如果 ship `v4burst_v6_centered`(或类似命名),narci 这边 manifest 仍 `model_output_unit: "bps"`(见 §6 2026-05-17 Q2)
+
 ---
 
 ## 4. narci 反向 ask nyx
@@ -340,10 +356,78 @@ narci native)。当前不动 `input_shape` 枚举,nyx PoC 期间用
 event)narci 端再开 `input_shape: "events:K"` + `fb.get_feature_sequence_events(K)`
 方案讨论,目前不预留接口。
 
+### 2026-05-17:回 nyx `5fd7625` v4burst_v6 calibration asymmetry + Q1/Q2/Q3
+
+读 nyx `INTERFACE_NYX_NARCI.md 2026-05-17` entry(GRU PoC backtest debug 顺手
+查出 production LGB binding 的 calibration bug + Option 1 per-day y centering
+A/B 实验)。逐条回。
+
+**整体收到** — diagnostic 框架(unconditional vs fill-conditional 量级一致 →
+bias 在 model 训练而不在 fill selection)逻辑成立;A/B 数字(0/16 → 6/16
+positive day,edge -19.4 → +3.12 bps)说服力够。narci 端按 binding-level
+calibration caveat 处理(见 §3.1 新增),不主动 deprecate binding。
+
+#### Q1 — 给 v4burst_v6 R²+11.16% 加 caveat — ✅ DONE 本 commit
+
+`§3.1 Binding-level calibration caveats` 新增。v4burst_v6 caveat 引 nyx `5fd7625`
+原文:R²+11.16% 里 ~3.4pp 是 day-level drift constant,真实 microstructure
+alpha ~7.73% / IR 2.95。**同时挂 `v4w_v6_repinned` 为"疑似受影响"**:同
+fit_lgb recipe(Huber + L1/L2,未做 per-day centering),理论同源 bias,等
+nyx LOO A/B 量化。
+
+narci 端不在 `load_alpha_model` 里 raise/warn(unit 仍然合规,calibration
+不是 narci 契约层关心的东西);caveat 只在 doc,供 narci-side 脚本/未来
+reader 读 manifest.test_metrics 时心里减 3pp。
+
+#### Q2 — 新 binding `v4burst_v6_centered` 单位 enum — ✅ **复用 `bps`,不加 `bps_residual`**
+
+narci `MODEL_OUTPUT_UNITS` 设计意图是**单位 enum**(决定要不要 ×1e4),不是
+**语义 enum**。看 `calibration/alpha_models.py:282-284 / 319-323`:enum 唯一
+分支是 `if model_output_unit == "bps": return raw else: return raw * 1e4`。
+`bps_residual` 跟 `bps` 在 narci 运行时**是同一行代码**,加 enum value
+没有运行时收益,反而开口子:
+
+- 若加 `bps_residual` → `bps_isotonic_calibrated`、`bps_quantile_50`、
+  `bps_asymweighted` 后续每个 fit recipe 都要扩 enum → enum 爆炸
+- 这些都是**训练 recipe** 性质,不是**单位**性质
+
+**narci 建议**:
+- 复用 `model_output_unit: "bps"`
+- 训练 recipe 语义写 `manifest.notes`(例如 `"notes": "per-day y centering applied before fit; output is residual bps"`)
+- 如果 nyx 觉得 notes free-form 太弱 → narci 可以加一个新 optional manifest 字段 `training_recipe: str = ""`(free-form 描述,不入 enum,纯文档用途)
+  这个 narci 这边 1 行 dataclass 改动 + from_dict 透传即可,**确认要做的话本 commit 顺手加**
+
+#### Q3 — deeper fix 偏好 — 🟡 narci consumer 视角,不偏好
+
+narci 不是 ML research owner,以下是**consumer 角度**的反馈,不是技术建议:
+
+- **优先 ship centered binding** + out-of-LOO 验证 IR 2.95 离 break-even 多远。
+  6/16 positive day 是 LOO 内的;真实 OOS 可能更弱。先证 robustness 再谈
+  tail shape 二阶优化
+- **Quantile regression (Option 4)** narci 这边没意见,只要 manifest 仍 `bps`
+  output + 走 LGB booster 接口,narci `LGBAlphaModel` 透明承接
+- **Post-hoc isotonic (Option 5)** 注意:isotonic 只能 monotone 修 sign,**对
+  conditional tail shape asymmetry(3.3× ratio)没用**。如果只需修 sign skew
+  那 Option 1 已经够了;如果要修 tail 应该走 Option 4
+- **Asymmetric sample weighting**:hack,不推荐 — 过拟合 BUY tail 风险大,且
+  缺乏 disciplined 评估指标
+
+**narci 端不预设任何 fix 方案的接口扩展**;binding 接入路径不变(`load_alpha_model`
++ `LGBAlphaModel`)。
+
+#### narci → nyx open question(反向)
+
+无新 ask。如果 nyx 决定要 `training_recipe` 字段(见 Q2),narci 这边等
+nyx 在 `INTERFACE_NYX_NARCI.md` 显式提了再加;不预 implement。
+
 ---
 
 ## Changelog
 
+- **2026-05-17** — 回 nyx `5fd7625` v4burst_v6 calibration asymmetry。§3.1 新
+  增 binding-level caveat(v4burst_v6 真实 R² 7.73% / IR 2.95;v4w_v6_repinned
+  疑似同源)。§6 新 entry 答 Q1 (caveat done)/ Q2 (复用 bps,拒加
+  bps_residual)/ Q3 (consumer 视角,不预设 fix 接口)。
 - **2026-05-16** (晚) — 回 nyx GRU paradigm + Q1/Q2/Q3 heads-up,§6 新增。
   Q1 (register/load 语义) 文字回复;Q2 加 `FeatureBuilder.last_event_ts_ms`
   public property;Q3 长期 ack 不预留接口。
