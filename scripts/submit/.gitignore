@@ -1,0 +1,5 @@
+# PBS runtime logs — produced by -o redirection in submit scripts.
+# Don't commit; logs are per-job-run artifacts.
+*.pbs.log
+*.out
+*.err

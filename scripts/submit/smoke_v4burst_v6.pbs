@@ -1,0 +1,47 @@
+#!/bin/bash
+#PBS -N narci_smoke_v4burst_v6
+#PBS -q c30636g
+#PBS -W group_list=c30636
+#PBS -l select=1:ngpus=1
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#PBS -o /lustre1/work/c30636/narci/scripts/submit/smoke_v4burst_v6.pbs.log
+#
+# narci 首个 PBS smoke backtest:
+#   binding = nyx v4burst_v6 (36 cols,manifest 已 retrofit model_output_unit=bps)
+#   day     = 20260513 (echo-lab OOS 计划目标的第一天)
+#   slice   = max_hours=1 (1h smoke,确认 PBS + 通路 + scale fix 全链路)
+#   thr     = 1.0 bps (single threshold,先不 sweep)
+#
+# 验证目标:
+#   1. PBS qsub 在 narci 仓库下能跑通 (路径、env、PYTHONPATH 正确)
+#   2. backtest_alpha_model 能读 cold tier parquet 完整跑完一段
+#   3. model_output_unit=bps fix (narci 33a7c31) 生效 — alpha 分布在 ~bps 量级
+#      (nyx 报告 mean=-0.27 std=0.67;不再是 ~5000 bps 的 scale up)
+#   4. threshold filter 真生效 — n_quotes < n_predictions
+#
+# Walltime budget:30 min (nyx 同类 LOO 8 variants × 16 days × 3 seeds = 135 min,
+#   单 binding × 1 day × 1h slice 应 << 5 min compute)
+
+set -euo pipefail
+
+cd /lustre1/work/c30636/nyx/research/canonical_baseline
+
+export PATH=/home/c30746/miniconda3/bin:$PATH
+export PYTHONPATH=/lustre1/work/c30636/narci:${PYTHONPATH:-}
+
+echo "[PBS] start: $(date -Iseconds) host=$(hostname) job=$PBS_JOBID"
+which python
+python --version
+echo "[PBS] ncpus=$(nproc)"
+echo "[PBS] PYTHONPATH=$PYTHONPATH"
+
+# 跑 nyx 的 run_backtest 包装(走 narci.simulation.backtest_alpha_model)
+python -u run_backtest.py \
+    --model-dirs /lustre1/work/c30636/nyx/research/canonical_baseline/models/coincheck_btcjpy_canonicallgb_16day_v4burst_v6 \
+    --days 20260513 \
+    --max-hours 1 \
+    --alpha-thresholds 1.0 \
+    --quote-strategy join_back
+
+echo "[PBS] done: $(date -Iseconds)"
