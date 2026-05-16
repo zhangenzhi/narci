@@ -235,7 +235,11 @@ class GmoAdapter(ExchangeAdapter):
                         continue
                     ch = msg.get("channel", "")
                     sym_native = msg.get("symbol", "")
-                    rec_sym = sym_native.lower()
+                    # GMO subscribe 啥就推啥 (实测 "BTC" / "BTC_JPY" 全大写,
+                    # 跟 recorder.symbols 从 yaml 大写读入一致)。to_std 走 .upper()
+                    # 而不是 .lower(),否则会全 mismatch、消息全丢。
+                    # incident: reco/docs/INCIDENTS/2026-05-16-gmo-silent-drop.md
+                    rec_sym = self.to_std(sym_native)
                     if not ch or rec_sym not in recorder.symbols:
                         continue
 
