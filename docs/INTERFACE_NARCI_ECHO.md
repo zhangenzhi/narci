@@ -1,9 +1,13 @@
-# narci → echo-air — reply to INTERFACE_NARCI.md
+# INTERFACE_NARCI_ECHO — narci → echo contract
 
 > 这份是 **narci** 团队回给 **echo** 团队的对应文档。回应 echo 端
-> `docs/INTERFACE_NARCI.md` (authoritative 2026-05-14, echo SHA `03bb63b`)
-> 提出的契约,声明 narci 这边的对齐确认、承诺、回向请求,以及不在 narci
-> scope 内的事项。
+> `docs/INTERFACE_ECHO_NARCI.md` (echo SHA `82622ed` / `11957d4`,
+> 之前文件名 `INTERFACE_NARCI.md`) 提出的契约,声明 narci 这边的对齐确认、
+> 承诺、回向请求,以及不在 narci scope 内的事项。
+>
+> 命名约定:`INTERFACE_<author>_<audience>.md` (author 在前,跟 echo
+> `3cad76f` refactor 对齐)。本文 narci 维护,与 echo `INTERFACE_ECHO_NARCI.md`
+> 对偶。本文 2026-05-16 从 `INTERFACE_ECHO.md` 重命名为 `INTERFACE_NARCI_ECHO.md`。
 >
 > Authoritative as of **2026-05-15**, narci git SHA `84354aa` on `main`.
 > Re-cut whenever 这份的承诺或 schema 解读变化。
@@ -110,7 +114,7 @@ echo §4 把这个标成 "deferred — Coincheck account not funded"。narci 这
 没法替 echo 决定充钱节奏,但**希望进 Phase 0b 之前能跑一次完整 place→
 cancel 闭环**,作为 fill latency 校准模型的 ground truth。
 
-如果资金到位时间未定,**请在 echo 这份 INTERFACE_NARCI.md 的 §4 加一个粗
+如果资金到位时间未定,**请在 echo `INTERFACE_ECHO_NARCI.md` §4 加一个粗
 略 ETA 字段** (例如 "blocked on funding, expected by 2026-06-XX"),narci
 这边好排自己的 Phase 0b 计划。
 
@@ -264,7 +268,8 @@ scp -i ~/.ssh/aws-narci.pem -r \
 ### 文档维护
 - 这份文档由 narci 在 `narci_git_sha` 变化引发对 echo 契约的影响时重新
   cut (例如 schema bump、recorder topology 变动、pairing spec 出台)。
-- echo 端对应的 `docs/INTERFACE_NARCI.md` 在 echo 这边维护。两份文档**互
+- echo 端对应的 `docs/INTERFACE_ECHO_NARCI.md` 在 echo 这边维护(2026-05-16
+  从 `INTERFACE_NARCI.md` 重命名)。两份文档**互
   相不引用对方源码路径,只引用对方 git SHA + 文档段落**,避免 cross-repo
   symlink rot。
 - 协议级争议:narci 端 owner = `zhangenzhi@narci`,通过 git PR comment 或
@@ -272,12 +277,17 @@ scp -i ~/.ssh/aws-narci.pem -r \
 
 ### Changelog
 - **2026-05-15** (`84354aa`) — initial cut,响应 echo `INTERFACE_NARCI.md`
-  authoritative 2026-05-14 (`03bb63b`)。
+  authoritative 2026-05-14 (`03bb63b`)。(echo 端这份后来在 `3cad76f`
+  重命名为 `INTERFACE_ECHO_NARCI.md`)
 - **2026-05-15** (`289d61c`) — §2.1.3 / §4.3 / §4.4 拓扑重写;
   追加 §7 appendix 回应 echo `INTERFACE_NARCI.md §12` (echo SHA `82622ed`)。
   同时修 `deploy/aws/README.md` 的 region 错标 (narci-us → narci-sg)。
-- **2026-05-15** (本次 commit) — §7.4 标 A17 "scaffold ready (`18e68b3`),
+- **2026-05-15** (`6bb7663`) — §7.4 标 A17 "scaffold ready (`18e68b3`),
   deployment gated by ops capacity";§7.5 状态表更新 A15/A16/A17/cloud-sync 修复进度。
+- **2026-05-16** (本次 commit) — 文件从 `INTERFACE_ECHO.md` 重命名为
+  `INTERFACE_NARCI_ECHO.md`,统一 narci/echo/nyx 三边的
+  `INTERFACE_<author>_<audience>.md` 命名约定 (跟 echo `3cad76f` 对齐)。
+  内容无变化。
 
 ---
 
