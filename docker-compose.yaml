@@ -256,6 +256,13 @@ services:
         echo "[cloud-sync] interval: $${SYNC_INTERVAL:-600}s"
         rclone mkdir "$${RCLONE_REMOTE}" 2>/dev/null || true
 
+        # Per-venue stale alert (2026-05-16):扫 /data/realtime/<exchange>/<market>/l2/,
+        # 若某 venue 24h 内无新 parquet shard,在 stdout 打 [STALE-VENUE-ALERT]。
+        # 不接 PagerDuty / webhook,只进 docker logs,后续可人工 grep 或外接告警。
+        # 设计动机:bitbank/bitFlyer/GMO/Coincheck 无官方 archive (option A),
+        # recorder 死了就是真没了 → 监控比 Binance 更紧。
+        STALE_THRESHOLD_MIN=$${NARCI_STALE_ALERT_MIN:-1440}
+
         while true; do
           echo "[cloud-sync] syncing..."
           # --no-traverse 撤掉 (2026-05-15):rclone GDrive 后端 + --no-traverse
@@ -267,7 +274,20 @@ services:
             --log-level NOTICE \
             --tpslimit 8 \
             --tpslimit-burst 8
-          echo "[cloud-sync] done, sleeping $${SYNC_INTERVAL:-600}s"
+          echo "[cloud-sync] done"
+
+          # ---- per-venue staleness check ----
+          for vd in /data/realtime/*/*/l2; do
+            [ -d "$$vd" ] || continue
+            fresh=$$(find "$$vd" -maxdepth 1 -name "*.parquet" -mmin "-$${STALE_THRESHOLD_MIN}" -print -quit 2>/dev/null)
+            if [ -z "$$fresh" ]; then
+              # 数一下到底有没有任何 shard,区分 "目录空" vs "陈旧"
+              total=$$(find "$$vd" -maxdepth 1 -name "*.parquet" 2>/dev/null | wc -l)
+              echo "[STALE-VENUE-ALERT] venue_dir=$$vd no_new_shards_in=$${STALE_THRESHOLD_MIN}min total_shards=$$total"
+            fi
+          done
+
+          echo "[cloud-sync] sleeping $${SYNC_INTERVAL:-600}s"
           sleep $${SYNC_INTERVAL:-600}
         done
     environment:
@@ -279,6 +299,7 @@ services:
       - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
       - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
       - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
+      - NARCI_STALE_ALERT_MIN=${NARCI_STALE_ALERT_MIN:-1440}
     volumes:
       - narci-data:/data:ro
     restart: unless-stopped

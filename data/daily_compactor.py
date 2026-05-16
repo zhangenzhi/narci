@@ -92,16 +92,36 @@ class DailyCompactor:
         logger.info(f"✅ 聚合完成: {len(df):,} 行 -> {self.daily_file_path}")
         return True
 
+    # Venue 无官方公开 archive 列表（Option A，见 CLAUDE.md / docs/INTERFACE_*）。
+    # 这些 venue 没有 Binance Vision 等价物,self-recorded 是唯一数据源,
+    # 跨日 cross-validation 物理上不可能。compact 时只跳过校验、不报错。
+    NO_OFFICIAL_ARCHIVE_VENUES = frozenset({
+        "coincheck", "bitbank", "bitflyer", "gmo",
+    })
+
     def validate_data(self) -> bool:
         """
         若配置了 HistoricalSource 且其支持 aggTrades，拉取官方 L1 做交叉比对。
         返回 True = 已执行（成功或失败），False = 跳过。
         """
         if self.source is None:
-            logger.info("未配置 HistoricalSource，跳过交叉校验")
+            if self.exchange in self.NO_OFFICIAL_ARCHIVE_VENUES:
+                logger.info(
+                    f"[skip-validation] venue={self.exchange} symbol={self.symbol} "
+                    f"date={self.date_str_dash} — no external archive available "
+                    f"(option A: self-recorded only); not a bug"
+                )
+            else:
+                logger.info(
+                    f"[skip-validation] venue={self.exchange or '<unset>'} "
+                    f"symbol={self.symbol} — HistoricalSource not configured"
+                )
             return False
         if not self.source.supports("aggTrades", self.market_type):
-            logger.info(f"source={self.source.name} 不支持 {self.market_type}/aggTrades，跳过校验")
+            logger.info(
+                f"[skip-validation] source={self.source.name} 不支持 "
+                f"{self.market_type}/aggTrades，跳过校验"
+            )
             return False
         if not os.path.exists(self.daily_file_path):
             logger.error("DAILY 文件不存在，无法校验")
