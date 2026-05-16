@@ -35,14 +35,20 @@ Studio 上的 `reco/.env`(gitignored)。
 - **Future**: narci-reco 通过 tailscale 接管,跑健康检查 / 强制 backfill / 日志拉取
 
 ### aws-jp (AWS EC2, Tokyo region)
-- **Instance type**: t4g (ARM)
+- **Instance type**: t4g.medium(2026-05-16 从 t4g.small 升,为开 tokyo-extra)
+- **EIP**: 13.158.181.37(2026-05-16 分配,stop/start 不变)
 - **录制范围**:
-  - Coincheck 现货
+  - Coincheck 现货 (~40+ JPY alt 对)
   - Binance JP 现货
   - bitbank 现货(2026-05-15 上线)
-  - Future: bitFlyer spot+FX / GMO spot+leverage(tokyo-extra profile,机器扩容后)
-- **Docker compose profile**: `tokyo` (+ future `tokyo-extra`)
-- **端口**(实测 2026-05-16): 8079 (coincheck) / 8080 (binance-jp) / 8082 (bitbank)
+  - bitFlyer 现货 (BTC/ETH/XRP_JPY) — 2026-05-16 上线
+  - bitFlyer FX (FX_BTC_JPY,带 SWAP funding) — 2026-05-16 上线
+  - GMO 现货 (BTC/ETH/XRP) — 2026-05-16 上线
+  - GMO Leverage (BTC/ETH/XRP/SOL_JPY) — 2026-05-16 上线
+- **Docker compose profile**: `tokyo` + `tokyo-extra`(启用方式 `COMPOSE_PROFILES=tokyo,tokyo-extra`)
+- **端口**(实测 2026-05-16):
+  - 8079 coincheck / 8080 binance-jp / 8082 bitbank
+  - 8083 bitflyer-spot / 8084 bitflyer-fx / 8085 gmo-spot / 8086 gmo-leverage
 - **数据出口**: cloud-sync sidecar → gdrive:narci_raw/realtime/
 
 ### aws-sg (AWS EC2, Singapore region)
