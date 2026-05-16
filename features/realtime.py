@@ -368,6 +368,21 @@ class FeatureBuilder:
         self._last_ts_ms: int = 0
 
     # ---------------------------------------------------------------- #
+    # Public read accessors
+    # ---------------------------------------------------------------- #
+
+    @property
+    def last_event_ts_ms(self) -> int:
+        """Most recently fed event timestamp (ms across all venues).
+
+        Returns 0 if no events have been ingested yet. Updated monotonically
+        from `update_event`. Public read-only view of internal `_last_ts_ms`;
+        callers (e.g. offline-prediction AlphaModel implementations that look
+        up a precomputed table by ts) can read this without monkey-patching.
+        """
+        return self._last_ts_ms
+
+    # ---------------------------------------------------------------- #
     # Event ingestion
     # ---------------------------------------------------------------- #
 
