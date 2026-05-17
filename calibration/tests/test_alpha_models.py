@@ -188,6 +188,42 @@ def test_manifest_parse_sequence_returns_none_for_snapshot():
     assert m.parse_sequence() is None
 
 
+def test_deprecated_binding_loads_with_warning(caplog):
+    """`deprecated: true` in manifest should NOT block load (binding still
+    usable for back-compat / research), but should emit a WARNING log
+    line that includes deprecated_reason. nyx 2026-05-17 §I ask #3."""
+    import logging
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp) / "dep"
+        _write_ols_model(d, n_features=5)
+        mp = d / "manifest.json"
+        with open(mp) as f:
+            m = json.load(f)
+        m["deprecated"] = True
+        m["deprecated_reason"] = "v_test obsoleted by v_test_v2"
+        with open(mp, "w") as f:
+            json.dump(m, f)
+        with caplog.at_level(logging.WARNING):
+            model = load_alpha_model(d)
+        assert model is not None
+        assert any("DEPRECATED" in r.message and "v_test obsoleted" in r.message
+                    for r in caplog.records), (
+            "expected a WARNING log entry mentioning DEPRECATED + the "
+            "deprecated_reason; got: " + repr([r.message for r in caplog.records]))
+
+
+def test_non_deprecated_binding_no_warning(caplog):
+    """Default (no `deprecated` field, or False) must NOT log warning."""
+    import logging
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp) / "fresh"
+        _write_ols_model(d, n_features=5)
+        with caplog.at_level(logging.WARNING):
+            model = load_alpha_model(d)
+        assert model is not None
+        assert not any("DEPRECATED" in r.message for r in caplog.records)
+
+
 def test_features_version_mismatch_refuses():
     """Loading a model trained against a different FEATURES_VERSION should
     raise unless explicitly overridden."""

@@ -127,6 +127,14 @@ class Manifest:
     # OLS / GRU still train in log_return → keep default "log_return".
     # Backward compat:missing field → "log_return" (old binding behavior).
     model_output_unit: str = "log_return"
+    # Added 2026-05-17 — owners (typically nyx) can mark a binding
+    # deprecated to discourage downstream load without breaking the
+    # contract. narci `load_alpha_model` logs a warning when True (and
+    # `deprecated_reason` is shown). Default False; backward compat:
+    # missing field treated as False. See nyx INTERFACE_NYX_NARCI.md
+    # 2026-05-17 §I ask #3.
+    deprecated: bool = False
+    deprecated_reason: str = ""
 
     @classmethod
     def from_dict(cls, d: dict) -> "Manifest":
@@ -166,6 +174,8 @@ class Manifest:
             nyx_git_sha=d.get("nyx_git_sha", ""),
             sampling_mode=sampling_mode,
             model_output_unit=model_output_unit,
+            deprecated=bool(d.get("deprecated", False)),
+            deprecated_reason=str(d.get("deprecated_reason", "")),
         )
 
     def parse_sequence(self) -> Optional[tuple[int, int]]:
@@ -389,6 +399,13 @@ def load_alpha_model(
     weights_path = model_dir / manifest.weights_filename
     if not weights_path.exists():
         raise FileNotFoundError(f"missing weights: {weights_path}")
+
+    if manifest.deprecated:
+        log.warning(
+            "loading DEPRECATED binding from %s — %s",
+            model_dir,
+            manifest.deprecated_reason or "no reason given by manifest owner",
+        )
 
     return cls(manifest, weights_path)
 

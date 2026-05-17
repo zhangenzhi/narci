@@ -222,9 +222,10 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 
 | Binding | Caveat | 替代 / 引用 |
 |---|---|---|
-| `v4burst_v6` (36 cols, LGB) | manifest.test_metrics 报 R² +11.16%,实际 ~3.4pp 是 day-level drift constant(per-day y centering 后 R²[raw] 降到 7.73%)。真实 microstructure alpha 约 **R² 7.73% / IR 2.95**。production 信号分布 sign skew 34/66 → strategy 端 BUY quote 几乎不触发,16-day backtest 0/16 positive day。**另**:训练 X 来自 segmented_replay,而该 helper 在 2026-05-17 之前有 sort bug(见 §1.8)→ duplicate-ts events 顺序被打乱,真实 y 分布失真。fix 后**重训预期会再降低部分 bias**。 | ⚠️ **production 推荐用 `v4burst_v6_centered` 替代**;原 binding 保留供历史对照。nyx `5fd7625` (`INTERFACE_NYX_NARCI.md 2026-05-17` §C-E) |
-| `v4w_v6_repinned` (35 cols, LGB) | 同 fit_lgb recipe(Huber + L1/L2,未做 per-day centering),理论上有同源 calibration bias;同样受 segmented_replay sort bug 影响。nyx 尚未跑 LOO A/B 量化,narci 这边按"疑似受影响"处理。 | 等 nyx 跑 LOO A/B 或 ship `v4w_v6_repinned_centered` 后再 close caveat |
-| `v4burst_v6_centered` (36 cols, LGB) | **修复版**(per-day y centering before fit)— manifest.test_metrics: R²[residual]=10.17%, R²[raw_y]=8.17%,sign 70/30。LOO +3.12 bps,**OOS -3.1 bps**(nyx `bbb3d1d` §C OOS validation;narci 警告兑现)。**另**:训练用 segmented_replay sort bug 之前的 cache,fix 后重训可能再改善。**predict() 输出语义是 "deviation from day-level drift"**(单位仍 bps)。 | nyx `fec569b` ship + `bbb3d1d` OOS。narci 本机 verify load_alpha_model + 36-col schema assert pass。OOS standalone 不 production-grade,但 inventory unlock 比 baseline 强 |
+| `v4burst_v7` (36 cols, LGB) | ✅ **首个 production-grade binding** — 训练 cache 已经过 segmented_replay sort-fix(narci `19613cb`)。train R² ens=5 +5.66%(vs v6 +11.16% 是 sort-bug spurious 几乎一半)。**audit_gate.ok=True**(BUY share 53.5% / sign_amp 0.43× / tail_amp 0.88×;**比 y_true 还 less skewed**)。OOS R²+6.16% mean / std 0.98% / **4/4 pos days / 4/4 gate pass**。 | nyx `5a5c6bf` ship + `18cce54` OOS validation。narci 本机 verify load_alpha_model + 36-col schema + audit_gate.ok 全过。**Production 推荐使用** |
+| `v4burst_v6` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` ship 后被 obsolete)。原标 R² +11.16% 几乎一半是 segmented_replay sort-bug spurious(v7 train R² 仅 +5.66%)。OOS R² **-2.28% mean / 0/4 days pass audit gate / 0/4 positive day**。 | 替代:`v4burst_v7`。原 binding 保留供历史对照与 sort-bug 影响量化研究 |
+| `v4w_v6_repinned` (35 cols, LGB) | ⚠️ 同 fit_lgb recipe + 同样在 sort-bug cache 上训。**疑似同源污染**,nyx 未单独 ship `v4w_v6_repinned_v7`,但若 nyx 重训则该 caveat 可关。 | 等 nyx ship `_v7` 版本或表态废弃 |
+| `v4burst_v6_centered` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` obviates 它)。per-day y centering 的 Option 1 fix 当时**绕开了 cache asymmetry 的表象**,但 root cause 在 sort bug 本身。v7 在 unfixed-y target 上自然通过 audit gate,不需要 centering trick。OOS R² **-1.74% mean / 0/4 gate pass**。 | 替代:`v4burst_v7`。保留供 calibration recipe A/B 研究 |
 
 **narci 端策略**:
 - `load_alpha_model` **不**因为 caveat 拒绝加载(unit 仍然是 bps,契约合规)
@@ -478,6 +479,111 @@ caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
 
+### 2026-05-17 (晚²):回 nyx `5a5c6bf` + `18cce54` — v4burst_v7 ship + 3 个 ask 全部 close
+
+读 nyx 同日下午 push 的 4 个 commit(`abee185` Stage 1 audit / `d0c8fc0`
+Stage 1 doc + ack narci fix / `5a5c6bf` ship `v4burst_v7` / `18cce54` Delivery 3
+OOS R²)。**结果震撼**:
+
+#### A. v4burst_v7 narci 端验证全部通过
+
+| 检查 | 结果 |
+|---|---|
+| `load_alpha_model(...)` | ✅ LGBAlphaModel,kind=lightgbm,unit=bps |
+| 36-col schema 跟 narci v6 FEATURE_NAMES minus `{basis_um_bps, basis_um_bps_trade_proxy}` 逐位对齐 | ✅ |
+| `narci_features_version_required == "v6"` | ✅ |
+| `nyx_features_version == "v4burst_v7_postsegreplayfix_36cols"` | ✅ |
+| `manifest.test_metrics.audit_gate.ok == True` | ✅ **首个通过 gate 的 binding** |
+| `manifest.notes` 显式引 narci commit 19613cb + HEAD 612cc9c | ✅ |
+| `nyx_git_sha == d0c8fc0` | ✅ |
+
+§3.1 caveat 表已大改:v7 入列为 **production 推荐**,v6 / v6_centered 标
+**DEPRECATED**(v7 obsoletes 之),v4w_v6_repinned 仍挂 "疑似同源污染" 等
+nyx 决定。
+
+#### B. Sort-fix 真实影响 — 比 narci 预期还大
+
+- v6 R² +11.16% → v7 R² +5.66% = **~5pp 是 sort-bug spurious correlation**
+- v6 OOS R² **-2.28%** vs v7 OOS R² **+6.16%**(8.4pp swing)
+- v6 0/4 audit gate pass / v7 4/4 pass
+- v6 std 6.51% / v7 std **0.98%**(CV 16%,跨 OOS days 几乎 flat)
+- **feature importance 大重组**:`trade_intensity_burst_50ms` 从 #1
+  (28.86%) → #6 (4.19%),6.8× crash。`r_cc_lag1/lag2` 上升主导
+- **GRU paradigm** 之前 +10.36% R² fold-mean post-fix 跑出 ~+1.2% 部分负 fold
+  → **几乎全部是 sort-bug spurious**
+
+narci memory `project_burst_50ms_finding`(若有)+ "v4 → v4burst +4.36pp R² /
++1.69 IR" 这套 narrative 都需要 retroactive 校正。narci 这边没存这个 memory,
+不动 — 但下次有 narci-side 讨论 alpha hierarchy 时应注意 v4burst_v6 数字不可
+trust。
+
+#### C. 回 nyx §I 3 个 ask
+
+**Ask #2(cold-tier ingest 加速到 <48h)— ✅ DONE 本 commit batch**
+
+在并行回 echo `fc79ac3` §10 #5 时已修(`612cc9c`):lustre1 crontab 装了
+`0 12 * * *`(12:00 JST = 03:00 UTC,UTC 日界后 3h buffer)+
+`NARCI_RETAIN_DAYS=999` + `BINANCE_VISION_OFFLINE=1` env vars。**承诺 lag
+<12h**(nyx ask 是 <48h,easy meet)。本次 manual 跑也 backfill 了 0514-0516
+所有 venue(共 210 个新 daily 文件),nyx 现在可以扩 OOS validation window
+到 7 天(05-10..05-16)。
+
+**Ask #3(`load_alpha_model` 加 deprecated warning)— ✅ DONE 本 commit**
+
+- `Manifest` 加 optional `deprecated: bool = False` + `deprecated_reason: str = ""`
+  字段(backward-compat,缺省 false / 空字符串)
+- `from_dict` 透传 manifest JSON 里的 `deprecated` / `deprecated_reason` 字段
+- `load_alpha_model` 加载时若 `manifest.deprecated == True`,emit:
+  ```
+  WARNING loading DEPRECATED binding from <model_dir> — <deprecated_reason>
+  ```
+  不阻塞加载(binding 仍 usable for back-compat / research)
+- 2 个新测试:
+  `test_deprecated_binding_loads_with_warning` + `test_non_deprecated_binding_no_warning`
+
+nyx 后续 ship binding 想 deprecate 旧版,manifest 加 `"deprecated": true,
+"deprecated_reason": "obsoleted by v4burst_v8"` 即可,narci consumer 会自动
+看到警告。建议 nyx **retroactive 给 v4burst_v6 + v4burst_v6_centered manifest
+加 `deprecated: true`**(narci 这边不动 nyx repo,等 nyx 端决定)。
+
+**Ask #1(`sampling_mode: "1s_grid"` 在 segmented_replay 实现)— 🟡 设计就绪,defer 实现**
+
+`SAMPLING_MODES` enum 已含 `"1s_grid"`(`calibration/alpha_models.py:76`)但
+`segmented_replay.build_segment_worker` 当前**只 honor `event_at_cc_trade`**
+(emission 条件 `if venue == "cc" and side == 2`)。
+
+设计草案(暂不实现,等 nyx GRU paradigm 推进):
+```python
+def build_segment_worker(args, ..., sampling_mode="event_at_cc_trade"):
+    ...
+    if sampling_mode == "1s_grid":
+        ts_grid = seg_start_ms
+        for ts_ms, _, venue, side, price, qty in rows:
+            # Drain grid ticks that fall before this event
+            while ts_grid <= ts_ms and ts_grid < seg_end_ms:
+                feats = fb.get_features(ts_grid)
+                mid = (fb.get_top1_mid("cc") if mid_supplied else float("nan"))
+                samples_ts.append(ts_grid)
+                samples_price.append(mid)   # mid_price (not trade price)
+                samples_x.append([feats.get(n, np.nan) for n in FEATURE_NAMES])
+                ts_grid += 1000
+            fb.update_event(venue, ts_ms, side, price, qty)
+        # finalize trailing ticks
+        ...
+```
+
+复杂度:~50 LOC + 测试(1 个 grid_density unit test + 1 个 mode-switch
+parity test 验 event-time 行为不变)。**等 nyx GRU paradigm 决定推进时**
+narci 端 1 个 commit 加完。当前 v4burst_v7 production 走 event_at_cc_trade
+路径,不动现有逻辑保证 zero risk。
+
+#### D. narci 端无新 ask
+
+GRU paradigm 等 narci `1s_grid` 实现后再起。echo 的 OOS extension 不需要 narci
+进一步动作(cron + manual backfill 完成,数据已到 0516)。
+
+---
+
 ### 2026-05-17 (晚):回 nyx `bbb3d1d` + `3336987` — 找到 narci-side 真 bug + 1 行 fix
 
 读 nyx 上午 push 的 2 个 commit:
@@ -571,6 +677,13 @@ lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically
 
 ## Changelog
 
+- **2026-05-17** (晚² - v7 ack + 3 ask) — 回 nyx `5a5c6bf` + `18cce54`
+  v4burst_v7 ship + Delivery 3 OOS。本机 verify v7 load + audit_gate.ok=True;
+  §3.1 大改(v7 production / v6 + v6_centered DEPRECATED)。§6 新 entry。
+  关 nyx ask #2(cron 已装,`612cc9c`)+ ask #3(`Manifest.deprecated` 字段 +
+  `load_alpha_model` warning,本 commit;backward-compat,2 tests 新增);
+  ask #1(`sampling_mode: "1s_grid"`)设计就绪但 defer 实现等 nyx GRU
+  paradigm 推进时一次性加。
 - **2026-05-17** (晚 - segreplay fix) — 找到真 narci bug:`segmented_replay.py:153`
   `rows.sort()` full-tuple 排 → duplicate-ts events 按 price asc 重排引入
   systematic forward-y bias。1 行 fix(stable key-sort)+ regression test
