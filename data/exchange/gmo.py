@@ -199,30 +199,41 @@ class GmoAdapter(ExchangeAdapter):
                 ws_state["last_trade_msg_t"] = now
 
                 # 3. watchdog task
+                # 注:循环条件只看 recorder.running,不查 ws 状态。websockets v14+
+                # 返回的 ClientConnection 没有 .closed 属性 (只有 .state),旧写法
+                # `not ws.closed` 会 AttributeError 让 watchdog 静默死亡 → 主 loop
+                # 永久挂在 async for raw in ws 上 → 无数据 + 无重连 + 无 log。
+                # incident: reco/docs/INCIDENTS/2026-05-17-gmo-watchdog-silent-death.md
+                # 整段再包 try/except 作为最后一道防御,任何异常至少有 print。
                 async def _watchdog_loop():
-                    while recorder.running and not ws.closed:
+                    while recorder.running:
                         try:
                             await asyncio.sleep(recorder.watchdog_check_interval_sec)
                         except asyncio.CancelledError:
                             return
-                        now = time.time()
-                        idle_d = now - ws_state["last_depth_msg_t"]
-                        idle_t = now - ws_state["last_trade_msg_t"]
-                        reason: str | None = None
-                        if idle_d > recorder.depth_stale_threshold_sec:
-                            reason = (f"depth 静默 {idle_d:.0f}s > "
-                                      f"{recorder.depth_stale_threshold_sec}s")
-                        elif idle_t > recorder.trade_stale_threshold_sec:
-                            reason = (f"trade 静默 {idle_t:.0f}s > "
-                                      f"{recorder.trade_stale_threshold_sec}s")
-                        if reason:
-                            ws_state["forced_reconnect_reason"] = reason
+                        try:
+                            now = time.time()
+                            idle_d = now - ws_state["last_depth_msg_t"]
+                            idle_t = now - ws_state["last_trade_msg_t"]
+                            reason: str | None = None
+                            if idle_d > recorder.depth_stale_threshold_sec:
+                                reason = (f"depth 静默 {idle_d:.0f}s > "
+                                          f"{recorder.depth_stale_threshold_sec}s")
+                            elif idle_t > recorder.trade_stale_threshold_sec:
+                                reason = (f"trade 静默 {idle_t:.0f}s > "
+                                          f"{recorder.trade_stale_threshold_sec}s")
+                            if reason:
+                                ws_state["forced_reconnect_reason"] = reason
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                                      f"⚠️ gmo {reason},强制重连")
+                                try:
+                                    await ws.close()
+                                except Exception:
+                                    pass
+                                return
+                        except Exception as e:
                             print(f"[{datetime.now().strftime('%H:%M:%S')}] "
-                                  f"⚠️ gmo {reason},强制重连")
-                            try:
-                                await ws.close()
-                            except Exception:
-                                pass
+                                  f"❌ gmo watchdog 异常: {type(e).__name__}: {e}")
                             return
 
                 watchdog_task = asyncio.create_task(_watchdog_loop())
@@ -287,7 +298,9 @@ class GmoAdapter(ExchangeAdapter):
                         await watchdog_task
                     except (asyncio.CancelledError, Exception):
                         pass
-                if ws is not None and not ws.closed:
+                if ws is not None:
+                    # close 在 ClientConnection 上幂等,不需要先查状态
+                    # (旧版 ws.closed 在 v14+ 没了,见 watchdog 注释)
                     try:
                         await ws.close()
                     except Exception:
