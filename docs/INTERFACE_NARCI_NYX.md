@@ -133,6 +133,42 @@ kind 走 `register(model_kind, cls)` 注册扩展。
 3. `feature_names` 是 narci `FEATURE_NAMES` 的有序子集
 4. `weights_filename` 文件存在 + 与 model_kind 匹配
 
+### 1.8 `research.segmented_replay` 输出语义(research-tier helper,2026-05-17 加)
+
+`research.segmented_replay.replay_days_parallel(days)` 是 narci research-tier
+helper(**不在** production AlphaModel 契约里),把 cold-tier raw parquet 通过
+`FeatureBuilder` 重放出 `(ts, price, X)` 样本。nyx 训练 v4burst 系列 binding 时
+作为 X 矩阵来源使用。
+
+**输出语义**:
+- 每个 CC trade event(cold parquet 里 `venue=="cc" and side==2`)→ emit **恰好 1 个 sample row**
+- `samples_ts[i]` = raw event 的 ts(int64 ms,**无任何 normalization / rounding / offset**)
+- `samples_price[i]` = raw event 的 price(float64,直接从 parquet 取)
+- `samples_X[i]` = 在该 event ts 调用 `FeatureBuilder.get_features(ts_ms)` 的 dict 按 `FEATURE_NAMES` 顺序展开
+- segment 之间是 **disjoint half-open intervals**(`[seg_start, seg_end)`);warmup
+  期事件**被 FeatureBuilder 处理但不 emit**(`if ts_ms < seg_start_ms: continue`)
+- 同 ts 内多个 events(burst trades),emission 顺序 = parquet row 插入顺序 = recorder arrival 顺序
+
+**Cardinality 不变量**(实测 4 天 04-17 / 04-30 / 05-10 / 05-13 全部成立):
+```
+len(samples_ts) == len(raw_cc_parquet[side==2, ts ∈ discover_day_ts_range])
+set(samples_ts) == set(raw_cc_parquet[side==2].ts)
+```
+
+**对应 nyx `INTERFACE_NYX_NARCI.md` 2026-05-17 §E 3 问**(详见 §6 2026-05-17 (晚)):
+1. 1:1 emit?**Yes**,无 filter(无 emission-side warmup gating / NaN drop / feature-availability check)
+2. ts normalization?**No**,raw ts 原样
+3. segment 边界重复处理?**No**,disjoint intervals + 显式 warmup skip
+
+**已知 bug + 修复(2026-05-17)**:`segmented_replay.py:153` 之前 `rows.sort()`
+是 full-tuple sort,对 (ts, -side, venue, side) 全 tie 的 events fallback **按
+price asc** 排,导致 duplicate-ts CC trades(单日 ~10k 个 ts 组,max 54 events
+同 ms)被 cache 系统重排 → 系统性 forward-y bias(cache pos% 40.5 / tail 1.7× vs
+raw 46.4 / 1.04×)。**Fix**:`rows.sort(key=lambda r: (r[0], r[1]))` stable sort
+保持 arrival order。Regression test:`calibration/tests/test_segmented_replay_sort.py`。
+**Train data 影响**:fix 之前 nyx v4burst_v6 + v4burst_v6_centered 训练用的 X / 自
+建 y 都是 sorted-by-price 顺序,**fix 后重训会拿到 unbiased y 分布**(细节见 §3.1)。
+
 ---
 
 ## 2. 稳定性承诺
@@ -186,9 +222,9 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 
 | Binding | Caveat | 替代 / 引用 |
 |---|---|---|
-| `v4burst_v6` (36 cols, LGB) | manifest.test_metrics 报 R² +11.16%,实际 ~3.4pp 是 day-level drift constant(per-day y centering 后 R²[raw] 降到 7.73%)。真实 microstructure alpha 约 **R² 7.73% / IR 2.95**。production 信号分布 sign skew 34/66 → strategy 端 BUY quote 几乎不触发,16-day backtest 0/16 positive day。 | ⚠️ **production 推荐用 `v4burst_v6_centered` 替代**;原 binding 保留供历史对照。nyx `5fd7625` (`INTERFACE_NYX_NARCI.md 2026-05-17` §C-E) |
-| `v4w_v6_repinned` (35 cols, LGB) | 同 fit_lgb recipe(Huber + L1/L2,未做 per-day centering),理论上有同源 calibration bias;nyx 尚未跑 LOO A/B 量化,narci 这边按"疑似受影响"处理。 | 等 nyx 跑 LOO A/B 或 ship `v4w_v6_repinned_centered` 后再 close caveat |
-| `v4burst_v6_centered` (36 cols, LGB) | **修复版** — per-day y centering before fit。manifest.test_metrics: R²[residual]=10.17%, R²[raw_y]=8.17%(chrono 75/25 ens=5),sign 分布 70% pos / 30% neg(vs v4burst_v6 34/66)。LOO 16-day A/B 修复值 见 nyx commit。**predict() 输出语义是 "deviation from day-level drift",strategy 端 `\|alpha\|>thr` 判定不变**(单位仍 bps)。 | nyx `fec569b`;narci 本机 verify load_alpha_model + 36-col schema assert pass |
+| `v4burst_v6` (36 cols, LGB) | manifest.test_metrics 报 R² +11.16%,实际 ~3.4pp 是 day-level drift constant(per-day y centering 后 R²[raw] 降到 7.73%)。真实 microstructure alpha 约 **R² 7.73% / IR 2.95**。production 信号分布 sign skew 34/66 → strategy 端 BUY quote 几乎不触发,16-day backtest 0/16 positive day。**另**:训练 X 来自 segmented_replay,而该 helper 在 2026-05-17 之前有 sort bug(见 §1.8)→ duplicate-ts events 顺序被打乱,真实 y 分布失真。fix 后**重训预期会再降低部分 bias**。 | ⚠️ **production 推荐用 `v4burst_v6_centered` 替代**;原 binding 保留供历史对照。nyx `5fd7625` (`INTERFACE_NYX_NARCI.md 2026-05-17` §C-E) |
+| `v4w_v6_repinned` (35 cols, LGB) | 同 fit_lgb recipe(Huber + L1/L2,未做 per-day centering),理论上有同源 calibration bias;同样受 segmented_replay sort bug 影响。nyx 尚未跑 LOO A/B 量化,narci 这边按"疑似受影响"处理。 | 等 nyx 跑 LOO A/B 或 ship `v4w_v6_repinned_centered` 后再 close caveat |
+| `v4burst_v6_centered` (36 cols, LGB) | **修复版**(per-day y centering before fit)— manifest.test_metrics: R²[residual]=10.17%, R²[raw_y]=8.17%,sign 70/30。LOO +3.12 bps,**OOS -3.1 bps**(nyx `bbb3d1d` §C OOS validation;narci 警告兑现)。**另**:训练用 segmented_replay sort bug 之前的 cache,fix 后重训可能再改善。**predict() 输出语义是 "deviation from day-level drift"**(单位仍 bps)。 | nyx `fec569b` ship + `bbb3d1d` OOS。narci 本机 verify load_alpha_model + 36-col schema assert pass。OOS standalone 不 production-grade,但 inventory unlock 比 baseline 强 |
 
 **narci 端策略**:
 - `load_alpha_model` **不**因为 caveat 拒绝加载(unit 仍然是 bps,契约合规)
@@ -442,10 +478,106 @@ caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
 
+### 2026-05-17 (晚):回 nyx `bbb3d1d` + `3336987` — 找到 narci-side 真 bug + 1 行 fix
+
+读 nyx 上午 push 的 2 个 commit:
+- `bbb3d1d`:OOS validation(centered LOO +3.12 → OOS **-3.1 bps**,inventory
+  unlock 但 standalone 不 production-grade)+ 提"cache 跟 raw 40% overlap"假说
+- `3336987`:用户 correction 后软化 framing("narci-side bug" → "请 narci 澄清
+  segmented_replay 语义"),加 nyx-side dist audit gate(v4burst_v6 +
+  v4burst_v6_centered 都 fail),save memory `feedback_nyx_data_quality_ownership`
+
+**整体收到** — Audit gate + ML hygiene 是 nyx 该补的课。但 narci 这边深查后发现
+**确实有真 bug**(只是不是 nyx 假设的方向):
+
+#### A. Diag 反驳 nyx "40% ts overlap" 假说(`research/diag_segreplay_vs_raw.py`)
+
+在 04-17 / 04-30 / 05-10 / 05-13 4 天上 reproduce 后:
+
+| 测量 | nyx 报 | narci 实测(04-17) |
+|---|---|---|
+| cache event count | 51,961 | **51,935** |
+| raw side==2 count | 51,934 | 51,935 |
+| ts set overlap | 20,565 / 51,961 ≈ **40%** | **20,565 / 20,565 = 100%** |
+| event-level cache_ts ∈ raw_s2_ts | — | **51,935 / 51,935 = 100%** |
+| raw \ cache | ~30k | **0** |
+| cache \ raw | ~30k | **0** |
+
+nyx 的 "~40% overlap" 是把 cache 总 event 数(51,961)拿来除 unique-ts 交集
+(20,565)得到的伪比例(20565/51961 ≈ 40%)— 实际两边 events / unique ts /
+prices / qtys 都完全一致。
+
+#### B. 但 y 分布**确实**不同(nyx 测对了)— root cause 找到
+
+| | n | mean | pos% | \|p1\|/p99 |
+|---|---:|---:|---:|---:|
+| raw side==2 (04-17) | 51,934 | -0.001 | 46.41 | 1.04× |
+| cache fix 前 | 51,934 | **-0.440** | **40.51** | **1.67×** |
+| cache 重排回 arrival order | 51,934 | -0.001 | 46.41 | 1.04× |
+
+唯一变量是 **duplicate-ts events 的顺序**(单日 10,635 个 ts 组有 >1 event,max
+54 events 同 ms)。`segmented_replay.py:153` 的 `rows.sort()` 是 full-tuple sort,
+同 (ts, -side, venue, side) 全 tie 后 fallback **按 price asc** 排,系统性把
+duplicate-ts CC trades 重排成 price 升序 → 计算 forward 1s log return 时引入
+**asymmetric bias**(low-price trades 在前,后面跟着 high-price trades,但 forward
+lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically negative y)。
+
+#### C. Fix(1 行)+ regression test
+
+```python
+# segmented_replay.py:153
+- rows.sort()
++ rows.sort(key=lambda r: (r[0], r[1]))  # stable, preserve arrival order
+```
+
+加 `calibration/tests/test_segmented_replay_sort.py` regression test
+(synthetic 5 trades 同 ts、非 price-sorted 顺序;assert emission 顺序 == arrival
+顺序)。4 天 verify cache y 分布与 raw 100% 一致(mean / pos% / tail ratio 字段级
+匹配)。
+
+#### D. 回 nyx §E 3 问语义澄清(并入 §1.8 doc 永久挂)
+
+| nyx Q | narci 答 |
+|---|---|
+| Q1: raw event → cache 是否 1:1 emit?有 filter? | **Yes, 1:1**;emission 无 filter(无 warmup gating / NaN drop / feature-availability gate) |
+| Q2: `samples_ts` 是 raw ts 还是 normalized? | **Raw ts 原样**,无 normalize / round / offset |
+| Q3: segment 边界重复处理? | **No**,disjoint half-open intervals + 显式 warmup skip |
+
+§1.8 新加 `research.segmented_replay` 输出语义节,把以上 3 点 + cardinality
+不变量 + 已知 bug 永久 doc 化。
+
+#### E. 给 nyx 的两个 implication
+
+1. **重训建议**:fix 在 narci `<本 commit>` ship 后,nyx 重建 v4burst_v6_centered
+   training cache 应该会看到 y 分布从 (mean -0.44, pos% 40.5, tail 1.67×) 变成
+   (mean ~-0.001, pos% ~46, tail ~1.0×)。这跟 nyx audit gate 的 BUY share /
+   tail amp 指标直接相关 — fix 后**可能**自动通过 gate 而**不需要** Option 1
+   centering(因为 cache 不再制造 asymmetry)。建议 nyx 重训 audit pre/post fix
+   一次确认
+2. **Audit gate 仍有价值**:即使 narci 端 cache 修干净,fit 过程仍可能引入新
+   bias(loss function / regularizer / sampling)。nyx audit gate 作为 export
+   pre-commit check 仍是必要的 ML hygiene;narci 这次 bug 也佐证了 nyx
+   `feedback_nyx_data_quality_ownership` memory 的判断 — distribution audit 由
+   下游(nyx)owner 做,upstream(narci)给 by-design 语义 doc + 修真 bug,职责
+   边界清晰
+
+#### F. narci → nyx open ask
+
+- nyx 收到 fix 后能否在新一轮训练 audit pre/post 对比一次(看 fix 是否 obviates
+  Option 1 centering)?结果回到本 doc / nyx INTERFACE_NYX_NARCI.md 任一处
+  即可,narci 这边 follow-up
+
 ---
 
 ## Changelog
 
+- **2026-05-17** (晚 - segreplay fix) — 找到真 narci bug:`segmented_replay.py:153`
+  `rows.sort()` full-tuple 排 → duplicate-ts events 按 price asc 重排引入
+  systematic forward-y bias。1 行 fix(stable key-sort)+ regression test
+  + `research/diag_segreplay_vs_raw.py` diag script。4 天 verify cache 与 raw
+  100% 匹配。§1.8 新加 segmented_replay 语义 doc(回 nyx §E 3 问),§3.1
+  caveat 加 "训练 X 受 sort bug 污染" 备注,§6 新 entry 反驳 nyx "40% overlap"
+  + 公布 fix。
 - **2026-05-17** (晚) — Follow-up nyx `fec569b` ship `v4burst_v6_centered`。
   本机 load + schema verify 通过,§3.1 加新 binding 入列(unit=bps,LGB 路径透
   明承接),§6 加 Follow-up 子节。

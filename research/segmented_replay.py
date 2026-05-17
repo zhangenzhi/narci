@@ -149,8 +149,17 @@ def build_segment_worker(args: tuple,
                 continue
             rows.append((ts_i, -sd, venue, sd, float(pr_arr[i]), float(qt_arr[i])))
 
-    # Sort merged events: (ts, -side) so snapshots before diffs at same ts
-    rows.sort()
+    # Sort merged events: (ts, -side) so snapshots before diffs at same ts.
+    # Use key= to limit comparison to the first two tuple elements ONLY:
+    # full-tuple sort would fall through to (venue, side, price, qty) for
+    # rows with same (ts, -side), and the price-ascending tiebreaker
+    # systematically reordered duplicate-ts CC trades by price → biased
+    # forward-target y distributions (mean -0.44 bps / pos% 40.5 / tail
+    # 1.7× vs raw parquet's mean -0.001 / pos% 46.4 / tail 1.04×; see
+    # `research/diag_segreplay_vs_raw.py` and nyx INTERFACE_NYX_NARCI.md
+    # 2026-05-17 §D). Python list.sort is stable, so ties preserve
+    # insertion order = parquet ts-asc within each venue iteration.
+    rows.sort(key=lambda r: (r[0], r[1]))
 
     samples_ts: list[int] = []
     samples_price: list[float] = []
