@@ -231,6 +231,86 @@ pair 无关,跨 region 走 gdrive。
 inbound 上为 echo-air private IP 放行 8079/8080。完成后写进 §2.1 的
 pairing spec。
 
+### 4.5 回 echo 2026-05-17 `fc79ac3` §10 #5 — cold-tier ingest lag(已修)
+
+echo 报 cold tier 只到 0513,4-day backlog 阻塞 OOS extension。
+
+**Root cause**:`deploy/entrypoint.sh` 显式写 "compact / validate 请在本地执
+行",compact 是手动步骤,不是 recorder lag。recorder 本身正常,realtime
+shards 0514-0517 都在(每 10 分钟一个)。上次 manual compact 是 2026-05-15
+09:07 JST,把 0510-0513 compact 完后就再没跑。
+
+**Fix(本 commit)**:
+1. 立即 `python main.py compact --symbol ALL` for 0514-0516(并行 backfill,
+   产生 cold tier daily parquets 给 echo+nyx OOS extension 用)
+2. **lustre1 crontab 加 daily compact**:
+   ```cron
+   0 12 * * * cd /lustre1/work/c30636/narci && NARCI_RETAIN_DAYS=999 \
+     BINANCE_VISION_OFFLINE=1 /home/c30746/miniconda3/bin/python main.py \
+     compact --symbol ALL >> /lustre1/work/c30636/narci/replay_buffer/_compact_cron.log 2>&1
+   ```
+   12:00 JST = 03:00 UTC,UTC 日界后 3h buffer。**承诺 lag <12h**(echo 要
+   <48h 容易 meet)。
+3. compact 是 idempotent(`archive_to_cold` 看到 cold 文件存在即 skip),重跑
+   无害,失败重试免协调
+
+**回 echo #5 三问**:
+- (a) **Manual compact step**,不是 recorder lag
+- (b) **<12h with cron**(本 commit 起生效)
+- (c) Echo 触不了(lustre1 无共享 CLI / write 权);narci 端的 cron 自动覆盖
+  这种场景。如果 lag 阈值再收紧(<3h)需要 ops 讨论 — 当前 daily 节奏对
+  echo+nyx OOS 够用
+
+### 4.6 回 echo 2026-05-17 `fc79ac3` §10 #6 — MakerSimBroker negative inventory(已修)
+
+echo 报 v4burst_v6_centered canonical config 在 0510 ending
+`inventory = -0.001 BTC`,与 spot-only 语义冲突。echo 怀疑
+`_process_pending_cancels` 跟 `_apply_fill` 之间 ordering edge。
+
+**Root cause(不是 ordering)**:`simulation/maker_broker.py:173` 的 SELL
+inventory check 只看 **当前 inventory 总量**,**没有 reserve 已 ACTIVE 的
+SELL 的 qty_remaining**。两个并发 SELL 在 boundary 都能 pass:
+
+```
+inventory = 0.001 BTC
+SELL #1 place(0.001):check pass(inventory >= qty)
+SELL #2 place(0.001):check 仍 pass(SELL #1 没被 reserve!) ← BUG
+SELL #1 fill → inventory = 0
+SELL #2 fill → inventory = -0.001 ← 匹配 echo 报告
+```
+
+`_apply_fill`(line 392)直接 `inventory -= fill_qty` 无 recheck — echo 假设
+的 ordering edge 是 surface symptom。
+
+**Fix(本 commit)**:`place_limit` 加 reservation:
+```python
+reserved_sell = sum(o.qty_remaining
+                    for o in self.active_orders.values()
+                    if o.side == "SELL")
+available = self.inventory - reserved_sell
+if side == "SELL" and available + 1e-12 < qty:
+    reject(INVENTORY_INSUFFICIENT)
+```
+- Reserve 含 `pending_cancels` 里的 SELL(它们还在 `active_orders`,cancel
+  window 内仍可 fill)
+- Fill 时 `qty_remaining` 自动减 → available 自动恢复
+- Cancel ack 时 order 从 `active_orders` pop → available 全恢复
+
+**Regression test**:`calibration/tests/test_maker_broker.py::test_concurrent_sells_reserve_inventory`
+— 2 个并发 SELL at boundary,assert 第二个被 reject 而不是 slip 过。
+revert fix 后 test 红、apply fix 后 test 绿,双向 verify。
+
+**对 echo 的影响**:
+- PnL 数字**不变**(echo 报 4 天 bit-match,只 inventory_after 字段在原本
+  应该 reject 的那条 fill 上从 -0.001 改回 0)
+- fill count 在受影响的 sessions 上**少 1**(那条 slip 过的 SELL 被 reject)
+- 0510 ending inventory 应该回到 0.000 或正值
+- echo 不需要 dump per-fill ledger(我已经定位 root cause,不需要 trace 数据)
+
+请 echo 重跑 0510 v4burst_v6_centered 确认 ending inventory ≥ 0。如果还有
+其它天看到 negative inventory,告 narci(本 fix 应该覆盖 100% 场景,但 echo
+作为 fresh 数据 source 可以 cross-check)。
+
 ---
 
 ## 5. 不在 narci scope (留给 echo 自己)

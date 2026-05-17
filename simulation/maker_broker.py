@@ -169,8 +169,19 @@ class MakerSimBroker:
                               alpha_pred_bps, alpha_features_hash, alpha_source)
             return None
 
-        # Spot-only inventory check (SELL needs base asset)
-        if side == "SELL" and self.inventory + 1e-12 < qty:
+        # Spot-only inventory check (SELL needs base asset).
+        # Reserve qty_remaining of already-active SELL orders so two
+        # concurrent SELLs at the boundary can't both pass the check and
+        # later drive inventory negative. echo 2026-05-17 #6: day 0510
+        # ended at inventory=-0.001 BTC because the pre-reservation
+        # check let a second SELL through while the first was still
+        # ACTIVE (or in cancel pipeline, where qty_remaining stays
+        # reserved until cancel ack).
+        reserved_sell = sum(o.qty_remaining
+                            for o in self.active_orders.values()
+                            if o.side == "SELL")
+        available = self.inventory - reserved_sell
+        if side == "SELL" and available + 1e-12 < qty:
             self._emit_reject(ts, client_oid, side, price, qty,
                               "INVENTORY_INSUFFICIENT",
                               alpha_pred_bps, alpha_features_hash, alpha_source)

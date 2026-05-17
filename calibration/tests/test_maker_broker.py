@@ -109,6 +109,55 @@ def test_sell_after_buy_works():
     assert cid == "echo-5"
 
 
+def test_concurrent_sells_reserve_inventory():
+    """echo 2026-05-17 #6: two concurrent SELLs at the boundary used to
+    both pass the place check (no reservation), then both fill and drive
+    inventory negative (-0.001 BTC observed on 0510). Fix reserves
+    qty_remaining of every ACTIVE SELL before admitting a new one."""
+    b = _make_broker()
+    ts = _seed_book(b)
+    # Build inventory of exactly 0.001 BTC at price 99
+    b.place_limit(ts, "buy-1", "BUY", 99, 0.001)
+    ts += 1_000_000
+    # Sweep enough volume to fill the 0.5 queue ahead + our 0.001
+    b.apply_market_event(ts, 2, 99, 0.6)
+    assert abs(b.inventory - 0.001) < 1e-12, b.inventory
+
+    # First SELL of 0.001 — should pass (inventory == qty exactly)
+    ts += 1_000_000
+    cid1 = b.place_limit(ts, "sell-1", "SELL", 102, 0.001)
+    assert cid1 == "sell-1", "first SELL at boundary must pass"
+    assert "sell-1" in b.active_orders
+
+    # Second concurrent SELL of 0.001 — MUST reject; without
+    # reservation it used to pass and later drive inventory negative.
+    ts += 1_000_000
+    cid2 = b.place_limit(ts, "sell-2", "SELL", 103, 0.001)
+    assert cid2 is None, (
+        "second SELL must be rejected: inventory already fully reserved "
+        "by sell-1. Pre-fix this slipped through and the eventual fills "
+        "drove inventory to -0.001 (echo 0510 incident).")
+    rejects = [d for d in b.sim_decisions if d["event_type"] == "PLACE_REJECT"]
+    # Should include exactly one INVENTORY_INSUFFICIENT for sell-2.
+    inv_rejects = [r for r in rejects if "INVENTORY_INSUFFICIENT" in r["reason"]]
+    assert len(inv_rejects) == 1
+    assert inv_rejects[0]["client_oid"] == "sell-2"
+
+    # After sell-1 cancels, sell-2 (or a new SELL) becomes admissible.
+    ts += 1_000_000
+    b.cancel(ts, "sell-1")
+    # cancel ack lands after 100ms (cancel_latency_p50_ms=100). Advance.
+    ts += 200_000_000  # 200ms in ns
+    # Trigger _process_pending_cancels by stepping an arbitrary event
+    b.apply_market_event(ts, 0, 99, 0.5)  # bid update (no fill possible)
+    assert "sell-1" not in b.active_orders, "sell-1 should be cancelled now"
+    # Now a fresh SELL should be admissible — inventory unreserved.
+    ts += 1_000_000
+    cid3 = b.place_limit(ts, "sell-3", "SELL", 102, 0.001)
+    assert cid3 == "sell-3", (
+        "after sell-1 cancel ack, inventory unreserved; sell-3 must pass")
+
+
 def test_cancel_with_latency():
     b = _make_broker()
     ts = _seed_book(b)
