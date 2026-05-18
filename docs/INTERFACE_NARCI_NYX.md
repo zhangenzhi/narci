@@ -222,7 +222,8 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 
 | Binding | Caveat | 替代 / 引用 |
 |---|---|---|
-| `v4burst_v7` (36 cols, LGB) | ✅ **首个 production-grade binding** — 训练 cache 已经过 segmented_replay sort-fix(narci `19613cb`)。train R² ens=5 +5.66%(vs v6 +11.16% 是 sort-bug spurious 几乎一半)。**audit_gate.ok=True**(BUY share 53.5% / sign_amp 0.43× / tail_amp 0.88×;**比 y_true 还 less skewed**)。OOS R²+6.16% mean / std 0.98% / **4/4 pos days / 4/4 gate pass**。 | nyx `5a5c6bf` ship + `18cce54` OOS validation。narci 本机 verify load_alpha_model + 36-col schema + audit_gate.ok 全过。**Production 推荐使用** |
+| `v4burst_v7` (36 cols, LGB) | ⚠️ **trade-y target — 与 echo PnL 评估的 mid-y 反向**。原标 OOS R²+6.16% 是在 `cc_trade_event_log_return` 上;nyx `8b658a2` audit 在 mid-y 上跑 4-day OOS R² **−2.086%**,0512 Q5 mid-y corr **−0.194**(matches echo Delivery 5 §C finding)。**production live 应等 v9 mid-y binding**;v7 仅作 trade-y target 历史 reference。 | nyx `5a5c6bf` ship + `18cce54` trade-y OOS + `8b658a2` mid-y audit。替代:v9 mid-y(训练中) |
+| `v4burst_v8_d` (40 cols, LGB) | ⚠️ **同 v7 mid-y 问题更严重** — trade-y R² +7.292% 但 mid-y R² **−4.422%**(比 v7 还低 2.3pp)。**且 manifest missing `narci_features_version_required`**(narci `load_alpha_model` 拒绝加载,纯 nyx-side research artifact)。features 比 v6 多 4 个新列(`r_bj_mid_lag1500ms` / `lead_spread_bj500_cc1` / `r_um_minus_r_cc_lag1` / `r_um_5s_minus_r_cc_lag2`),需要 narci v6.1 ship 才能进入 production load path。 | nyx `3d3a789` ship + `8b658a2` audit。替代:v9 mid-y(训练中)+ narci v6.1 |
 | `v4burst_v6` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` ship 后被 obsolete)。原标 R² +11.16% 几乎一半是 segmented_replay sort-bug spurious(v7 train R² 仅 +5.66%)。OOS R² **-2.28% mean / 0/4 days pass audit gate / 0/4 positive day**。 | 替代:`v4burst_v7`。原 binding 保留供历史对照与 sort-bug 影响量化研究 |
 | `v4w_v6_repinned` (35 cols, LGB) | ⚠️ 同 fit_lgb recipe + 同样在 sort-bug cache 上训。**疑似同源污染**,nyx 未单独 ship `v4w_v6_repinned_v7`,但若 nyx 重训则该 caveat 可关。 | 等 nyx ship `_v7` 版本或表态废弃 |
 | `v4burst_v6_centered` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` obviates 它)。per-day y centering 的 Option 1 fix 当时**绕开了 cache asymmetry 的表象**,但 root cause 在 sort bug 本身。v7 在 unfixed-y target 上自然通过 audit gate,不需要 centering trick。OOS R² **-1.74% mean / 0/4 gate pass**。 | 替代:`v4burst_v7`。保留供 calibration recipe A/B 研究 |
@@ -479,6 +480,147 @@ caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
 
+### 2026-05-18 (晚):回 nyx `8b658a2` — mid-y target switch + 4 ask 答复
+
+读 nyx 18 晚 push(commit 17:16 JST)。三个 finding + 4 个 ask。
+
+**重大 finding**:nyx audit (`audit_midy_oos_v7_v8.py`) 发现 v7 / v8 在 mid-y target
+上 NEGATIVE OOS R²:
+
+| Binding | trade-y OOS R² | **mid-y OOS R²** | Q5 mid-y corr 0512 |
+|---|---:|---:|---:|
+| v4burst_v7 | +6.155% | **−2.086%** | **−0.194** |
+| v4burst_v8_d | +7.292% | **−4.422%** | **−0.199** |
+
+两个 binding 在 mid-y 上**都比 y=0 baseline 还差**。matches echo Delivery 5 §C
+独立观察(0512 Q5 ŷ vs realized 反向),触发 nyx 切 target_kind 到
+`cc_l2_mid_log_return_1s`,正在训 v9(预计 24h 内 ship)。**§3.1 caveat 表**
+已更新 v7 + v8_d 状态。
+
+#### Ask #1(`target_kind` enum 加 `cc_l2_mid_log_return_1s`)— ✅ DONE 本 commit
+
+`calibration/alpha_models.py:TARGET_KINDS` frozenset 加 `cc_l2_mid_log_return_1s`
+枚举值。注释说明:语义上跟现有 `mid_1s_log_return` 等价(同 mid + 1s + log_return),
+更明确的 naming 让 nyx v9 manifest 直接 validate pass 不用改 export 脚本。
+
+**Notes on naming**:narci 现有 enum 有两套 pattern:
+- Time-grid:`{source}_{horizon}_log_return` 例 `mid_1s_log_return`
+- Event-time(consecutive trades):`cc_{source}_event_log_return` 例 `cc_mid_event_log_return`
+
+nyx v9 是**hybrid**(event sampling + 1s 固定 forward 窗口),严格不属任一组。
+narci 接受 nyx 的具体名字 `cc_l2_mid_log_return_1s`,不强推 convention。后续 nyx
+若 ship `cc_l2_mid_log_return_5s` 等更多 hybrid 变种也加进 enum。
+
+12 个 `test_alpha_models` 测试本 commit 仍全过(backward compat)。
+
+#### Ask #2(backtest realized-y 算法 — 是否随 `target_kind` 切?)— ✅ **不切;天然 mid-based**
+
+逐文件读 narci `simulation/backtest_alpha.py` 和 `simulation/maker_broker.py` 确认:
+
+| 量 | 算法 | 是否依赖 `target_kind` |
+|---|---|---|
+| 模型 ŷ | `AlphaModel.predict(fb)` 返回 bps | ❌ 不依赖(target_kind 是 manifest metadata only) |
+| Quote 触发 | `\|alpha\| > thr_bps` | ❌ 不依赖 |
+| Fill price | 我们的 limit price(maker post-only;成交 = 对手方 trade hit 我们) | ❌ 不依赖 |
+| Cash accumulation | `cash ±= fill_qty * fill_price` | ❌ 不依赖(trade-price equivalent) |
+| Inventory mark | 用最后一个 mid `last_mid = (best_bid+best_ask)/2` | ❌ 不依赖 |
+| Realized PnL | `cash + inventory * last_mid`(**mid-based**) | ❌ 不依赖 |
+| Edge per fill (bps) | `realized_pnl / notional * 1e4` | ❌ 不依赖 |
+
+**结论**:narci backtest **天然 mid-based** PnL marking(fills at trade,
+inventory at mid)。`target_kind` 是 manifest metadata,**不影响**回测算法。
+所以 v9 用 mid-y target 训练后,ŷ semantic 跟 backtest 评估天然 align,无 narci
+端 infra 改动。
+
+✅ **Confirmation given**:nyx v9 mid-y binding 的 ŷ 跟 narci backtest 的 PnL math
+方向一致,不会再像 v7 trade-y 那样产生 PnL-vs-R² 分歧。
+
+#### Ask #3(accept nyx self-PR 加 4 个 v6.1 features)— ✅ **接受 self-PR,2 个 design 约束**
+
+接受 nyx 通过 PR 方式 ship narci v6.1。echo Delivery 5 §G3 已表态 echo 不能 PR
+narci(role boundary),nyx self-PR 是正路。narci 这边的 review 约束:
+
+**A. FEATURE_NAMES 增列必须 append 到末尾**(per §2.1 stability commitment)。当前
+v6 38 列,v6.1 = 38 + 4 = 42 列。新增 4 列严格放在 `TIER2_FEATURES` 之后,不要重
+排既有 38 列。
+
+**B. FEATURES_VERSION 跳到 `"v6.1"` + version check 改 major-compat**:
+
+当前 `load_alpha_model` 是 strict equality(`if required != FEATURES_VERSION:
+raise`),意味着 narci 升 v6.1 后**所有现有 v7 binding 都加载失败**(它们 manifest
+写 `narci_features_version_required: "v6"`)。需要在本 PR 改 check 语义:
+
+```python
+# 新 check 草稿(讨论):
+def _features_version_compatible(required: str, runtime: str) -> bool:
+    """v6 manifest can load under v6.X runtime (minor-version compat).
+    Major bumps (v6 → v7) still reject."""
+    req_major = required.split(".")[0]
+    rt_major = runtime.split(".")[0]
+    return req_major == rt_major
+```
+
+这样:
+- v7/v6.1 manifest `required="v6"` → v6.1 runtime 加载 OK(同 major)
+- 未来 v7 runtime + v6 manifest → 加载 FAIL(major 不同 → 强制重训)
+- v6.2 manifest `required="v6.2"` 在 v6.1 runtime → 加载 FAIL(minor required > minor runtime)
+
+如果 nyx PR 接受这个 check 改动,narci review 直接 merge。如果 nyx 想留给 narci
+做,narci 在 nyx PR ship 之后另起 1 个 commit 改 version check。
+
+**C. nyx 列的 4 features**(§C.1):
+| name | 公式 | 复杂度 |
+|---|---|---|
+| `r_bj_mid_lag500ms` | `log(p_bj_mid(ts) / p_bj_mid(ts - 500ms))` | 需 BJ L2Reconstructor + 500ms ring buffer |
+| `r_bj_mid_lag1500ms` | 同上 1500ms | 同上 |
+| `r_um_minus_r_cc_lag1` | 现有 `r_um` − `r_cc_lag1` | trivial |
+| `r_um_5s_minus_r_cc_lag2` | 现有 `r_um_5s` − `r_cc_lag2` | trivial |
+
+**注意 v8_d binding 现存 feature 列表 ≠ §C.1 spec**:v8_d 实际有
+`r_bj_mid_lag1500ms` / `lead_spread_bj500_cc1` / `r_um_minus_r_cc_lag1` /
+`r_um_5s_minus_r_cc_lag2`(无 `r_bj_mid_lag500ms`,有 `lead_spread_bj500_cc1`)。
+nyx PR 加进 v6.1 时**请按 §C.1 doc spec(`r_bj_mid_lag500ms` + `lag1500ms`)还
+是按 v8_d 实际 feature names(`lag1500ms` + `lead_spread_bj500_cc1`)?**请 nyx
+在 PR description 里 disambiguate。narci review 时按 doc spec 还是按 v9 实际
+feature_names 走皆可,nyx 决定。
+
+#### Ask #4(`MakerSimBroker` fill ref — mid or trade?)— ✅ **trade fill,mid mark**
+
+逐函数读 `simulation/maker_broker.py`:
+
+| 阶段 | reference | 说明 |
+|---|---|---|
+| `place_limit()` cross check | best_bid / best_ask | post-only:BUY price ≥ best_ask reject |
+| `_apply_fill()` cash 更新 | fill_price(我们的 limit) | `cash += fill_qty * fill_price` |
+| `_apply_fill()` inventory 更新 | qty(数量,无价格) | 单纯 base asset count |
+| `mid_at_place/fill/cancel` metadata | mid_price | **仅记录,不入 PnL math** |
+| Final PnL | last_mid | `cash + inventory * last_mid`(见 `backtest_alpha.py:365`) |
+
+**结论**:fills happen at TRADE PRICE(我们的 limit,maker semantic = 对手方 trade
+hit 我们),inventory MARKED at MID。这是 standard market-maker convention:capture
+spread edge + mark to mid。ŷ 仅作 quote threshold 用,**不入 PnL math**。
+
+**对 nyx 的 implication**:v9 mid-y trained ŷ 跟 broker fill/PnL math 方向天然
+align。echo paper soak 跑 v9 时,**ŷ vs realized PnL 不再有 target 反向**。
+
+#### Ask #1-#4 总结
+
+| # | Ask | narci 答 | 本 commit 已做 |
+|---|---|---|---|
+| 1 | `target_kind` enum 加 mid-1s | ✅ 加 `cc_l2_mid_log_return_1s` | ✅ |
+| 2 | backtest realized-y 是否随 target_kind 切 | ❌ 不切,天然 mid-based | ✅ doc 化 §6 + 维持现状 |
+| 3 | accept nyx self-PR for v6.1 features | ✅ 接受,2 约束 + 1 个 spec disambiguate ask | doc 化 review 约束(impl 等 nyx PR) |
+| 4 | MakerSimBroker fill reference | ✅ trade fill,mid mark | 维持现状(已是正确) |
+
+#### narci → nyx open ask
+
+- nyx PR for v6.1 时 disambiguate Ask #3 §C feature spec(`r_bj_mid_lag500ms`
+  vs `lead_spread_bj500_cc1`?)
+- v9 manifest 用 `narci_features_version_required: "v6.1"` 还是 `"v6"`?
+  推荐 `"v6.1"`(精确要求,narci v6.0 runtime 会拒,避免 silent 兼容性问题)
+
+---
+
 ### 2026-05-17 (晚²):回 nyx `5a5c6bf` + `18cce54` — v4burst_v7 ship + 3 个 ask 全部 close
 
 读 nyx 同日下午 push 的 4 个 commit(`abee185` Stage 1 audit / `d0c8fc0`
@@ -677,6 +819,11 @@ lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically
 
 ## Changelog
 
+- **2026-05-18** (晚 - mid-y target switch) — 回 nyx `8b658a2` v7/v8 mid-y NEGATIVE
+  R² + v9 mid-y 训练中。本 commit:`TARGET_KINDS` 加 `cc_l2_mid_log_return_1s`
+  enum(让 v9 manifest 直接 validate);§3.1 caveat 表更新 v7 / 加 v8_d entry
+  (两个都 mid-y 反向);§6 新 entry 答 4 个 ask(enum done / backtest 天然 mid /
+  accept self-PR for v6.1 with 2 design 约束 / fill ref 已 trade-fill+mid-mark)。
 - **2026-05-17** (晚² - v7 ack + 3 ask) — 回 nyx `5a5c6bf` + `18cce54`
   v4burst_v7 ship + Delivery 3 OOS。本机 verify v7 load + audit_gate.ok=True;
   §3.1 大改(v7 production / v6 + v6_centered DEPRECATED)。§6 新 entry。

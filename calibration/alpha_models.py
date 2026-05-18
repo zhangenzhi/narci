@@ -67,6 +67,14 @@ TARGET_KINDS = frozenset({
     # decide on every CC trade arrival.
     "cc_trade_event_log_return",
     "cc_mid_event_log_return",
+    # Hybrid: event sampling (`sampling_mode: event_at_cc_trade`) +
+    # fixed forward horizon on CC L2-reconstructed mid. Added 2026-05-18
+    # per nyx INTERFACE_NYX_NARCI.md §E #1 — v9 mid-y bindings sample at
+    # each CC trade arrival but compute forward y as
+    # `log(p_cc_l2_mid(ts+Xms) / p_cc_l2_mid(ts))`. Semantically the
+    # same as `mid_1s_log_return` (mid + 1s + log_return); the more
+    # explicit name lets nyx's v9 manifest validate without changes.
+    "cc_l2_mid_log_return_1s",
 })
 
 
