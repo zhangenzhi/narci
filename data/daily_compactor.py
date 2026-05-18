@@ -163,6 +163,24 @@ class DailyCompactor:
     def archive_to_cold(self):
         if not self.cold_dir or not os.path.exists(self.daily_file_path):
             return
+        # Defense: refuse to archive an in-progress UTC day. The realtime
+        # daily file is rebuilt every compact run from current fragments,
+        # so running compact mid-UTC-day produces a partial daily; once
+        # that lands in cold tier this method's idempotent skip below
+        # locks the partial version in place forever (real incident
+        # 2026-05-18: 12:30 JST manual compact archived 72 venue/symbol
+        # combos at 2.5h coverage for UTC day 0517, had to be deleted +
+        # re-compacted). Cron now uses --date yesterday-UTC, but this
+        # guard also protects against manual misuse.
+        today_utc = datetime.utcnow().date()
+        if self.target_date >= today_utc:
+            logger.warning(
+                f"[archive_to_cold] 拒绝归档 {self.target_date}：UTC 日尚未结束"
+                f" (今天 UTC={today_utc})，会产生 partial daily。"
+                f" 请明天再跑或显式 --date yesterday。源文件保留在 realtime,"
+                f" 不进入 cold。"
+            )
+            return
         dest = os.path.join(self.cold_dir, os.path.basename(self.daily_file_path))
         if os.path.exists(dest):
             logger.info(f"冷数据已存在，跳过: {dest}")
