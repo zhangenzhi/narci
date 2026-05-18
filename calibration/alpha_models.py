@@ -75,6 +75,22 @@ TARGET_KINDS = frozenset({
     # same as `mid_1s_log_return` (mid + 1s + log_return); the more
     # explicit name lets nyx's v9 manifest validate without changes.
     "cc_l2_mid_log_return_1s",
+    # Added 2026-05-19 per nyx INTERFACE_NYX_NARCI.md §G #1 — v9 micro-y
+    # variant: same hybrid sampling, target is qty-weighted L2 microprice
+    # forward 1s log return. Per nyx Delivery 3.9 framing, this is an
+    # "adverse-selection-magnitude predictor" (paired with v8 D
+    # aggressor-direction signal).
+    "cc_l2_microprice_log_return_1s",
+    # Added 2026-05-19 per nyx INTERFACE_NYX_NARCI.md §G #1 — RV3-style
+    # bindings: target is hypothetical maker-fill PnL conditional on
+    # placing a BUY/SELL quote at sample_ts, holding τ ms (with nyx's
+    # inline zero-queue fill simulator at prototype stage; later moves
+    # to narci.simulation.MakerSimBroker.label_hypothetical_fill once
+    # that API exists). Greek τ kept verbatim since nyx uses it; future
+    # canonical entries should prefer ASCII (e.g. `_tau1000ms` or
+    # `_1000ms`) to avoid cross-tool encoding issues.
+    "cc_maker_conditional_fill_pnl_buy_τ1000ms",
+    "cc_maker_conditional_fill_pnl_sell_τ1000ms",
 })
 
 

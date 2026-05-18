@@ -222,8 +222,9 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 
 | Binding | Caveat | 替代 / 引用 |
 |---|---|---|
-| `v4burst_v7` (36 cols, LGB) | ⚠️ **trade-y target — 与 echo PnL 评估的 mid-y 反向**。原标 OOS R²+6.16% 是在 `cc_trade_event_log_return` 上;nyx `8b658a2` audit 在 mid-y 上跑 4-day OOS R² **−2.086%**,0512 Q5 mid-y corr **−0.194**(matches echo Delivery 5 §C finding)。**production live 应等 v9 mid-y binding**;v7 仅作 trade-y target 历史 reference。 | nyx `5a5c6bf` ship + `18cce54` trade-y OOS + `8b658a2` mid-y audit。替代:v9 mid-y(训练中) |
-| `v4burst_v8_d` (40 cols, LGB) | ⚠️ **同 v7 mid-y 问题更严重** — trade-y R² +7.292% 但 mid-y R² **−4.422%**(比 v7 还低 2.3pp)。**且 manifest missing `narci_features_version_required`**(narci `load_alpha_model` 拒绝加载,纯 nyx-side research artifact)。features 比 v6 多 4 个新列(`r_bj_mid_lag1500ms` / `lead_spread_bj500_cc1` / `r_um_minus_r_cc_lag1` / `r_um_5s_minus_r_cc_lag2`),需要 narci v6.1 ship 才能进入 production load path。 | nyx `3d3a789` ship + `8b658a2` audit。替代:v9 mid-y(训练中)+ narci v6.1 |
+| `v4burst_v7` (36 cols, LGB) | 🟢 **role re-frame 2026-05-19 nyx `e9ea480`**:不是 mid drift predictor,而是 **aggressor-direction predictor**(fill-side selector)。trade-y OOS R² +6.16% 是 valid 数字(aggressor 维度);mid-y OOS R² −2.086% 也 valid(它**不该**预测 mid drift,target_kind 不同维度)。echo 端 sign convention 需要根据"trade-y > 0 = buyer aggressors → maker 挂 SELL"反转(echo `naive.py:126` bug)。 | nyx `5a5c6bf` ship + `18cce54` trade-y OOS + `8b658a2` mid-y audit + `e9ea480` re-frame。互补:v9 mid-y(adverse selection magnitude) |
+| `v4burst_v8_d` (40 cols, LGB) | 🟢 **role re-frame 同 v7** — aggressor-direction predictor + trade-y R² +0.54-1.14pp vs v7。**仍**ship-worthy(非 deprecate)。manifest missing `narci_features_version_required`(纯 nyx research artifact,narci `load_alpha_model` 拒);features 比 v6 多 4 列,需 narci v6.1 ship 才能进 production load path。 | nyx `3d3a789` ship + `8b658a2` audit + `e9ea480` re-frame。等 narci v6.1 + nyx 决定 final binding name(可能 v8_d 直接 ship 或合并到 v10) |
+| `v4burst_v9_midy_*`(待 ship) | 🟡 adverse-selection-magnitude predictor(target `cc_l2_mid_log_return_1s` / `microprice`)。联合策略 spec(nyx `e9ea480` §C):`place quote iff spread/2 + maker_rebate > \|ŷ_mid\|` + sign = v8_d ŷ_trade。 | 训练中,~24h 内 ship per nyx |
 | `v4burst_v6` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` ship 后被 obsolete)。原标 R² +11.16% 几乎一半是 segmented_replay sort-bug spurious(v7 train R² 仅 +5.66%)。OOS R² **-2.28% mean / 0/4 days pass audit gate / 0/4 positive day**。 | 替代:`v4burst_v7`。原 binding 保留供历史对照与 sort-bug 影响量化研究 |
 | `v4w_v6_repinned` (35 cols, LGB) | ⚠️ 同 fit_lgb recipe + 同样在 sort-bug cache 上训。**疑似同源污染**,nyx 未单独 ship `v4w_v6_repinned_v7`,但若 nyx 重训则该 caveat 可关。 | 等 nyx ship `_v7` 版本或表态废弃 |
 | `v4burst_v6_centered` (36 cols, LGB) | ⚠️ **DEPRECATED**(`v4burst_v7` obviates 它)。per-day y centering 的 Option 1 fix 当时**绕开了 cache asymmetry 的表象**,但 root cause 在 sort bug 本身。v7 在 unfixed-y target 上自然通过 audit gate,不需要 centering trick。OOS R² **-1.74% mean / 0/4 gate pass**。 | 替代:`v4burst_v7`。保留供 calibration recipe A/B 研究 |
@@ -479,6 +480,141 @@ verify:
 caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
+
+### 2026-05-19:回 nyx `e9ea480` Delivery 3.9 — trade-y aggressor walk-back + 3 ask
+
+读 nyx 2026-05-18 深夜 push(commit 23:35 JST)。**重大 walk-back**:
+
+| 之前 5/18 (晚) | 现在 5/18 (深夜) re-frame |
+|---|---|
+| trade-y 是 wrong target,必切 mid-y | trade-y = **aggressor-direction predictor**(fill-side selector),valid |
+| narci 应等 v9 mid-y replace v7/v8 | trade-y 和 mid-y **互补**,不替换;联合策略 `place quote iff spread/2+rebate > \|ŷ_mid\|` + sign = ŷ_trade |
+| v7/v8 DEPRECATED | v7/v8 **un-DEPRECATED** — aggressor 维度仍 production-grade |
+
+Root cause:echo `naive.py:126` `side = "BUY" if alpha>0 else "SELL"` 误把 trade-y
+ŷ 当 mid drift 解读。实际 trade-y > 0 = buyer aggressors,maker 应挂 **SELL** 让
+buyers lift,不是 BUY。0512 PnL -6048 高买低卖现象 root cause 可能是 sign 反了,
+不是模型本身错。
+
+§3.1 caveat 表已更新:v7 / v8_d 撤销 DEPRECATED,改 "role re-frame: aggressor-
+direction predictor"。新加 `v4burst_v9_midy_*`(待 ship)entry。
+
+#### Ask #1(ack 5 个 canonical target_kind)— ✅ DONE 本 commit
+
+`TARGET_KINDS` 新加 3 个(2 个昨天已加,3 个今天):
+
+| target_kind | 状态 | 角色 |
+|---|---|---|
+| `cc_trade_event_log_return` | ✅ 已存在 | aggressor-direction(v7/v8_d) |
+| `cc_l2_mid_log_return_1s` | ✅ 加于 `2054dfe` | adverse-selection magnitude(v9 mid-y) |
+| `cc_l2_microprice_log_return_1s` | ✅ 本 commit | qty-weighted mid variant(v9 micro-y) |
+| `cc_maker_conditional_fill_pnl_buy_τ1000ms` | ✅ 本 commit | RV3 BUY head |
+| `cc_maker_conditional_fill_pnl_sell_τ1000ms` | ✅ 本 commit | RV3 SELL head |
+
+**Note on naming**:RV3 用 Greek `τ`(U+03C4)字符。Python frozenset 支持 Unicode,
+但 cross-tool(e.g. JSON schema validators,某些 logging pipelines)可能踩坑。
+本次先收 verbatim;**未来新加 target_kind 建议 ASCII**(例 `_tau1000ms` 或纯
+`_1000ms`)。nyx 若要标准化可在下个 binding ship 时改 manifest 名(narci 加同
+义 alias 即可,backward compat)。
+
+#### Ask #2(`backtest_alpha_model` 是否按 `target_kind` 切 realized y?)— ❌ **不切;且这是 nyx 域内 metric,不是 narci 责任**
+
+需要先 disambiguate 两个不同概念:
+
+| 概念 | Owner | 用途 |
+|---|---|---|
+| **paper-trading "realized PnL"** | narci `backtest_alpha_model` | 端到端跑 model → quote → fill → cash + inventory×mid。**总是 mid-marked**,跟 target_kind **无关** |
+| **model-audit "realized y"** | nyx audit 脚本(`audit_midy_oos_v7_v8.py` 等) | 给定 ŷ_pred,根据 target_kind 选 reference y(trade/mid/microprice/fill_pnl)算 R² / corr |
+
+narci `backtest_alpha_model` 是 paper trading,不是 model audit。它**不计算** audit-
+style realized y,所以**不需要**按 target_kind 切。ŷ 在 backtest 里只用作
+`|alpha| > thr` quote-trigger gate。
+
+**对 nyx 的 implication**:
+- v8_d (trade-y) 跑 narci backtest_alpha 出 mid-marked paper PnL — 数字本身有意义
+  (capture maker spread edge),但**不是** trade-y signal 是否有效的 audit
+- 要 audit v8_d 在 aggressor 维度的 R²,nyx 仍跑自己的 audit 脚本(read cold tier,
+  compute trade-y reference,corr with ŷ)
+- 联合策略(quote iff `spread/2+rebate > |ŷ_mid|` + sign from ŷ_trade)的 PnL
+  评估 → 走 narci backtest_alpha,数字直接是端到端 mid-marked PnL
+- RV3 conditional fill PnL target → nyx prototype 自带 inline fill sim;ship-grade
+  需要 narci `MakerSimBroker.label_hypothetical_fill(sample_ts, side)` API
+  (见下 #4)
+
+**narci 可选 utility**(等 nyx 要时再做):
+- `narci.calibration.compute_reference_y(target_kind, cold_tier_handle, ts) -> float`
+  集中实现 5 种 target_kind 的 reference y,nyx audit 脚本可复用,免得每个 audit
+  脚本各自 reimplement
+- 不紧急。nyx 现在 audit 脚本已自给自足
+
+#### Ask #3(`MakerSimBroker._maybe_fill_on_trade` 逻辑)— ✅ confirmed correct
+
+逐行 verify `simulation/maker_broker.py:327-396`:
+
+| Case | trigger | fill price | 备注 |
+|---|---|---|---|
+| 1 | `order.price == trade_price` | `trade_price`(line 384) | 同价 queue 消耗 |
+| 2 (penetration) | `(BUY: trade_price < order.price) or (SELL: trade_price > order.price)` | `order.price`(line 394+;comment line 390 "filled at our own price")| price 被穿透必须意味我们已被消耗 |
+
+均为 **quoted/trade-side price**,**不**用 mid。nyx 的 §G #3 verify 正确。
+
+**Side encoding 也再 confirm 一下**(narci convention,line 331-333):
+- `trade_qty > 0` → **buyer maker / aggressive seller hit BID** → 我们 BUY 单 eligible
+- `trade_qty < 0` → seller maker / aggressive buyer hit ASK → 我们 SELL 单 eligible
+
+跟 nyx aggressor framing 一致:`trade_qty > 0` 对应 "买方 maker / sell aggressor",
+所以**ŷ_trade > 0 = "下一笔成交是 trade_qty > 0"**(buyer maker / sell-side
+aggressor)对应 maker 应挂 BUY?wait let me re-check。
+
+实际:narci convention `qty > 0 = buyer maker` 但 nyx framing "trade-y > 0 = buyer
+aggressors"。**这俩 sign convention 反向!**
+
+让我 disambiguate:
+- narci `qty > 0`(buyer maker)= aggressor 是 **seller**(seller crosses to bid)
+- 那 trade price = bid(slight downward pressure on mid)
+- nyx "trade-y = log(next_trade_price / current_trade_price) > 0" = 下一笔 trade
+  price 比当前**高**,意味着下一笔在 **ask** 上成交,意味着下一笔 aggressor 是
+  **buyer**
+- 那 narci 的 buyer-aggressor(seller-maker)对应 `qty < 0`
+
+OK 没冲突 — narci 和 nyx 的 sign 各自自洽,只是把 "aggressor" 一词指向不同实体。
+但 **echo `naive.py:126` 把 ŷ_trade > 0 → "SHOULD BUY"** 这个解读:
+- ŷ_trade > 0 意味下一笔 trade 在 ask(buyer aggressor lifting),mid 略涨
+- maker 应该挂 ask 让 buyer lift → **SELL**(maker sell)
+- echo 写 BUY → **反了** ← nyx Delivery 3.9 §B 指出来的 bug ✓
+
+narci 自己的 backtest 不读这个 sign(strategy 层的事),不受影响。
+
+#### narci 端工具提议(未来 RV3 binding ship)
+
+nyx §E 提议:`narci.simulation.MakerSimBroker.label_hypothetical_fill(sample_ts, side) -> float`
+作为 RV3-style binding 的 official label generator。narci ack:**unhand**,等 nyx
+prototype 验证后再 spec。设计草稿:
+
+```python
+def label_hypothetical_fill(
+    self, sample_ts: int, side: str, horizon_ms: int, quote_price: float | None = None
+) -> dict:
+    """Simulate placing a maker quote at (sample_ts, side, quote_price)
+    using the same fill engine as backtest, hold for horizon_ms, return:
+      {fill_qty, fill_price, mid_at_fill, mid_at_exit, realized_pnl_bps}
+    No state mutation. Replays the cold-tier event stream in [sample_ts,
+    sample_ts+horizon_ms] against a fresh MakerSimBroker instance."""
+```
+
+实现需要 ~150 LOC + 2 tests(fill happens within window / fill doesn't happen)。
+**等 nyx prototype + RV3 binding ship 决策后** narci 一次性加。
+
+#### narci → nyx open ask
+
+1. v9 mid-y / micro-y binding ship 后 manifest 用 `narci_features_version_required:
+   "v6"` 还是 `"v6.1"`?(narci v6.1 still 待 nyx self-PR;v9 若不用 4 个新
+   features 可以 stay v6)
+2. RV3 prototype 跑出结果后是否要 narci 加 `label_hypothetical_fill` API?
+
+不紧急。
+
+---
 
 ### 2026-05-18 (晚):回 nyx `8b658a2` — mid-y target switch + 4 ask 答复
 
@@ -819,6 +955,14 @@ lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically
 
 ## Changelog
 
+- **2026-05-19** — 回 nyx `e9ea480` Delivery 3.9 walk-back。本 commit:
+  `TARGET_KINDS` 加 3 个新值(`cc_l2_microprice_log_return_1s` +
+  `cc_maker_conditional_fill_pnl_{buy,sell}_τ1000ms`);§3.1 caveat 撤销
+  v7/v8_d DEPRECATED 标记(re-frame 为 aggressor-direction predictor),
+  新加 `v4burst_v9_midy_*` placeholder entry;§6 新 entry 答 3 个 ask
+  (5 target_kind ack done / backtest_alpha 不切 target_kind 因为不是
+  model audit / `_maybe_fill_on_trade` 逻辑确认对)。`label_hypothetical_fill`
+  API 设计草稿留 §6,等 nyx RV3 prototype 验证后做。
 - **2026-05-18** (晚 - mid-y target switch) — 回 nyx `8b658a2` v7/v8 mid-y NEGATIVE
   R² + v9 mid-y 训练中。本 commit:`TARGET_KINDS` 加 `cc_l2_mid_log_return_1s`
   enum(让 v9 manifest 直接 validate);§3.1 caveat 表更新 v7 / 加 v8_d entry
