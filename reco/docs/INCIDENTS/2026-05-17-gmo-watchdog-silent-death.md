@@ -5,6 +5,9 @@
 - **Affected venues**: `gmo/spot`、`gmo/leverage`(其他 venue 全正常)
 - **Time window**: 2026-05-16 12:58 UTC ~ 2026-05-17 06:28 UTC,**约 17.5h**
 - **Resolution commit**: `9779ac4 fix(exchange/gmo): watchdog ws.closed ...`
+- **Follow-up**: `9779ac4` 让 watchdog 工作后 verify 阶段发现更深一层 bug
+  (GMO ERR-5003 rate-limit + reconnect storm),完整链路见
+  [2026-05-17-gmo-rate-limit-reconnect-storm.md](./2026-05-17-gmo-rate-limit-reconnect-storm.md)
 - **关联事故**: [2026-05-16-gmo-silent-drop.md](./2026-05-16-gmo-silent-drop.md)
   — 同 venue,同样「无数据无重连」形态,但**不同根因**(上次是 case mismatch,
   这次是 watchdog 静默崩)
