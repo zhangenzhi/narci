@@ -149,7 +149,10 @@ class GmoAdapter(ExchangeAdapter):
           1. 外层 while recorder.running 重连 loop
           2. 每轮 REST snapshot init (装 orderbooks 状态机首版)
           3. websockets.connect + send 每个 sym 的 2 个 subscribe
+             (subscribe 之间 sleep 200ms,避免 burst 撞 ERR-5003 rate limit)
           4. 消息分发:
+             - error 字段非空 → server error (e.g. ERR-5003 Request too many),
+               关闭当前连接进入指数 backoff (避免 reconnect storm 再撞 rate limit)
              - orderbooks: full snapshot → reset book + 写 side=3/4 records
              - trades: 写 side=2 records
           5. Watchdog task — depth/trade 静默阈值跟 record_stream 一致
@@ -160,12 +163,19 @@ class GmoAdapter(ExchangeAdapter):
         except ImportError as exc:
             raise RuntimeError("gmo custom_stream 需要 websockets 库") from exc
 
+        # 累积 server error 计数 — 指数 backoff (10s, 20s, 40s, ... 600s 上限)。
+        # 收到任何有效 ch 消息 (orderbooks / trades) 时 reset 为 0。
+        # incident: reco/docs/INCIDENTS/2026-05-17-gmo-rate-limit-reconnect-storm.md
+        if not hasattr(self, "_subscribe_error_count"):
+            self._subscribe_error_count = 0
+
         while recorder.running:
             watchdog_task: asyncio.Task | None = None
             ws_state = {
                 "last_depth_msg_t": 0.0,
                 "last_trade_msg_t": 0.0,
                 "forced_reconnect_reason": None,
+                "server_error": None,
             }
             ws = None
             try:
@@ -173,7 +183,7 @@ class GmoAdapter(ExchangeAdapter):
                 for sym in recorder.symbols:
                     await recorder.init_symbol_snapshot(sym)
 
-                # 2. WS connect + subscribe
+                # 2. WS connect + subscribe (subscribe 之间 sleep 200ms 防 burst)
                 ws = await websockets.connect(self.WS_URL)
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 gmo WS 已连接")
 
@@ -184,12 +194,14 @@ class GmoAdapter(ExchangeAdapter):
                         "channel": "orderbooks",
                         "symbol": native,
                     }))
+                    await asyncio.sleep(0.2)
                     await ws.send(json.dumps({
                         "command": "subscribe",
                         "channel": "trades",
                         "symbol": native,
                         "option": "TAKER_ONLY",
                     }))
+                    await asyncio.sleep(0.2)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 已订阅 "
                           f"orderbooks+trades for {native}")
 
@@ -244,6 +256,25 @@ class GmoAdapter(ExchangeAdapter):
                         msg = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
+
+                    # GMO server error response (e.g. ERR-5003 Request too many).
+                    # 不能 silent ignore — 否则 watchdog 180s 后又 trigger 重连
+                    # 又撞同一 rate limit。直接退出当前 session,外层用累积 error
+                    # 计数算指数 backoff。
+                    # incident: reco/docs/INCIDENTS/2026-05-17-gmo-rate-limit-reconnect-storm.md
+                    if msg.get("error"):
+                        err = msg.get("error")
+                        self._subscribe_error_count += 1
+                        ws_state["server_error"] = err
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                              f"⚠️ gmo server error #{self._subscribe_error_count}: "
+                              f"{err},退出当前 session 进入 backoff")
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        break
+
                     ch = msg.get("channel", "")
                     sym_native = msg.get("symbol", "")
                     # GMO subscribe 啥就推啥 (实测 "BTC" / "BTC_JPY" 全大写,
@@ -253,6 +284,13 @@ class GmoAdapter(ExchangeAdapter):
                     rec_sym = self.to_std(sym_native)
                     if not ch or rec_sym not in recorder.symbols:
                         continue
+
+                    # 收到有效 channel 消息 → 之前的 server error 已恢复,reset 计数
+                    if self._subscribe_error_count > 0:
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                              f"✅ gmo 收到 {ch} 消息,清空 error 计数 "
+                              f"(之前累积 {self._subscribe_error_count})")
+                        self._subscribe_error_count = 0
 
                     now = time.time()
                     if ch == "orderbooks":
@@ -305,6 +343,18 @@ class GmoAdapter(ExchangeAdapter):
                         await ws.close()
                     except Exception:
                         pass
+
+            # 本轮收到过 server error → 指数 backoff 再重连,避免 reconnect storm
+            # 撞 ERR-5003 rate limit (GMO 触发后 IP 冷却可能需要 ~10 min)。
+            # 10s, 20s, 40s, 80s, 160s, 320s, 600s 上限。reset 由收到有效 channel
+            # 消息时在主 loop 内做。
+            if ws_state.get("server_error") and recorder.running:
+                exp = min(self._subscribe_error_count, 6)
+                backoff = min(600, 10 * (2 ** exp))
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] "
+                      f"⏸ gmo server error,backoff {backoff}s 后重连 "
+                      f"(累积 {self._subscribe_error_count} 次)")
+                await asyncio.sleep(backoff)
 
     # ------------------------------------------------------------------ #
     # 对齐 (无 update-id;snapshot 每条覆盖)
