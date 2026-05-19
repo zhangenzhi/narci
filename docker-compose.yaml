@@ -229,13 +229,20 @@ services:
     build: .
     container_name: narci-event-publisher
     profiles: [global]
+    # 覆盖 Dockerfile ENTRYPOINT (bash deploy/entrypoint.sh),
+    # entrypoint.sh 只识别 record/shell mode,publisher 直接 python -m。
+    entrypoint: ["python"]
     command:
-      ["python", "-m", "data.event_publisher", "--config",
+      ["-m", "data.event_publisher", "--config",
        "/app/configs/event_publisher.yaml"]
     volumes:
       - ./configs:/app/configs:ro
     ports:
       - "9100:9100"
+    # 关掉 Dockerfile 默认 healthcheck (curl :8079/health),
+    # publisher 不监听 8079;后续可加 :9101 health endpoint。
+    healthcheck:
+      disable: true
     restart: unless-stopped
     logging:
       driver: json-file
