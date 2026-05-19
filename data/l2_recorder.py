@@ -104,6 +104,25 @@ class L2Recorder:
         self.stream_aligned = {s: False for s in self.symbols}
         self.running = True
 
+        # 6. Optional live-event TCP publisher (echo D9, 2026-05-19 pivot).
+        # When `publisher_port` is set in venue config, each WS event tee'd
+        # off self.buffers[sym].extend(records) site is also broadcast over
+        # TCP/JSON-lines to subscribed clients. Used on narci-sg to forward
+        # UM/BS events to echo-air which can't subscribe Binance global
+        # directly from JP IP. See data/live_publisher.py + echo
+        # INTERFACE_ECHO_NARCI.md §14.
+        publisher_port = self.config.get("publisher_port")
+        publisher_venue_tag = self.config.get("publisher_venue_tag")
+        self.live_publisher = None
+        if publisher_port and publisher_venue_tag:
+            from data.live_publisher import LivePublisher
+            self.live_publisher = LivePublisher(
+                port=int(publisher_port),
+                venue_tag=str(publisher_venue_tag),
+            )
+            print(f"📡 Live publisher enabled on port {publisher_port} "
+                  f"venue={publisher_venue_tag!r}")
+
         # bitbank 等用 socket.io 的 adapter 不走 ws_url 路径,跳过构造。
         # 见 ExchangeAdapter.uses_custom_stream() 契约。
         if self.adapter.uses_custom_stream():
@@ -140,6 +159,8 @@ class L2Recorder:
                 self.orderbooks[sym]["asks"][float(p)] = float(q)
 
             self.buffers[sym].extend(records)
+            if self.live_publisher is not None:
+                self.live_publisher.fanout(records)
             self.last_update_ids[sym] = last_id
             self.is_initialized[sym] = True
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 {sym.upper()} 初始快照已就绪, ID: {last_id}")
@@ -160,6 +181,8 @@ class L2Recorder:
 
         records = self.adapter.standardize_event("depth", data)
         self.buffers[sym].extend(records)
+        if self.live_publisher is not None:
+            self.live_publisher.fanout(records)
 
         # 更新内存状态机（0=bid, 1=ask）
         for rec in records:
@@ -262,6 +285,8 @@ class L2Recorder:
                             last_trade_msg_t = now
                             records = self.adapter.standardize_event("trade", data)
                             self.buffers[sym].extend(records)
+                            if self.live_publisher is not None:
+                                self.live_publisher.fanout(records)
 
                     if forced_reconnect_reason:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] "
@@ -362,6 +387,8 @@ class L2Recorder:
                 for p, q in self.orderbooks[sym]["asks"].items():
                     snapshot_records.append([now_ms, 4, float(p), float(q)])
                 self.buffers[sym].extend(snapshot_records)
+                if self.live_publisher is not None:
+                    self.live_publisher.fanout(snapshot_records)
 
                 try:
                     df = pd.DataFrame(data, columns=["timestamp", "side", "price", "quantity"])
@@ -471,6 +498,11 @@ class L2Recorder:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(self._handle_shutdown(s)))
 
+        # Live publisher (echo D9): start BEFORE recorder tasks so the first
+        # events flowing through buffers.extend() have a publisher to fanout to.
+        if self.live_publisher is not None:
+            await self.live_publisher.start()
+
         # bitbank 等 socket.io adapter:adapter 自管整个 stream 生命周期
         # (REST snapshot + connect + room join + 消息分发 + 重连),recorder
         # 只需要起一个 task 等它跑。常规 WS adapter:每条 URL 一个 task,沿用旧
@@ -495,6 +527,9 @@ class L2Recorder:
                 await t
             except (asyncio.CancelledError, Exception):
                 pass
+
+        if self.live_publisher is not None:
+            await self.live_publisher.stop()
 
         await self._flush_all_buffers()
         print("✅ 所有缓冲区已落盘")

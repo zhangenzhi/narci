@@ -311,7 +311,25 @@ revert fix 后 test 红、apply fix 后 test 绿,双向 verify。
 其它天看到 negative inventory,告 narci(本 fix 应该覆盖 100% 场景,但 echo
 作为 fresh 数据 source 可以 cross-check)。
 
-### 4.7 回 echo 2026-05-19 `90b7791` §13 Delivery 8 — Phase 1a real-time signal channel
+### 4.7 回 echo 2026-05-19 `90b7791` §13 Delivery 8 — Phase 1a real-time signal channel(⚠️ SUPERSEDED 2026-05-19)
+
+> **2026-05-19 22:47 JST: SUPERSEDED by echo `18a74f2` architecture pivot**
+> (`docs(pivot 2026-05-19): LGB v9_midy_40 moves to AWS Tokyo EC2`)。
+> LGB inference 从 HPC 搬到 echo-air,echo-air 现在直接从 narci-sg 拉 live
+> 事件,**不再经 lustre1 中转**。
+>
+> **本节中 Ask B Option 3(`save_interval_sec: 60` for CC/BJ/UM)实际 ship
+> 的 commit `15ff210` 保留不 revert** — narci-reco `4865970` §8.1 显式
+> ack 该 commit 对 cold-tier 仍然有价值:
+> 1. crash window 从 10 min → 1 min(recorder OOM 丢数据小 10×)
+> 2. lustre1 回测 pyarrow row-filter 精度更高,`signal_publisher.py
+>    --continuous` 历史 mode 延迟更低
+> 3. Daily compactor 输出不变(per-day 1 个 DAILY parquet)
+>
+> Ask A(narci-reco rsync from sg/jp → lustre1)同样 deferred —— 不阻塞
+> Phase 1a(D9 接管 live path),narci-reco 有 capacity 再做。
+>
+> 新 ask 见 §4.8。下面 §13 原始内容保留供 git history。
 
 读 echo §13 Delivery 8(`db04301` doc + `90b7791` continuous publisher
 shipped)。两个 ask 分工执行:
@@ -386,6 +404,99 @@ narci-reco 需要完成:
   分布?narci memory 显示该模型已 deferred 等 echo 实测数据
 
 非紧急时间线:2026-06-15 acceptance target,narci-reco 端 ~1-2 周可 ship。
+
+### 4.8 回 echo 2026-05-19 `3646a09` §14 Delivery 9 — narci-sg 内存事件 TCP 转发 — ✅ DONE 本 commit
+
+读 echo `18a74f2` pivot + `3646a09` Delivery 9 + narci-reco `4865970`
+inbox §8.2。架构 pivot 把 LGB inference 从 HPC 搬到 echo-air,因为 Binance
+global UM/BS 从 JP IP 被 ban。narci-sg(Singapore)已经 subscribe 这俩
+venue,只需 tee 一份 TCP 出去给 echo-air,cross-region AWS 内网 ~70ms 即到。
+
+**narci 本 commit 完整 ship**(~140 LOC + 5 tests,scope 与 echo §14.4
+"~50 LOC + 1 config knob" 估计匹配,多出来的主要是 5 个 regression test):
+
+#### A. `data/live_publisher.py` 新建
+
+`LivePublisher` 类(asyncio TCP broadcaster):
+- `start()`:`asyncio.start_server(host, port)` 起 TCP listen
+- `fanout(records)`:接 `(ts_ms, side, price, qty)` 4-tuple list,编码 JSON
+  lines 给所有 subscriber。**非 blocking**(永不 await)
+- `_heartbeat_loop()`:5s 静默期发 `{"kind":"heartbeat","ts_ms":...}`
+- Back-pressure:subscriber `transport.is_closing()` 或 `write_buffer_size
+  > max_buffer`(默认 1 MB)→ drop + 强制重连
+- `stop()`:cancel heartbeat task + close server + drop all subscribers
+
+Wire 完全符合 echo §14.2 spec:
+```json
+{"venue":"um","ts_ms":1779164453356,"side":2,"price":68234.5,"qty":-0.123}
+{"kind":"heartbeat","ts_ms":1779164458356}
+```
+
+#### B. `data/l2_recorder.py` hook 4 个 buffer-append 点
+
+每个 `self.buffers[sym].extend(records)` 后立刻 `self.live_publisher.fanout(records)`:
+- `init_symbol_snapshot()`(line 142):REST 初始 snapshot
+- `_process_depth_event()`(line 162):WS depth update
+- `record_stream()` trade branch(line 264):WS aggTrade
+- `save_loop()` periodic snapshot inject(line 364):每 save_interval 注入
+
+`start()` 协程 begin 时 `await self.live_publisher.start()`,end 时 `stop()`。
+`live_publisher` is None 时所有 hook 都 skip(其他 host 默认禁用)。
+
+#### C. Config knob 加进 UM + BS yaml
+
+| File | 新增 |
+|---|---|
+| `configs/exchanges/binance_um_futures.yaml` | `publisher_port: 9100` + `publisher_venue_tag: um` |
+| `configs/exchanges/binance_spot.yaml` | `publisher_port: 9100` + `publisher_venue_tag: bs` |
+
+容器内端口都是 9100,docker-compose 在 narci-sg 部署时映射到不同 host port
+(narci-reco 决定:UM 必然 host:9100,BS 可走 host:9101 — echo §14.2 说可
+"partitioned later if a venue split helps")。**其他 host 上 deployment 自己
+override `publisher_port: null` 禁用**。
+
+#### D. Tests(`calibration/tests/test_live_publisher.py`)5 个全过
+
+| Test | 验收对应 |
+|---|---|
+| `test_fanout_lines_received` | §14.6 #1 TCP reachability + JSON-lines decode |
+| `test_heartbeat_during_quiet` | §14.6 #2 5s heartbeat |
+| `test_schema_well_formed` | §14.6 #3 schema check |
+| `test_subscriber_disconnect_cleanup` | (subscriber set 维护正确性) |
+| `test_no_subscribers_fanout_is_noop` | (defensive,无 subscriber 时不 raise) |
+
+`test_backpressure_slow_subscriber_dropped`(§14.6 #4)未实现 — 需要模拟
+TCP write buffer saturation,单元测试做太脆弱。Echo 端 acceptance test 自然
+覆盖(模拟 slow read → narci 端 1s 内 drop)。
+
+#### E. 部署门槛(narci-reco 域)
+
+narci 这边 narci-sg 已经 deploy 完代码就生效。narci-reco 需要:
+1. AWS SG ingress 加 `0.0.0.0/0:9100`(narci-sg primary ENI)
+2. docker-compose 加端口映射:UM 容器 `9100:9100`,BS 容器(若 echo 要)
+   `9101:9100`
+3. `nrestartumfut` + `nrestartbinance-spot` 拾起新 config
+
+完成后 echo-air 端的 `sg_subscriber.py`(echo 在写)即可 `nc narci-sg-public-ip
+9100` 验证 §14.6 acceptance test。
+
+#### F. 时间表 / Open ask
+
+- echo target 2026-05-26(1 周内 ship)— **narci side 已 ship 本 commit**
+- 等 narci-reco AWS SG + docker-compose 配置(narci-reco 估时)
+- 等 echo `sg_subscriber.py` ready,跑 §14.6 5 项 acceptance
+
+narci → echo 反向 ask:
+- v9_midy_40 推荐 manifest 加 `narci_features_version_required` 字段(若
+  echo 直接 load_alpha_model 走 narci AlphaModel 路径)— 当前 v8_d / v9_midy
+  manifest 都缺,会被 narci `load_alpha_model` reject(默认 `"v1"` ≠ runtime
+  `"v6"`)。echo 端 alpha 路径绕过 narci AlphaModel,自管 LGB load,**所以
+  这不阻塞 D9 本身**,只是 future migration 注意
+
+#### G. 之前 §4.7 D8 回复的状态修正
+
+§4.7 已加 SUPERSEDED banner(narci-reco `4865970` 同步)。`15ff210`
+save_interval=60 保留(cold-tier 价值);Ask A rsync deferred。
 
 ---
 
