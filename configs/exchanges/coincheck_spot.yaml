@@ -23,11 +23,15 @@ recorder:
   interval_ms: 100
 
   save_dir: "./replay_buffer/realtime/"
-  save_interval_sec: 600
+  # 2026-05-20 cut 600→60 per echo INTERFACE_ECHO_NARCI.md §13 Delivery 8
+  # Ask B Option 3:Phase 1a real-time alpha 需 event-to-disk lag <60s。
+  # CC/BJ/UM 是 v9_midy_40 binding 的 feature 来源,这 3 个 venue 必须切。
+  # Shard 数量 144/day → 1440/day,daily_compactor merge 不变。
+  save_interval_sec: 60
 
   # P1-A 修法 (2026-05-08)：每次落盘前 REST 重拉 snapshot 替换内存 book，
-  # 扔掉 WS 漏 delete 累积的 dust。CC 走 /api/order_books（与 init 同源），
-  # 速率限制宽松，5 symbols × 1 次 / 600s 完全无压力。
+  # 扔掉 WS 漏 delete 累积的 dust。CC 走 /api/order_books（与 init 同源）。
+  # 60s 间隔 × 7 symbols = 7 req/min,公网 endpoint 限流远高于此(~10 req/s)。
   snapshot_refresh_on_save: true
 
   retain_days: 7

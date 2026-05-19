@@ -311,6 +311,82 @@ revert fix 后 test 红、apply fix 后 test 绿,双向 verify。
 其它天看到 negative inventory,告 narci(本 fix 应该覆盖 100% 场景,但 echo
 作为 fresh 数据 source 可以 cross-check)。
 
+### 4.7 回 echo 2026-05-19 `90b7791` §13 Delivery 8 — Phase 1a real-time signal channel
+
+读 echo §13 Delivery 8(`db04301` doc + `90b7791` continuous publisher
+shipped)。两个 ask 分工执行:
+
+#### Ask B Option 3(`save_interval_sec: 600 → 60` for CC/BJ/UM)— ✅ DONE 本 commit
+
+narci-side 单 commit change。修改 3 个 yaml:
+
+| File | 变更 | 说明 |
+|---|---|---|
+| `configs/exchanges/coincheck_spot.yaml` | `save_interval_sec: 600 → 60` | CC trade source(7 symbols),REST snapshot 7 req/min,限流远充裕 |
+| `configs/exchanges/binance_jp_spot.yaml` | `save_interval_sec: 600 → 60` | BJ feature source(`r_bj` / `bj_imb_*` / `bj_flow_*` / `bj_l2_*` / `basis_bj_bps`),24 req/min vs Binance 1200/min 限流(2% utilization) |
+| `configs/exchanges/binance_um_futures.yaml` | `save_interval_sec: 600 → 60` | UM feature source(v9_midy_40 中 15/40 features),6 req/min vs Binance UM 2400/min |
+
+**未变更**:
+- `binance_spot.yaml`(BS,non-load-bearing per v9_midy_40 feature inspection
+  — BS features 不在 binding 中)
+- `bitbank_spot.yaml` / `bitflyer_*.yaml` / `gmo_*.yaml`(不在 Phase 1a feature set)
+
+**部署门槛**:
+- recorder 进程需要重启拾起新 config(narci-reco 侧 `nrestartcc` / `nrestartumfut` / `nrestartbinance-jp` 触发)
+- 重启后 shard 数量从 144/day/symbol → 1440/day/symbol。Daily compactor 已设计承接(per-day merge,无需改动)
+- Cold tier 体积不变(merge 后还是 1 个 DAILY parquet/symbol/day)
+- Disk inode 用量 ~10×,lustre 处理大量小文件 OK
+- REST snapshot 频率 10× 增加但所有 venue 限流 utilization 仍 <5%
+
+**对 echo 的影响**:
+- 单 shard event 数从 ~10 min worth → ~1 min worth(per CC ~300 events vs
+  ~3000 events / shard)
+- `signal_publisher.py` tail loop 已设计为 small shards friendly,无需 echo
+  端 code change
+- 重启后 mean event-to-disk lag 30s(60s save_interval / 2),worst 60s
+
+#### Ask A Option 1(narci-sg → lustre1 rsync over SSH)— 🟡 narci-reco 域,handoff
+
+narci 域内**不持 AWS 凭证**(per memory `project_recording_topology`),Ask A
+是 narci-reco 的工作。narci 这边的 receive-side 已 ready:
+
+| 接收侧目录 | 用途 |
+|---|---|
+| `/lustre1/work/c30636/narci/replay_buffer/realtime/coincheck/spot/l2/` | CC shards |
+| `/lustre1/work/c30636/narci/replay_buffer/realtime/binance_jp/spot/l2/` | BJ shards |
+| `/lustre1/work/c30636/narci/replay_buffer/realtime/binance/um_futures/l2/` | UM shards |
+| `/lustre1/work/c30636/narci/replay_buffer/realtime/binance/spot/l2/` | BS shards(若 echo 后续要 v8_d 等 BS-using binding) |
+
+narci-reco 需要完成:
+- aws-sg(UM/BS recorder)+ aws-jp(CC/BJ recorder)各自加 `rsync -aq`
+  cron(或 inotify watcher)推新 shard 到 lustre1
+- lustre1 SSH 接受 narci-sg / narci-jp public IP 入站(narci 这边 user
+  `c30746` 已有 SSH key,narci-reco 把 narci-sg 的 pub key 加到
+  `~c30746/.ssh/authorized_keys`)
+- 建议 source 端不动现有 cloud-sync(gdrive) — 让 rsync 与 gdrive 并行,
+  rsync 失败时 gdrive 兜底
+- **target lag SLA <60s**(per Acceptance test §13.4)
+
+**narci 这边 wait**:narci-reco commit 完成后,echo 跑 §13.4 acceptance test。
+
+#### 不变的接口约定
+
+- realtime parquet schema(4 列 timestamp/side/price/quantity)不变
+- 文件命名 `{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet` 不变
+- DailyCompactor(narci cron 12:00 JST yesterday-UTC)不变 — yesterday 全天
+  shards(无论 144 还是 1440 个)都 merge 成单个 DAILY
+- echo's `_discover_new_shards` 已设计承接更小 shards(per `90b7791` doc)
+
+#### narci → echo 反向 ask
+
+- 待 narci-reco ship Ask A 后,echo 重跑 §13.4 acceptance test + 把
+  end-to-end lag(predict_ts_ns vs wall clock)数据回到 §8 latency 表
+- Phase 1a paper soak 跑起来后,**A8 per-event latency 字段**(echo §13.5
+  外的事项,但跟 narci 端 place latency FIFO 模型有依赖关系)是否能 dump
+  分布?narci memory 显示该模型已 deferred 等 echo 实测数据
+
+非紧急时间线:2026-06-15 acceptance target,narci-reco 端 ~1-2 周可 ship。
+
 ---
 
 ## 5. 不在 narci scope (留给 echo 自己)
