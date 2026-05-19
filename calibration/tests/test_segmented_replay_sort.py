@@ -103,5 +103,41 @@ class TestSegmentedReplaySortStability(unittest.TestCase):
                           f"the bug from 2026-05-17 has regressed.")
 
 
+class TestSegmentedReplaySymbolParam(unittest.TestCase):
+    """Regression: VENUE_SOURCES_BY_SYMBOL routing (nyx 997d63b ask #1).
+
+    Pre-fix nyx had to monkeypatch the module-level VENUE_SOURCES to test
+    ETH_JPY. Post-fix, replay_days_parallel(symbol="ETH_JPY") routes via
+    VENUE_SOURCES_BY_SYMBOL automatically; legacy callers passing no
+    `symbol` get BTC_JPY (default), preserving backward compat."""
+
+    def test_venue_sources_map_keys(self):
+        from research.segmented_replay import VENUE_SOURCES_BY_SYMBOL
+        self.assertIn("BTC_JPY", VENUE_SOURCES_BY_SYMBOL)
+        self.assertIn("ETH_JPY", VENUE_SOURCES_BY_SYMBOL)
+        # ETH table's CC entry must point at ETH_JPY symbol
+        cc_entry = next(
+            v for v in VENUE_SOURCES_BY_SYMBOL["ETH_JPY"] if v[3] == "cc")
+        self.assertEqual(cc_entry[2], "ETH_JPY")
+        # BTC table's CC entry must point at BTC_JPY symbol
+        cc_btc = next(
+            v for v in VENUE_SOURCES_BY_SYMBOL["BTC_JPY"] if v[3] == "cc")
+        self.assertEqual(cc_btc[2], "BTC_JPY")
+
+    def test_legacy_venue_sources_is_btc(self):
+        """Backward compat: existing imports of `VENUE_SOURCES` still
+        receive the BTC layout (some research scripts depend on this)."""
+        from research.segmented_replay import (
+            VENUE_SOURCES, VENUE_SOURCES_BY_SYMBOL,
+        )
+        self.assertEqual(VENUE_SOURCES, VENUE_SOURCES_BY_SYMBOL["BTC_JPY"])
+
+    def test_unknown_symbol_raises(self):
+        from research.segmented_replay import replay_days_parallel
+        with self.assertRaises(ValueError) as cm:
+            replay_days_parallel(["20260517"], symbol="DOES_NOT_EXIST")
+        self.assertIn("DOES_NOT_EXIST", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

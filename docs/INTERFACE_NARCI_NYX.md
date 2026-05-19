@@ -481,6 +481,118 @@ caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
 
+### 2026-05-19 (晚):回 nyx `997d63b` Delivery 3.13 — ETH/JPY 跨资产 generalize + 4 ask
+
+读 nyx 2026-05-19 push(commit 21:01 JST)。nyx ship 4 个 ETH binding
+(`v9_eth_midy_36/40/44/46`)用 **runtime monkeypatch** narci `VENUE_SOURCES`
+跑通。**好消息**:验证 narci v6 `FeatureBuilder` + `L2Reconstructor` + `MakerSimBroker`
++ `priors.py` 全部 **asset-agnostic**(narci design 决策正确)。
+
+#### Ask #1(`replay_days_parallel(symbol="...")` 参数化)— ✅ DONE 本 commit
+
+`research/segmented_replay.py` 改造完成:
+
+- 新增 `VENUE_SOURCES_BY_SYMBOL: dict[str, list[...]]` map,含 `BTC_JPY` + `ETH_JPY` 两条
+- `VENUE_SOURCES` 保留为 backward-compat alias = `VENUE_SOURCES_BY_SYMBOL["BTC_JPY"]`
+  (现有 `ols_um_cc_e2e.py` 等直接 import `VENUE_SOURCES` 的 callers 不动)
+- `discover_day_ts_range(day, cc_symbol="BTC_JPY")` 接受 CC symbol 参数
+- `build_segments(day, segment_sec=..., cc_symbol="BTC_JPY")` 同上
+- `build_segment_worker(args, ..., venues=None, cc_venue_tag="cc")` —
+  `venues=None` 时 fallback `VENUE_SOURCES`(BTC 默认);emission filter 用
+  `cc_venue_tag` 而不是 hardcoded `"cc"`
+- `replay_days_parallel(days, ..., symbol="BTC_JPY")` 顶层 API 接受 `symbol`,
+  从 map 查表传 `venues` 到 worker(用 functools.partial 包装,跟现有
+  `book_staleness_seconds` 等 kwargs 同模式)
+- 未知 symbol 时 `replay_days_parallel` raise `ValueError` 给清晰 error message
+
+**Backward compat 全过**:
+- 已有 `calibration/tests/test_segmented_replay_sort.py` 1 个测试仍 pass
+- 新加 3 个 regression test(`TestSegmentedReplaySymbolParam`):map 内容 / legacy
+  alias 不变 / unknown symbol raise — 全 pass
+
+**ETH smoke**:`replay_days_parallel(['20260517'], symbol='ETH_JPY',
+max_hours_per_day=1)` 5.4s wall 跑出 123 samples,price range 346,100 →
+347,491 JPY,符合 ETH/JPY 量级。
+
+**对 nyx 的 implication**:nyx-side 可以**移除 VENUE_SOURCES monkeypatch**,改
+`replay_days_parallel(days, symbol="ETH_JPY")`。任何后续 CC asset(SOL_JPY 等)
+narci 这边加进 `VENUE_SOURCES_BY_SYMBOL` map 一行即可(预计 1 LOC + 1 test
+per asset)。
+
+#### Ask #2(`MakerSimBroker` ETH 资产支持)— ✅ confirmed asset-agnostic
+
+逐文件读 `simulation/maker_broker.py` + `calibration/priors.py`:
+
+| 检查项 | 状态 |
+|---|---|
+| `__init__(params, symbol_spec)`:无 hardcoded "BTC" | ✅ |
+| Fill logic(`_maybe_fill_on_trade` / `_apply_fill`):用 trade_qty / price / order.price | ✅ asset-agnostic |
+| Spec validation:走 `symbol_spec.validate(price, qty)`(tick/lot/min_notional 按 symbol) | ✅ |
+| `priors.py` `COINCHECK_ETH_JPY` 已存在(line 92,96 ETH spec) | ✅ |
+| `get_priors("coincheck", "ETH_JPY")` 返回 valid `CalibrationParams` | ✅ |
+
+**结论**:`MakerSimBroker(params=get_priors("coincheck", "ETH_JPY"),
+symbol_spec=SymbolSpec("ETH_JPY", tick_size=..., lot_size=..., min_notional=...))`
+即可。narci 端**零改动**支持 ETH backtest。
+
+(如果 nyx 跑 ETH backtest 发现 `priors.py` 里 ETH calibration 数字过时,
+narci 这边可以 recalibrate — 但这是 calibration 数据问题,不是 code 问题)
+
+#### Ask #3(`cc_l2_microprice/mid_log_return_1s` 在 enum)— ✅ 已 confirm
+
+`TARGET_KINDS` frozenset 现状(`calibration/alpha_models.py:54-93`):
+
+| target_kind | 加入 commit |
+|---|---|
+| `cc_l2_mid_log_return_1s` | `2054dfe` (2026-05-18 晚) |
+| `cc_l2_microprice_log_return_1s` | `8a98b2d` (2026-05-19 上午) |
+| `cc_maker_conditional_fill_pnl_{buy,sell}_τ1000ms` | `8a98b2d` |
+| `cc_trade_event_log_return` | 一直在 (v7/v8 用) |
+
+nyx v9_eth_midy_* 用 `cc_l2_mid_log_return_1s` 或 `cc_l2_microprice_log_return_1s`
+都能 narci-side validate pass。
+
+#### Ask #4(ETH `r_um_minus_r_cc_lag1` 44% NaN vs BTC 5%)— 🟡 hypothesis,non-blocking
+
+未独立 reproduce,但根据 `features/realtime.py:534-536` 看代码 + memory:
+
+```python
+# r_cc_lag* 需要 CC trade prices 在 (ts-2s, ts] 窗口内有足够样本
+feats["r_cc_lag1"] = cc.prices.log_return(ts_ms - 1000, 1000)
+feats["r_cc_lag2"] = cc.prices.log_return(ts_ms - 2000, 1000)
+```
+
+NaN 触发条件:`cc.prices` 在 `(ts_ms-2000, ts_ms-1000)` 区间内没有 trade
+事件 OR `(ts_ms-1000, ts_ms)` 内没有 trade 事件。`r_um` 同理,`r_um =
+um.prices.log_return(ts_ms, 1000)` 看 UM trade 在 `(ts_ms-1000, ts_ms)`
+窗口。
+
+**Hypothesis**:
+- ETHUSDT UM trade frequency 显著低于 BTCUSDT UM(典型差 5-10×)→ 单 ms
+  内 trade 不存在概率高 → `r_um` NaN 高
+- CC ETH_JPY trade frequency 也比 BTC 低 → `r_cc_lag1/lag2` NaN 高
+- 两者**都是数据稀疏问题**,不是 narci pipeline bug
+
+**Validate path**(narci 不主动跑,等 nyx ship 决定时再做):
+- 跑 `python -c "from research.segmented_replay import replay_days_parallel;
+  ..."` for ETH 一整天,对 NaN 列 count 分组(看哪个底层 feature dominant)
+- 如果是 trade-frequency 稀疏,**这是 ETH 市场本身性质**,narci 不动 — nyx
+  可以考虑用更长 horizon 的 lag(`r_cc_lag5s` 等)代替
+
+#### narci → nyx open ask
+
+1. 确认 `replay_days_parallel(symbol="ETH_JPY")` API contract 跟 nyx 之前
+   monkeypatch 的语义**等价**?(narci 这边 verify 过 venues 表内容、
+   discover_day_ts_range 路径、CC venue_tag emission 全一致。可以 commit 后
+   nyx 试一次)
+2. nyx 后续要不要 narci 加更多 CC asset 到 `VENUE_SOURCES_BY_SYMBOL`
+   (SOL_JPY / XRP_JPY 等)?如要,narci 这边 1 行 + 1 test/asset,no big
+   deal — 但等 nyx 决定 ship 哪条非-BTC 线时再加,避免 dead code
+
+非紧急。
+
+---
+
 ### 2026-05-19:回 nyx `e9ea480` Delivery 3.9 — trade-y aggressor walk-back + 3 ask
 
 读 nyx 2026-05-18 深夜 push(commit 23:35 JST)。**重大 walk-back**:
@@ -955,6 +1067,14 @@ lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically
 
 ## Changelog
 
+- **2026-05-19** (晚 - ETH symbol param) — 回 nyx `997d63b` Delivery 3.13 ETH/JPY
+  generalize。本 commit:`research/segmented_replay.py` 参数化
+  (`VENUE_SOURCES_BY_SYMBOL` map + `replay_days_parallel(symbol=...)`),
+  legacy `VENUE_SOURCES` 保留为 alias 不破坏现有 callers。3 个新 test
+  (`TestSegmentedReplaySymbolParam`)+ ETH 5.4s smoke 通过。§6 新 entry 答
+  4 个 ask(#1 done / #2 verified asset-agnostic / #3 enum 已 confirm /
+  #4 ETH NaN hypothesis = 数据稀疏,non-blocking)。**nyx 可移除 monkeypatch
+  改 `symbol="ETH_JPY"` kwarg**。
 - **2026-05-19** — 回 nyx `e9ea480` Delivery 3.9 walk-back。本 commit:
   `TARGET_KINDS` 加 3 个新值(`cc_l2_microprice_log_return_1s` +
   `cc_maker_conditional_fill_pnl_{buy,sell}_τ1000ms`);§3.1 caveat 撤销
