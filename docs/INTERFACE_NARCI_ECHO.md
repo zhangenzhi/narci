@@ -870,11 +870,22 @@ narci 这边收到后:
 **这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
 `7.7 — reply to echo Delivery 8`。
 
-### 8.2 Delivery 9 — narci-sg 内存事件转发 (open)
+### 8.2 Delivery 9 — narci-sg 内存事件转发 (✅ DONE · narci `3a4e572` · reply in §4.8)
 
 - **来源**:echo SHA `18a74f2` · `docs/INTERFACE_ECHO_NARCI.md §14` +
   `docs/INTERFACE_ECHO_AIR.md §0.5 + §3.1` (committed 2026-05-19 22:47 JST)
-- **状态**:open · 替换 §8.1 (D8)
+- **状态**:✅ DONE · narci `3a4e572` (2026-05-19 后续重构) · reply in §4.8
+  · 替换 §8.1 (D8)
+- **narci-side ship 内容**:
+  - `data/live_publisher.py`(TCP/JSON-lines broadcaster,multi-venue 一端口)
+  - `data/event_publisher.py`(独立 main,WS subscribe + fanout,不依赖 recorder)
+  - `configs/event_publisher.yaml`(独立 config,UM + BS venues)
+  - `calibration/tests/test_live_publisher.py`(6 tests 全过)
+- **下一步**(narci-reco 域 + echo 域):
+  1. narci-reco:AWS-SG SG ingress `0.0.0.0/0:9100` + `docker-compose.yaml` 加
+     `narci-event-publisher` service(或 SSM standalone `python -m
+     data.event_publisher --config configs/event_publisher.yaml`)
+  2. echo:`sg_subscriber.py` ready 后跑 §14.6 acceptance test 5 项
 
 #### 背景
 
