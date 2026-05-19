@@ -218,6 +218,32 @@ services:
         max-file: "5"
 
   # =====================================================================
+  # event-publisher: TCP/JSON-lines live event broadcaster (echo D9)
+  # Profile: global (仅 narci-sg 跑 — Binance global UM/BS WS from JP 被
+  # block,echo-air 通过 narci-sg 9100 拉 live event,~70ms cross-region)
+  # 完全独立于 recorder — 自己开 WS,不读 narci-data volume,不写盘
+  # 部署历史:reco/docs/INCIDENTS/ 系列 D9 接入
+  # 参考:docs/INTERFACE_NARCI_ECHO.md §4.8、configs/event_publisher.yaml
+  # =====================================================================
+  event-publisher:
+    build: .
+    container_name: narci-event-publisher
+    profiles: [global]
+    command:
+      ["python", "-m", "data.event_publisher", "--config",
+       "/app/configs/event_publisher.yaml"]
+    volumes:
+      - ./configs:/app/configs:ro
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # =====================================================================
   # cloud-sync: rclone sidecar → Google Drive / S3
   # 无 profile 限制（所有部署都需要推送）
   # =====================================================================
