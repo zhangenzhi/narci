@@ -617,15 +617,32 @@ re-cut INTERFACE_NARCI.md 时勾掉 / 删除这行,免得长期挂着。
 > 回复方式:在 §7 appendix 增加 `7.X — reply to echo Delivery N`,然后把
 > 状态从 open → done。
 
-### 8.1 Delivery 8 — Phase 1a real-time signal channel (⚠️ SUPERSEDED 2026-05-19)
+### 8.1 Delivery 8 — Phase 1a real-time signal channel (⚠️ SUPERSEDED 2026-05-19; narci Ask B partial ship retained)
 
 > **状态:SUPERSEDED by §8.2** (echo SHA `18a74f2`,architecture pivot
 > commit `docs(pivot 2026-05-19): LGB v9_midy_40 moves to AWS Tokyo EC2`)。
 >
 > echo 把 LGB inference 移到 echo-air (Tokyo EC2),不再通过 HPC 当 live
 > signal source。本节里的两个 ask (UM/BS 实时落 lustre1 + save_interval
-> 600→60) **都 parked** —— 它们是 recorder 内部优化,**不在 echo 关键路径
-> 上**。narci 这边的 save_interval 节奏自己决定,echo 不再 push。
+> 600→60) **从 echo 关键路径上 parked** —— 它们是 recorder 内部优化。
+>
+> **特别 ack narci `15ff210`** (`feat(recorder): cut save_interval to 60s
+> for CC/BJ/UM`): 该 commit 是 D8 Ask B Option 3 的完整 ship,**已经
+> done**。即便 D8 整体被 D9 supersede,**60s save_interval 本身对 cold-tier
+> 仍然有持续价值**:
+>
+> 1. crash window 从 10 min → 1 min,recorder OOM/重启丢的数据量小 10×
+> 2. echo 在 lustre1 跑回测时 shard 越小 = pyarrow row-filter 越精确,
+>    `signal_publisher.py --continuous` (backtest 模式) 跑历史数据延迟更低
+> 3. Daily compactor 输出不变(per-day 1 个 DAILY parquet),lustre 上 inode
+>    用量 ~10× 不构成问题
+>
+> 所以 `15ff210` **保留**(不要 revert),只是它从"live alpha blocker"降级为
+> "cold-tier 质量提升"。
+>
+> Ask A (narci-reco 域的 rsync from sg/jp → lustre1) 也保留 deferred 状态:
+> 等 narci-reco 有 capacity 再做,**不阻塞 Phase 1a**(因为 echo-air 现在
+> 直接从 narci-sg 拉 live 事件,见 §8.2 D9)。
 >
 > 新 ask 见 [§8.2](#82-delivery-9-narci-sg-内存事件转发-open)。
 >
