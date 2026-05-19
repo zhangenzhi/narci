@@ -183,7 +183,13 @@ class GmoAdapter(ExchangeAdapter):
                 for sym in recorder.symbols:
                     await recorder.init_symbol_snapshot(sym)
 
-                # 2. WS connect + subscribe (subscribe 之间 sleep 200ms 防 burst)
+                # 2. WS connect + subscribe (subscribe 之间 sleep 1.1s)
+                # 官方文档明确:Public WS subscribe 同 IP 上限 1秒/次:
+                #   https://api.coin.z.com/docs/#restrictions-public-ws-api
+                # pybotters Issue #50 也是同根因:
+                #   https://github.com/pybotters/pybotters/issues/50
+                # 我们 2026-05-17 之前的 200ms 间隔 = 5x 超限 → ERR-5003 burst
+                # → IP 小时级 ban → reconnect storm 延长 ban 至天级
                 ws = await websockets.connect(self.WS_URL)
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 gmo WS 已连接")
 
@@ -194,14 +200,14 @@ class GmoAdapter(ExchangeAdapter):
                         "channel": "orderbooks",
                         "symbol": native,
                     }))
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(1.1)
                     await ws.send(json.dumps({
                         "command": "subscribe",
                         "channel": "trades",
                         "symbol": native,
                         "option": "TAKER_ONLY",
                     }))
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(1.1)
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 📡 已订阅 "
                           f"orderbooks+trades for {native}")
 

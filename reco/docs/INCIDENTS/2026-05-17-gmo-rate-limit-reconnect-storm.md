@@ -95,6 +95,23 @@ container 暂停重启也要等冷却)。
    但远高于现在的 KB 级)。
 5. 如果再次撞 ERR-5003,看 backoff log,几 cycle 后应该自然恢复。
 
+## 2026-05-19 update — 200ms 间隔仍超官方限制
+
+2h 冷却后 verify 阶段(实际上 partial verify,在等 nohup auto-start),交叉
+验证发现 200ms `asyncio.sleep` 仍然 5x 超 GMO 官方限制:
+
+> https://api.coin.z.com/docs/#restrictions-public-ws-api
+> Public WebSocket APIの制限
+> 同一IPからのリクエスト(subscribe, unsubscribe)は、**1秒間1回を上限**とします。
+
+`curl https://api.coin.z.com/docs/` 拉到的官方文档原文(2026-05-19 验证有效)。
+pybotters Issue #50 (2021-06-11,closed) 也命中同一根因:
+https://github.com/pybotters/pybotters/issues/50
+
+我们 `8a0a14b` 的 `await asyncio.sleep(0.2)` 是基于「我们撞墙了所以加点 sleep」
+直觉,不是基于官方 docs 数值,5x over。**后续 fix 调到 1.1s**(给 100ms
+buffer 防 jitter)。
+
 ## Lessons / TODO
 
 1. **subscribe 必须 throttle**。多 channel multi-symbol 时 burst 会触发各种
