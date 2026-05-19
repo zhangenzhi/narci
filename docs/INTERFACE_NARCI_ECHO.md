@@ -531,3 +531,93 @@ re-cut INTERFACE_NARCI.md 时勾掉 / 删除这行,免得长期挂着。
    to have)。
 4. **(低)** §3.4 — `narci_features_consumed` 字段,v1.2 schema candidate,
    bitbank/multi-venue 上线后再讨论。
+
+---
+
+## 8. Inbox — 来自 echo 的 ask (narci 待回复)
+
+> 这一节登记 echo 主动 push 过来的 Delivery / Req,narci 这边按优先级回。
+> 每条注明:**echo SHA · echo doc 段落 · 状态 (open / in-progress / done)**。
+> 回复方式:在 §7 appendix 增加 `7.X — reply to echo Delivery N`,然后把
+> 状态从 open → done。
+
+### 8.1 Delivery 8 — Phase 1a real-time signal channel (open)
+
+- **来源**:echo SHA `90b7791` · `docs/INTERFACE_ECHO_NARCI.md §13`
+  (committed 2026-05-19 22:xx JST)
+- **背景**:echo 已 ship Phase 0c continuous-mode `signal_publisher`
+  (commit `90b7791` echo/lab/signal_publisher.py::run_continuous),
+  能 tail narci realtime shards across CC/BJ/UM/BS,time-merge events,
+  emit SignalEvent per CC trade。Air-side plumbing (AlphaAware +
+  S3SignalSource + StaleningSignalSource 30s gate + workstation_bridge)
+  全部 ship 完。**echo 不再要任何自己端代码改动 —— 后续只看 narci。**
+- **End-to-end smoke (2026-05-19 21:33 JST)**:
+  - 221,739 events / 914 CC-trade signals 30s 内 round-trip
+  - 全部 914 都 emit HOLD with `feature_stale=true`(UM 37h stale,
+    BS 7h stale)
+  - air-side StaleningSignalSource(30s) → None → fallback to NaiveMaker
+- **两个 narci-side blocking ask**:
+
+#### Ask A (高) — UM / BS 实时通路 lustre1,≤ 60s
+
+参 echo §13.2。**当前实测 lag**:CC/BJ 同 lustre1 ~30 min ✓,
+BS gdrive → lustre1 ~7 h ❌,UM gdrive → lustre1 ~37 h ❌❌。
+
+**why blocking**:echo 的 v9_midy_40 binding (8-day OOS +26,398 JPY
+on thr=0.2 / ii=0.075) 40 个 feature 里有 **15 个 UM feature**。
+UM 37h stale → feature_stale gate 每个 CC trade 都 trip → 全 HOLD。
+**Alpha 通路实际等于关闭。**
+
+echo 给的三个 transport 选项:
+1. narci-sg → lustre1 rsync push(narci-sg 写完 shard 立刻 rsync)
+2. AWS S3 中转(narci-sg → S3 → lustre1 `aws s3 sync`)
+3. WS push channel(narci-sg pub-sub,绕过磁盘)—— 长期答案
+
+echo 偏好:**1 或 2**(Phase 1a 短期),3(长期)。
+
+#### Ask B (高) — recorder save_interval_sec cut OR push channel
+
+参 echo §13.3。**当前**:所有 `configs/exchanges/*.yaml` 都
+`save_interval_sec: 600`(10 分钟一次落盘)。**Mean event-to-disk lag
+≈ 5 分钟,worst-case 10 分钟。** 即使 Ask A 关掉,echo-air 的 30s
+staleness gate 也会 reject 每个信号。
+
+echo 给的三个选项:
+1. `save_interval_sec: 5–10` for CC/BJ/UM/BS(shard 数 ×120,但
+   filename pruning + daily_compactor 已经能扛)
+2. Per-venue push channel(WS / Unix socket,parquet flush 保留 600s
+   for cold tier 持久化)
+3. **Compromise**: `save_interval_sec: 60` for CC/BJ/UM only
+   (shard 数仅 ×12,mean lag 30s → 刚好过 air 30s gate)
+
+echo 偏好:**3**(Phase 1a 最小改动)。**2**(长期 — 永久去掉
+disk-flush ceiling)。
+
+#### 验收 (echo 端会跑)
+
+narci ship A + B 后,echo 重跑同 smoke:
+1. UM lustre1 lag < 60s
+2. CC event-to-disk lag < 60s
+3. End-to-end:continuous publisher 跑 10min,air 端 ≥ 1 signal
+   age < 30s
+
+#### 时间表 (echo 期望)
+
+- 目标 acceptance:**2026-06-15**
+- Phase 1a paper soak ready by **end of 2026-06**
+
+#### narci 这边的初步反应空间
+
+narci 这边收到后:
+- (a) 评估 Ask A 三个选项里哪个 narci-sg ops capacity 能接 —— 是否需要
+  升级 narci-sg t4g.small(目前已经 8h+ recorder uptime,加 rsync /
+  S3 sync 任务后内存余量?见 narci §4.5 cron 已加的 daily compact 是
+  否能扩成 daily push)
+- (b) 评估 Ask B 三个选项 —— 改 `save_interval_sec: 60` 是否会拖累
+  既有 cold-tier validator / daily_compactor
+- (c) 如果两 ask 短期都接不下来,告诉 echo 哪个先做,echo 端的
+  continuous-mode publisher 框架已经 ship,所以等 narci 任意一边
+  好了就能 partial 提速
+
+**这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
+`7.7 — reply to echo Delivery 8`。
