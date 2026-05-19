@@ -405,95 +405,127 @@ narci-reco 需要完成:
 
 非紧急时间线:2026-06-15 acceptance target,narci-reco 端 ~1-2 周可 ship。
 
-### 4.8 回 echo 2026-05-19 `3646a09` §14 Delivery 9 — narci-sg 内存事件 TCP 转发 — ✅ DONE 本 commit
+### 4.8 回 echo 2026-05-19 `3646a09` §14 Delivery 9 — narci-sg 独立 publisher 进程 — ✅ DONE 本 commit
 
 读 echo `18a74f2` pivot + `3646a09` Delivery 9 + narci-reco `4865970`
-inbox §8.2。架构 pivot 把 LGB inference 从 HPC 搬到 echo-air,因为 Binance
-global UM/BS 从 JP IP 被 ban。narci-sg(Singapore)已经 subscribe 这俩
-venue,只需 tee 一份 TCP 出去给 echo-air,cross-region AWS 内网 ~70ms 即到。
+inbox §8.2。LGB inference 从 HPC 搬 echo-air,Binance global UM/BS 从 JP IP
+ban,narci-sg(SG)已 subscribe 二者,tee TCP 给 echo-air 跨 region 内网约 70ms。
 
-**narci 本 commit 完整 ship**(~140 LOC + 5 tests,scope 与 echo §14.4
-"~50 LOC + 1 config knob" 估计匹配,多出来的主要是 5 个 regression test):
+**架构决策**:publisher **完全独立于 recorder**(narci-reco § narci 角色边界
+sanity check 后的决定)。echo §14.4 建议的 "in-recorder hook" 路径被放弃,
+理由:
+- recorder 是 cold-tier 数据完整性关键路径,publisher bug 不应该波及
+- alignment / snapshot-injection / book state machine 是回测关心的事,跟 live
+  forwarding 没关系
+- 独立进程独立 restart / scale / version,故障隔离干净
 
-#### A. `data/live_publisher.py` 新建
+**narci 本 commit ship**(~280 LOC + 6 tests):
 
-`LivePublisher` 类(asyncio TCP broadcaster):
-- `start()`:`asyncio.start_server(host, port)` 起 TCP listen
-- `fanout(records)`:接 `(ts_ms, side, price, qty)` 4-tuple list,编码 JSON
-  lines 给所有 subscriber。**非 blocking**(永不 await)
-- `_heartbeat_loop()`:5s 静默期发 `{"kind":"heartbeat","ts_ms":...}`
-- Back-pressure:subscriber `transport.is_closing()` 或 `write_buffer_size
-  > max_buffer`(默认 1 MB)→ drop + 强制重连
-- `stop()`:cancel heartbeat task + close server + drop all subscribers
+#### A. `data/live_publisher.py` — TCP/JSON-lines broadcaster
 
-Wire 完全符合 echo §14.2 spec:
+`LivePublisher` 类(asyncio TCP server):
+- `start()` / `stop()` 启停 server + heartbeat task
+- `fanout(venue_tag, records)`:接 `(venue_tag, [(ts_ms,side,price,qty), ...])`,
+  编码 JSON lines 给所有 subscriber。**venue_tag 是 per-call 参数**(支持
+  一个 publisher 进程在同一 port 多 venue 复用)
+- Heartbeat:`heartbeat_sec=5` 内静默就发 `{"kind":"heartbeat","ts_ms":...}`
+- Back-pressure:`transport.is_closing()` 或 `write_buffer_size > 1 MB` → drop
+
+Wire 完全符合 echo §14.2:
 ```json
 {"venue":"um","ts_ms":1779164453356,"side":2,"price":68234.5,"qty":-0.123}
+{"venue":"bs","ts_ms":1779164453402,"side":0,"price":68234.5,"qty":0.5}
 {"kind":"heartbeat","ts_ms":1779164458356}
 ```
 
-#### B. `data/l2_recorder.py` hook 4 个 buffer-append 点
+#### B. `data/event_publisher.py` — standalone WS subscriber main
 
-每个 `self.buffers[sym].extend(records)` 后立刻 `self.live_publisher.fanout(records)`:
-- `init_symbol_snapshot()`(line 142):REST 初始 snapshot
-- `_process_depth_event()`(line 162):WS depth update
-- `record_stream()` trade branch(line 264):WS aggTrade
-- `save_loop()` periodic snapshot inject(line 364):每 save_interval 注入
+完全独立 entry point。**不 import / 不依赖** `l2_recorder.py`。开自己的 WS:
+- 通过 `data.exchange.get_adapter(...)` 拿到 `BinanceUmFuturesAdapter` +
+  `BinanceSpotAdapter`(narci 现有 adapter 复用)
+- 每个 venue 跑一个 `_stream_venue()` task:`websockets.connect(url)` →
+  `adapter.parse_message()` → 仅 `event_type in ("depth", "trade")` →
+  `adapter.standardize_event()` → `publisher.fanout(venue_tag, records)`
+- 不维护 book state / 不做 U/u alignment / 不做 snapshot inject(echo §14.3
+  "cold-start: 只发 live 事件,不补历史")
+- WS 断线自动重试,5s 退避
+- SIGTERM / SIGINT → graceful shutdown
 
-`start()` 协程 begin 时 `await self.live_publisher.start()`,end 时 `stop()`。
-`live_publisher` is None 时所有 hook 都 skip(其他 host 默认禁用)。
+启动:`python -m data.event_publisher --config configs/event_publisher.yaml`
 
-#### C. Config knob 加进 UM + BS yaml
+#### C. `configs/event_publisher.yaml` — 独立 config(不动 recorder yaml)
 
-| File | 新增 |
-|---|---|
-| `configs/exchanges/binance_um_futures.yaml` | `publisher_port: 9100` + `publisher_venue_tag: um` |
-| `configs/exchanges/binance_spot.yaml` | `publisher_port: 9100` + `publisher_venue_tag: bs` |
+```yaml
+publisher:
+  port: 9100
+  host: 0.0.0.0
+  heartbeat_sec: 5
+  max_subscriber_buffer_bytes: 1048576
+venues:
+  - venue_tag: um
+    exchange: binance
+    market_type: um_futures
+    symbols: [BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT]
+    interval_ms: 100
+  - venue_tag: bs
+    exchange: binance
+    market_type: spot
+    symbols: [BTCUSDT, ETHUSDT]
+    interval_ms: 100
+```
 
-容器内端口都是 9100,docker-compose 在 narci-sg 部署时映射到不同 host port
-(narci-reco 决定:UM 必然 host:9100,BS 可走 host:9101 — echo §14.2 说可
-"partitioned later if a venue split helps")。**其他 host 上 deployment 自己
-override `publisher_port: null` 禁用**。
+UM + BS 同一进程同一 port 9100(echo §14.2 "echo subscribes both on one
+connection"),通过 `venue` 字段 demux。**recorder 的 binance_*.yaml 不动**。
 
-#### D. Tests(`calibration/tests/test_live_publisher.py`)5 个全过
+#### D. recorder 完全没变
+
+`data/l2_recorder.py` 没有任何 publisher 相关 hook。`configs/exchanges/*.yaml`
+revert(没有 `publisher_port` / `publisher_venue_tag`)。recorder 进程 +
+publisher 进程是**两个独立 deployments**:
+- narci-sg 现有 `recorder-spot` / `recorder-umfut` 容器:不动
+- narci-sg 新增 `event-publisher` 容器(narci-reco 加 docker-compose 服务定义)
+
+#### E. Tests(`calibration/tests/test_live_publisher.py`)6 个全过
 
 | Test | 验收对应 |
 |---|---|
-| `test_fanout_lines_received` | §14.6 #1 TCP reachability + JSON-lines decode |
+| `test_fanout_lines_received` | §14.6 #1 TCP + JSON decode |
 | `test_heartbeat_during_quiet` | §14.6 #2 5s heartbeat |
 | `test_schema_well_formed` | §14.6 #3 schema check |
-| `test_subscriber_disconnect_cleanup` | (subscriber set 维护正确性) |
-| `test_no_subscribers_fanout_is_noop` | (defensive,无 subscriber 时不 raise) |
+| `test_multi_venue_on_one_port` | §14.2 wire 'venue ∈ {um,bs}' on one connection |
+| `test_subscriber_disconnect_cleanup` | subscriber set integrity |
+| `test_no_subscribers_fanout_is_noop` | defensive,no-sub 不 raise |
 
-`test_backpressure_slow_subscriber_dropped`(§14.6 #4)未实现 — 需要模拟
-TCP write buffer saturation,单元测试做太脆弱。Echo 端 acceptance test 自然
-覆盖(模拟 slow read → narci 端 1s 内 drop)。
+#### F. 部署门槛(narci-reco 域)
 
-#### E. 部署门槛(narci-reco 域)
-
-narci 这边 narci-sg 已经 deploy 完代码就生效。narci-reco 需要:
+narci 这边代码 + config + tests ship 完成。narci-reco 需要:
 1. AWS SG ingress 加 `0.0.0.0/0:9100`(narci-sg primary ENI)
-2. docker-compose 加端口映射:UM 容器 `9100:9100`,BS 容器(若 echo 要)
-   `9101:9100`
-3. `nrestartumfut` + `nrestartbinance-spot` 拾起新 config
+2. `docker-compose.yaml` 加新 service:
+   ```yaml
+   narci-event-publisher:
+     build: .
+     command: python -m data.event_publisher --config /app/configs/event_publisher.yaml
+     ports: ["9100:9100"]
+     restart: unless-stopped
+   ```
+   或者 SSM 运行 standalone(无需 docker)— `python -m data.event_publisher ...`
+3. 进程独立监控(`/health` 端口若需要,后续加)
 
-完成后 echo-air 端的 `sg_subscriber.py`(echo 在写)即可 `nc narci-sg-public-ip
-9100` 验证 §14.6 acceptance test。
+完成后 echo-air `sg_subscriber.py` → `nc narci-sg-public-ip 9100` 验证
+§14.6 acceptance test。
 
-#### F. 时间表 / Open ask
+#### G. 时间表 / Open ask
 
 - echo target 2026-05-26(1 周内 ship)— **narci side 已 ship 本 commit**
-- 等 narci-reco AWS SG + docker-compose 配置(narci-reco 估时)
+- 等 narci-reco AWS SG + 进程部署(narci-reco 估时)
 - 等 echo `sg_subscriber.py` ready,跑 §14.6 5 项 acceptance
 
 narci → echo 反向 ask:
-- v9_midy_40 推荐 manifest 加 `narci_features_version_required` 字段(若
-  echo 直接 load_alpha_model 走 narci AlphaModel 路径)— 当前 v8_d / v9_midy
-  manifest 都缺,会被 narci `load_alpha_model` reject(默认 `"v1"` ≠ runtime
-  `"v6"`)。echo 端 alpha 路径绕过 narci AlphaModel,自管 LGB load,**所以
-  这不阻塞 D9 本身**,只是 future migration 注意
+- v9_midy_40 manifest 缺 `narci_features_version_required` 字段(若 echo 直接
+  走 narci AlphaModel 路径会被 reject)。**不阻塞 D9**(echo 自管 LGB load),
+  future migration 注意
 
-#### G. 之前 §4.7 D8 回复的状态修正
+#### H. 之前 §4.7 D8 回复的状态修正
 
 §4.7 已加 SUPERSEDED banner(narci-reco `4865970` 同步)。`15ff210`
 save_interval=60 保留(cold-tier 价值);Ask A rsync deferred。

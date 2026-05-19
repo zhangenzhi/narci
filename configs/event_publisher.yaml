@@ -1,0 +1,44 @@
+# Live event publisher config — echo D9 channel.
+#
+# Spec: echo INTERFACE_ECHO_NARCI.md §14 Delivery 9 (2026-05-19 pivot).
+# Runs as standalone process on narci-sg (NOT inside the recorder).
+# Subscribes Binance global UM + spot WS independently, broadcasts
+# every depth + aggTrade event as JSON line on TCP port 9100.
+#
+# echo-air (Tokyo EC2) subscribes from cross-region AWS internal
+# traffic (~70 ms RTT) — Binance global is IP-blocked from JP, so
+# the SG-hosted publisher is the only path for live UM/BS data.
+#
+# Usage on narci-sg:
+#     python -m data.event_publisher --config configs/event_publisher.yaml
+
+publisher:
+  port: 9100
+  host: 0.0.0.0
+  heartbeat_sec: 5
+  # Drop subscribers whose write buffer exceeds this (slow consumer
+  # protection). 1 MB ≈ ~10k typical depth+trade lines @ ~100 bytes.
+  max_subscriber_buffer_bytes: 1048576
+
+venues:
+  - venue_tag: um
+    exchange: binance
+    market_type: um_futures
+    interval_ms: 100
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - SOLUSDT
+      - BNBUSDT
+      - XRPUSDT
+      - DOGEUSDT
+  - venue_tag: bs
+    exchange: binance
+    market_type: spot
+    interval_ms: 100
+    # Only the basis-relevant pairs — v9_midy_40 uses um_x_basis which
+    # references binance spot mid as denominator. Echo's existing
+    # FeatureBuilder venue mapping is `bs` for Binance global spot.
+    symbols:
+      - BTCUSDT
+      - ETHUSDT

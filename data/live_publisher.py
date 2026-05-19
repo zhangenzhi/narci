@@ -33,16 +33,22 @@ log = logging.getLogger(__name__)
 
 
 class LivePublisher:
+    """TCP/JSON-lines broadcaster — multi-venue capable.
+
+    A single publisher process handles many venues (e.g. `um` + `bs` on
+    narci-sg) on the same port; venue_tag is supplied per `fanout()`
+    call so subscribers receive a single mixed stream and disambiguate
+    by the `venue` field in each line.
+    """
+
     def __init__(
         self,
         port: int,
-        venue_tag: str,
         host: str = "0.0.0.0",
         heartbeat_sec: float = 5.0,
         max_subscriber_buffer_bytes: int = 1_048_576,
     ):
         self.port = port
-        self.venue_tag = venue_tag
         self.host = host
         self.heartbeat_sec = heartbeat_sec
         self.max_buffer = max_subscriber_buffer_bytes
@@ -56,8 +62,7 @@ class LivePublisher:
             self._handle_subscriber, host=self.host, port=self.port,
         )
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        log.info(f"[live_publisher] listening on {self.host}:{self.port} "
-                  f"venue={self.venue_tag!r}")
+        log.info(f"[live_publisher] listening on {self.host}:{self.port}")
 
     async def stop(self) -> None:
         if self._heartbeat_task is not None:
@@ -96,18 +101,16 @@ class LivePublisher:
         except Exception:
             pass
 
-    def fanout(self, records: Iterable[Iterable]) -> None:
-        """Push raw 4-tuple records `(ts_ms, side, price, qty)` to every
-        subscriber. Called from the recorder event loop right after the
-        same records land in `self.buffers[sym]`. Non-blocking — never
-        awaits."""
+    def fanout(self, venue_tag: str, records: Iterable[Iterable]) -> None:
+        """Push raw 4-tuple records `(ts_ms, side, price, qty)` tagged
+        with `venue_tag` to every subscriber. Non-blocking — never awaits."""
         if not self._subscribers:
             return
         payload = bytearray()
         for r in records:
             ts_ms, side, price, qty = r[0], r[1], r[2], r[3]
             line = json.dumps({
-                "venue": self.venue_tag,
+                "venue": venue_tag,
                 "ts_ms": int(ts_ms),
                 "side": int(side),
                 "price": float(price),

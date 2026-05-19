@@ -45,15 +45,6 @@ recorder:
   retry:
     wait_seconds: 5
 
-  # echo D9 (2026-05-19 pivot, INTERFACE_ECHO_NARCI.md §14): TCP/JSON-lines
-  # broadcaster tees each event to subscribed clients on this port. echo-air
-  # (Tokyo EC2) subscribes from narci-sg over cross-region AWS internal traffic
-  # (~70 ms RTT) because Binance global is IP-blocked from JP. Disable on
-  # any host except narci-sg by removing publisher_port from runtime config.
-  # publisher_venue_tag matches the FeatureBuilder venue convention (`um`).
-  publisher_port: 9100
-  publisher_venue_tag: um
-
   # API 节点配置 (支持动态变量 {streams}, {symbol_upper})
   endpoints:
     um_futures:

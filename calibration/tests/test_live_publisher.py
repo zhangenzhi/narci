@@ -50,7 +50,7 @@ class TestLivePublisherBasics(unittest.TestCase):
 
     def test_fanout_lines_received(self):
         async def body():
-            pub = LivePublisher(port=0, venue_tag="um")
+            pub = LivePublisher(port=0)
             # port=0 makes asyncio bind an ephemeral port; we read it back
             await pub.start()
             actual_port = pub._server.sockets[0].getsockname()[1]
@@ -58,8 +58,8 @@ class TestLivePublisherBasics(unittest.TestCase):
                 r, w = await _open_subscriber(actual_port)
                 # Give the subscriber loop a beat to register
                 await asyncio.sleep(0.05)
-                # Fan out 3 records (a typical depth update batch)
-                pub.fanout([
+                # Fan out 3 records (a typical depth update batch) tagged "um"
+                pub.fanout("um", [
                     [1779164453356, 0, 68234.5, 0.5],
                     [1779164453356, 1, 68234.6, 0.8],
                     [1779164453402, 2, 68234.55, -0.123],   # negative qty = seller maker
@@ -80,8 +80,7 @@ class TestLivePublisherBasics(unittest.TestCase):
 
     def test_heartbeat_during_quiet(self):
         async def body():
-            pub = LivePublisher(port=0, venue_tag="um",
-                                 heartbeat_sec=0.1)
+            pub = LivePublisher(port=0, heartbeat_sec=0.1)
             await pub.start()
             actual_port = pub._server.sockets[0].getsockname()[1]
             try:
@@ -104,13 +103,13 @@ class TestLivePublisherBasics(unittest.TestCase):
 
     def test_schema_well_formed(self):
         async def body():
-            pub = LivePublisher(port=0, venue_tag="bs")
+            pub = LivePublisher(port=0)
             await pub.start()
             actual_port = pub._server.sockets[0].getsockname()[1]
             try:
                 r, w = await _open_subscriber(actual_port)
                 await asyncio.sleep(0.05)
-                pub.fanout([
+                pub.fanout("bs", [
                     [1779164453356, 3, 68234.5, 0.5],     # bid snap
                     [1779164453356, 4, 68234.6, 0.8],     # ask snap
                 ])
@@ -132,17 +131,41 @@ class TestLivePublisherBasics(unittest.TestCase):
 
     def test_no_subscribers_fanout_is_noop(self):
         async def body():
-            pub = LivePublisher(port=0, venue_tag="um")
+            pub = LivePublisher(port=0)
             await pub.start()
             # No subscriber connected; fanout should not raise.
-            pub.fanout([[1, 0, 100.0, 1.0]])
-            pub.fanout([[2, 2, 100.0, -0.5]])
+            pub.fanout("um", [[1, 0, 100.0, 1.0]])
+            pub.fanout("bs", [[2, 2, 100.0, -0.5]])
             await pub.stop()
+        _async(body())
+
+    def test_multi_venue_on_one_port(self):
+        """Single publisher process can fan out UM + BS events on the same
+        port; each line carries its own `venue` tag so the subscriber can
+        demux. echo §14.2 wire spec ('venue ∈ {um,bs}' on one connection)."""
+        async def body():
+            pub = LivePublisher(port=0)
+            await pub.start()
+            actual_port = pub._server.sockets[0].getsockname()[1]
+            try:
+                r, w = await _open_subscriber(actual_port)
+                await asyncio.sleep(0.05)
+                pub.fanout("um", [[1, 2, 68234.5, -0.1]])
+                pub.fanout("bs", [[2, 2, 68234.7, +0.2]])
+                pub.fanout("um", [[3, 0, 68234.5, 0.8]])
+                lines = await _read_n_lines(r, 3, timeout=1.0)
+                self.assertEqual(len(lines), 3)
+                self.assertEqual([l["venue"] for l in lines],
+                                  ["um", "bs", "um"])
+                w.close()
+                await w.wait_closed()
+            finally:
+                await pub.stop()
         _async(body())
 
     def test_subscriber_disconnect_cleanup(self):
         async def body():
-            pub = LivePublisher(port=0, venue_tag="um")
+            pub = LivePublisher(port=0)
             await pub.start()
             actual_port = pub._server.sockets[0].getsockname()[1]
             try:
