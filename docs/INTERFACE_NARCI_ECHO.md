@@ -617,7 +617,19 @@ re-cut INTERFACE_NARCI.md 时勾掉 / 删除这行,免得长期挂着。
 > 回复方式:在 §7 appendix 增加 `7.X — reply to echo Delivery N`,然后把
 > 状态从 open → done。
 
-### 8.1 Delivery 8 — Phase 1a real-time signal channel (open)
+### 8.1 Delivery 8 — Phase 1a real-time signal channel (⚠️ SUPERSEDED 2026-05-19)
+
+> **状态:SUPERSEDED by §8.2** (echo SHA `18a74f2`,architecture pivot
+> commit `docs(pivot 2026-05-19): LGB v9_midy_40 moves to AWS Tokyo EC2`)。
+>
+> echo 把 LGB inference 移到 echo-air (Tokyo EC2),不再通过 HPC 当 live
+> signal source。本节里的两个 ask (UM/BS 实时落 lustre1 + save_interval
+> 600→60) **都 parked** —— 它们是 recorder 内部优化,**不在 echo 关键路径
+> 上**。narci 这边的 save_interval 节奏自己决定,echo 不再 push。
+>
+> 新 ask 见 [§8.2](#82-delivery-9-narci-sg-内存事件转发-open)。
+>
+> 下面的旧内容保留供 git history。
 
 - **来源**:echo SHA `90b7791` · `docs/INTERFACE_ECHO_NARCI.md §13`
   (committed 2026-05-19 22:xx JST)
@@ -697,3 +709,98 @@ narci 这边收到后:
 
 **这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
 `7.7 — reply to echo Delivery 8`。
+
+### 8.2 Delivery 9 — narci-sg 内存事件转发 (open)
+
+- **来源**:echo SHA `18a74f2` · `docs/INTERFACE_ECHO_NARCI.md §14` +
+  `docs/INTERFACE_ECHO_AIR.md §0.5 + §3.1` (committed 2026-05-19 22:47 JST)
+- **状态**:open · 替换 §8.1 (D8)
+
+#### 背景
+
+echo 在 air-side 做了架构 pivot:LGB v9_midy_40 inference 从 echo-lab (HPC)
+**搬到 echo-air (AWS Tokyo EC2)**。原因:Binance global (UM + BS) 从
+JP IP-blocked,echo-air 自己 subscribe 不到;但 **narci-sg (Singapore)
+已经在 subscribe UM + BS**,只要 narci-sg 把这些事件再喷一份 TCP 出去,
+echo-air 就能从 cross-region 内网拉到 (~70 ms)。
+
+**结果**:
+- 旧 D8 两个 ask (UM/BS 实时到 lustre1 + `save_interval_sec` 600→60)
+  **全部不需要做** —— 它们都是 recorder 内部优化,echo 不再依赖。
+- 新 ask 比 D8 范围小一个量级 (~50 LOC,纯 additive)。
+
+#### Ask (高,echo 期望 narci own)
+
+`narci/data/l2_recorder.py` 里,每个事件被 append 到 `self.buffers[sym]`
+**之前/同时**,tee 一份给一个 `asyncio.start_server` broadcaster。订阅者
+(echo-air) 通过 TCP 拉 JSON-lines 实时流。**不改 parquet 节奏、schema、
+gdrive、save_interval 任何东西** —— 现在的冷数据路径完全保留。
+
+实现位点(narci 自己决定细节,echo 给的建议):
+
+- hook 进 `_handle_depth` / `_handle_trade` callback,append 到 buffer
+  之后立刻 `self.live_publisher.fanout(sym, ts_ms, side, price, qty)`
+- `live_publisher` 是一个小 broadcaster (asyncio):
+  - `set[StreamWriter]` 管订阅者
+  - 写 buffer 满或 transport closing → drop 该 subscriber
+  - 5s heartbeat 维持心跳
+- config:`publisher_port: 9100` 加进 `configs/exchanges/binance_um_futures.yaml`
+  和 `binance_spot.yaml`
+
+总量 ~50 LOC + 一个 config knob。
+
+#### Wire 协议 (echo 已 spec,可直接 implement)
+
+完整 spec 在 `INTERFACE_ECHO_NARCI.md §14.2 / §14.3`。要点:
+
+- TCP / JSON-lines,port 9100,`0.0.0.0/0:9100` SG ingress (Phase 1a 不
+  加 auth/TLS,公开市场数据)
+- **wire shape 等于 buffer 行 verbatim**:
+  ```json
+  {"venue":"um","ts_ms":1779164453356,"side":2,"price":68234.50,"qty":0.123}
+  ```
+  零翻译。`side` 沿用 §4.2 的 0/1/2/3/4 编码。
+- Heartbeat:`{"kind":"heartbeat","ts_ms":...}`,5s 静默期发一次。
+- Back-pressure:慢订阅者 drop + 强制重连。
+- Cold-start:**只发 live 事件,不补历史**。FB warmup 用 echo-air
+  自己 30s 滚出来,长期训练用 lustre1 冷数据(narci 现有路径,不动)。
+
+#### narci-sg ops 影响 (echo 端的预判)
+
+- narci-sg 已经从 t4g.small 升级到 **t4g.medium**(根据 air 端
+  `[[project-narci-sg-ec2]]` memory),内存余量足够加一个 broadcaster。
+- CPU:fanout 是 O(N_subscribers × write),Phase 1a 只有 1 个订阅者
+  (echo-air),quiet 期 ≤ 10 KB/s,busy 期 < 100 KB/s。可忽略。
+- Network:cross-region (sg → tokyo) 出口流量 narci 这边会有一些 AWS
+  内网费用(几 GB/月 数量级,$0.01 级)。
+
+#### 验收 (echo 端会跑)
+
+narci ship 后,echo-air subscriber (`echo/relay/sg_subscriber.py`,
+air session 在写)对接 narci-sg:`9100`。验证 5 条:
+
+1. TCP reachability + JSON-lines 解码 OK
+2. 30s quiet 期 ≥ 5 个 heartbeat 帧
+3. 每个非 heartbeat 帧 schema 正确(`{venue,ts_ms,side,price,qty}`)
+4. 模拟 slow subscriber → 1s 内被 drop
+5. End-to-end:echo-air `FeatureBuilder` + v9_midy_40 `predict()` 30s
+   内吐出有限 alpha
+
+#### 时间表
+
+- narci 接 Ask + 实现 + deploy:**target 2026-05-26**(比旧 D8 的 06-15
+  快 3 周,因为 scope 小一个量级)
+- Phase 1a paper soak ready:narci ship 后立即(air 这边
+  `sg_subscriber.py` 在并行写)
+
+#### narci 这边的初步反应空间
+
+- (a) 评估 narci-sg t4g.medium 当前内存余量 + asyncio 在 recorder 主
+  loop 里加 broadcaster 是否影响 WS 接收稳定性
+- (b) 决定 publisher hook 放进 `l2_recorder.py` 还是 `data/exchange/binance.py`
+  (echo 推荐前者,但 narci 更懂 recorder 内部)
+- (c) 如果 narci 想优先把 broadcaster 做成 sidecar 而不是 in-recorder hook,
+  也可以 —— 只要协议(§14.2/§14.3)端不变,echo 不在意进程边界。
+
+**这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
+`7.8 — reply to echo Delivery 9`。
