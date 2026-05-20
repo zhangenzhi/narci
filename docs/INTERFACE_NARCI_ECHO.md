@@ -1140,3 +1140,90 @@ r = backtest_alpha_model(
 
 **这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
 `7.9 — reply to echo Delivery 10`。
+
+### 8.4 Delivery 11 — heads-up + §3.1 status (open · low priority heads-up + §3.1 status update)
+
+- **来源**:echo SHA `c9a17c3` · `docs/INTERFACE_ECHO_NARCI.md §16`
+  (committed 2026-05-20)
+- **状态**:open · 两件事 —— 一个 narci-side heads-up (低优),
+  一个 §3.1 status update
+
+#### A. Heads-up:`Orderbook` 对 CC 全 snapshot 协议不兼容
+
+echo-air paper soak 发现 `narci.backtest.orderbook.Orderbook.apply_event`
+(line 180-182) 把 `SIDE_BID_SNAP (3)` / `SIDE_ASK_SNAP (4)` 当成普通
+incremental upsert 处理(`_book_apply(...)` 只 upsert,没 clear / 没
+prune)。
+
+- ✓ **Binance UM / spot** OK(它们发 incremental delta + explicit
+  `qty=0` deletes)
+- ✗ **CC / bitbank / GMO / bitFlyer** 不 OK(它们发 full top-N
+  snapshot,disappeared level 没显式 delete)
+
+`narci.data.l2_reconstruct.L2Reconstructor.apply_event` (line 257-258)
+做了 *"atomically replace bid book"* on new snapshot ts —— 正确。
+
+echo `engine.book` (`echo/execution/live_engine.py:67`) 用 Orderbook,
+跑 CC 20 分钟后实际 stale **26K JPY**,quote 落在 deep queue,0 fills。
+
+**narci-internal 影响**:同 class 还被
+`narci.backtest.event_engine.EventEngine:52` 使用。任何把 Orderbook
+放在 CC-style 全 snapshot venue 前面的 code 都会撞这个 bug。
+
+#### B. 给 narci 的 options(无强偏好)
+
+| 选项 | 改动 | 推荐度 |
+|---|---|---|
+| (a) `Orderbook.apply_event` 加 snapshot-reset 语义 | port `L2Reconstructor.apply_event:257-258` 进 `Orderbook` | 范围大,touch matching engine,谨慎 |
+| (b) 加 docstring header 标明 "incremental-L2 only;CC/bitbank/GMO 用 L2Reconstructor" | 几行注释 | echo lean **这个先做**,低风险 |
+| (c) `MakerSimBroker.book` 改成 `L2Reconstructor(depth_limit=..., prune_snapshot_dust=True)` | `maker_broker.py:94` 一行 | echo lean (c),free 收益,跟 lab signal_publisher 对齐 |
+
+**不是 ask narci 必须做。** echo 这边 air Option A
+(`AlphaAwareMakerStrategy` 直接 read `broker.book` 而不是 `engine.book`)
+已经 work around。这个 heads-up 是 narci 内部 future-proof 用。
+
+#### C. §3.1 status update — first non-empty session bundle ETA
+
+narci §3.1 ask "decisions/fills/cancels 非空 5-10 min session bundle"
+since 2026-05-15。echo 端 status:
+
+| Layer | State |
+|---|---|
+| Predict pipeline (live WS + V8LiveAdapter + LGB predict) | ✅ shipped, 1h dry-run validated (1033 predictions, 0 errors) |
+| PaperSimBroker (narci MakerSimBroker 嵌入) | ✅ shipped (echo air `e77a67a`+follow-ons) |
+| Live book consistency on CC (engine.book bug) | 🐛 修复 in-flight (Option A, ~20 LOC) |
+| **First non-empty bundle to inbox** | 🟡 ETA **minutes after Option A merges + soak restarts** |
+
+预期 bundle 内容:
+
+- `meta.json` with `strategy_class=AlphaAwareMakerStrategy`,
+  `narci_git_sha` pinned,binding sha (`v9_midy_40`) populated
+- `raw_l2/` — CC + BJ WS events
+- `decisions/` — 非空,带 `model_artifact_sha` /
+  `binding_target_kind=cc_l2_mid_log_return_1s`
+- `fills/` — 非空(option A 后)
+- `cancels/` — 非空(5s quote lifetime 驱动高 cancel rate)
+
+#### D. Open Q for narci(C 相关)
+
+`raw_l2/` 要不要把 UM/BS WS 事件也写进去?currently echo predict_loop
+通过 narci-sg TCP forward (D9 path) consume UM/BS in-memory,
+**没写盘**。narci-sg 自己有 gdrive cold-tier 拷贝是 authoritative。
+
+echo 默认假设:**raw_l2/ 只放 CC + BJ**;UM/BS pairing narci 端通过
+narci-sg → cold-tier 自己接。
+
+如果 narci 想要 UM/BS 也进 echo bundle(cross-host pairing audit
+用),echo 需要在 SGSubscriber 那加 fork-to-disk(net new code)。
+**flag 如果默认假设错。**
+
+#### E. 不在 ask 范围
+
+- ❌ 不 ask narci 立即修 Orderbook
+- ❌ 不 ask narci 改 schema
+- ❌ 不 ask narci 跑任何 backtest
+- ❌ 不 ask narci 加任何 deadline
+
+**这一条 done 后**(narci 决定 option a/b/c 之后)把 §A 移到
+done;§C 状态会在 echo Option A 落地 + 第一 bundle 到 inbox 之后
+自动 close。
