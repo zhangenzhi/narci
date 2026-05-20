@@ -48,13 +48,27 @@ from .maker_broker import MakerSimBroker
 
 COLD = Path("/lustre1/work/c30636/narci/replay_buffer/cold")
 
-# Match research/segmented_replay.py
-VENUE_SOURCES = [
-    ("coincheck",   "spot",       "BTC_JPY", "cc"),
-    ("binance_jp",  "spot",       "BTCJPY",  "bj"),
-    ("binance",     "um_futures", "BTCUSDT", "um"),
-    ("binance",     "spot",       "BTCUSDT", "bs"),  # v5: perp-spot basis
-]
+# Match research/segmented_replay.py:VENUE_SOURCES_BY_SYMBOL — added
+# 2026-05-20 per echo INTERFACE_ECHO_NARCI.md §15 D10. Threads symbol
+# through `_stream_days` / `_multi_venue_*` / `backtest_alpha_model`
+# so a non-BTC binding (e.g. ETH v9_eth_midy_36) reads its own cold-tier
+# parquets instead of silently opening BTC files.
+VENUE_SOURCES_BY_SYMBOL: dict[str, list[tuple[str, str, str, str]]] = {
+    "BTC_JPY": [
+        ("coincheck",   "spot",       "BTC_JPY", "cc"),
+        ("binance_jp",  "spot",       "BTCJPY",  "bj"),
+        ("binance",     "um_futures", "BTCUSDT", "um"),
+        ("binance",     "spot",       "BTCUSDT", "bs"),  # v5: perp-spot basis
+    ],
+    "ETH_JPY": [
+        ("coincheck",   "spot",       "ETH_JPY", "cc"),
+        ("binance_jp",  "spot",       "ETHJPY",  "bj"),
+        ("binance",     "um_futures", "ETHUSDT", "um"),
+        ("binance",     "spot",       "ETHUSDT", "bs"),
+    ],
+}
+# Backward-compat alias for callers that still import VENUE_SOURCES directly.
+VENUE_SOURCES = VENUE_SOURCES_BY_SYMBOL["BTC_JPY"]
 
 QUOTE_STRATEGIES = ("join_back", "improve_1_tick")
 
@@ -115,10 +129,12 @@ def _stream_cold_file(path: Path, venue: str,
         yield (int(ts[i]), -s, venue, s, float(pr[i]), float(qt[i]))
 
 
-def _multi_venue_first_tss(day: str) -> dict[str, int]:
-    """Return {venue: first_event_ts} across VENUE_SOURCES daily files."""
+def _multi_venue_first_tss(day: str, *, symbol: str = "BTC_JPY"
+                            ) -> dict[str, int]:
+    """Return {venue: first_event_ts} across `symbol`'s venue table for
+    `day`. `symbol` is the CC-side symbol key into VENUE_SOURCES_BY_SYMBOL."""
     out: dict[str, int] = {}
-    for exchange, market, sym, venue in VENUE_SOURCES:
+    for exchange, market, sym, venue in VENUE_SOURCES_BY_SYMBOL[symbol]:
         p = COLD / exchange / market / f"{sym}_RAW_{day}_DAILY.parquet"
         if not p.exists():
             p = COLD / f"{sym}_RAW_{day}_DAILY.parquet"
@@ -129,9 +145,11 @@ def _multi_venue_first_tss(day: str) -> dict[str, int]:
     return out
 
 
-def _multi_venue_anchor_ts(day: str) -> int | None:
-    """Return the latest first-event timestamp across all VENUE_SOURCES
-    daily files for `day`, or None if no daily files exist.
+def _multi_venue_anchor_ts(day: str, *, symbol: str = "BTC_JPY"
+                            ) -> int | None:
+    """Return the latest first-event timestamp across all
+    VENUE_SOURCES_BY_SYMBOL[symbol] daily files for `day`, or None if no
+    daily files exist.
 
     This is the earliest time at which all venues are simultaneously
     alive — anchoring a max_hours slice here ensures the window contains
@@ -143,15 +161,17 @@ def _multi_venue_anchor_ts(day: str) -> int | None:
     daily file began 2026-05-08 15:06 while BJ started 2026-05-09 00:57
     — anchoring on CC's first_ts cut a max_hours=4 window entirely
     before BJ/UM had any data, producing 0 predictions."""
-    first_tss = _multi_venue_first_tss(day)
+    first_tss = _multi_venue_first_tss(day, symbol=symbol)
     return max(first_tss.values()) if first_tss else None
 
 
-def _stream_days(days: list[str], max_hours: float | None = None):
+def _stream_days(days: list[str], max_hours: float | None = None,
+                 *, symbol: str = "BTC_JPY"):
+    venues = VENUE_SOURCES_BY_SYMBOL[symbol]
     iters = []
     end_ts_ms: int | None = None
     if max_hours is not None and days:
-        first_tss = _multi_venue_first_tss(days[0])
+        first_tss = _multi_venue_first_tss(days[0], symbol=symbol)
         if first_tss:
             anchor_ts = max(first_tss.values())
             end_ts_ms = anchor_ts + int(max_hours * 3_600_000)
@@ -172,7 +192,7 @@ def _stream_days(days: list[str], max_hours: float | None = None):
                       f"Predictions before the lagging venue starts will "
                       f"be NaN. Details: {detail}", flush=True)
     for d in days:
-        for exchange, market, sym, venue in VENUE_SOURCES:
+        for exchange, market, sym, venue in venues:
             path = COLD / exchange / market / f"{sym}_RAW_{d}_DAILY.parquet"
             if not path.exists():
                 path = COLD / f"{sym}_RAW_{d}_DAILY.parquet"
@@ -213,6 +233,8 @@ def backtest_alpha_model(
     max_hours: float | None = None,       # smoke knob; None = full day(s)
     quote_strategy: str = "join_back",    # "join_back" | "improve_1_tick"
     verbose: bool = True,
+    allow_features_version_mismatch: bool = False,
+    venue_symbol: str | None = None,
 ) -> dict:
     """Backtest an AlphaModel by streaming events through narci's
     simulator and computing PnL + Sharpe + fill metrics.
@@ -233,6 +255,16 @@ def backtest_alpha_model(
         spread is already one tick wide). Per nyx 2026-05-13 sweep,
         improve_1_tick is the production-binding strategy for CC echo
         (+11.3x PnL vs join_back on 05-04).
+    :param allow_features_version_mismatch: forward to load_alpha_model;
+        skips the strict pin (use for bindings that omit
+        `narci_features_version_required` from manifest; nyx v8_d /
+        v9_eth_midy_* are like this).
+    :param venue_symbol: key into VENUE_SOURCES_BY_SYMBOL selecting which
+        cold-tier parquet universe to stream from (per echo D10 2026-05-20).
+        Defaults to `symbol` so callers swapping `symbol="ETH_JPY"`
+        automatically also stream ETH parquets. Set explicitly only when
+        you want a binding's venue universe to differ from the broker's
+        symbol (rare).
 
     :return: dict with daily_pnl, sharpe, fills, decisions, cancels,
              plus aggregate stats.
@@ -241,7 +273,22 @@ def backtest_alpha_model(
         raise ValueError(
             f"quote_strategy must be one of {QUOTE_STRATEGIES}, got {quote_strategy!r}"
         )
-    model: AlphaModel = load_alpha_model(Path(model_path))
+    # `venue_symbol` selects which VENUE_SOURCES_BY_SYMBOL row drives the
+    # cold-tier stream. Defaults to the broker symbol (CC-side), which is
+    # the right answer for current ETH/BTC paths since the venue table key
+    # IS the CC symbol. Callers who want to backtest with a different
+    # asset's venue universe can override (rare).
+    if venue_symbol is None:
+        venue_symbol = symbol
+    if venue_symbol not in VENUE_SOURCES_BY_SYMBOL:
+        raise ValueError(
+            f"unknown venue_symbol {venue_symbol!r}; available: "
+            f"{sorted(VENUE_SOURCES_BY_SYMBOL.keys())}. Extend "
+            f"VENUE_SOURCES_BY_SYMBOL to add a new asset.")
+    model: AlphaModel = load_alpha_model(
+        Path(model_path),
+        allow_features_version_mismatch=allow_features_version_mismatch,
+    )
     if symbol_spec is None:
         symbol_spec = _make_default_symbol_spec(symbol, exchange)
     if params is None:
@@ -266,7 +313,8 @@ def backtest_alpha_model(
     t0 = time.time()
     n_events = 0
     last_print_evt = 0
-    for ts_ms, _neg, venue, side, price, qty in _stream_days(days, max_hours):
+    for ts_ms, _neg, venue, side, price, qty in _stream_days(
+            days, max_hours, symbol=venue_symbol):
         n_events += 1
         ts_ns = ts_ms * 1_000_000
 

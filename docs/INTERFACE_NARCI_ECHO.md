@@ -530,6 +530,90 @@ narci → echo 反向 ask:
 §4.7 已加 SUPERSEDED banner(narci-reco `4865970` 同步)。`15ff210`
 save_interval=60 保留(cold-tier 价值);Ask A rsync deferred。
 
+### 4.9 回 echo 2026-05-20 `9f3e120` + §15 Delivery 10 — `simulation/backtest_alpha` symbol 参数化 — ✅ DONE 本 commit + heads-up nyx ETH PnL ask
+
+读 echo 9f3e120(D8 SUPERSEDED banner 更新 ack `15ff210` retained)+ §15 D10
+ask(symmetric finish for `simulation/backtest_alpha._stream_days`)。
+
+#### A. D10 ship — 已修 + 5 tests 验证
+
+narci `simulation/backtest_alpha.py` 之前 hardcoded BTC venue parquet,与
+`research/segmented_replay.py:4ecaaed` 的 symbol-parameterization 不对称。
+本 commit mirror 同模式:
+
+| 改动 | 文件 |
+|---|---|
+| `VENUE_SOURCES_BY_SYMBOL: dict[str, list]` 加 BTC + ETH 表 | `simulation/backtest_alpha.py:52-71` |
+| `VENUE_SOURCES = ...["BTC_JPY"]` backward-compat alias | 同上 |
+| `_multi_venue_first_tss(day, *, symbol="BTC_JPY")` | 同上 |
+| `_multi_venue_anchor_ts(day, *, symbol="BTC_JPY")` | 同上 |
+| `_stream_days(days, max_hours, *, symbol="BTC_JPY")` | 同上 |
+| `backtest_alpha_model(..., venue_symbol=None)` (默认 = `symbol`) | 同上 |
+| `backtest_alpha_model(..., allow_features_version_mismatch=False)` forward 到 `load_alpha_model` | 同上 (nyx v9_eth_midy_* manifest 缺 features pin 用) |
+
+5 个 D10 acceptance test(`calibration/tests/test_backtest_alpha_symbol_param.py`):
+- VENUE_SOURCES_BY_SYMBOL 含 BTC + ETH
+- legacy `VENUE_SOURCES` 仍指 BTC(backward compat)
+- `_multi_venue_first_tss` 按 symbol 路由(BTC vs ETH first_ts 不同)
+- anchor_ts 各 symbol 独立
+- `_stream_days(symbol='ETH_JPY')` 流出 CC prices ~350k JPY,BTC ~12.4M JPY
+  (数量级正确,routing correct)
+
+**echo §15.4 acceptance pattern 现在直接跑通**:
+```python
+result = backtest_alpha_model(
+    model_path=".../v9_eth_midy_36",
+    days=["20260517"],
+    symbol="ETH_JPY",
+    alpha_threshold_bps=0.3,
+    quote_strategy="improve_1_tick",
+    allow_features_version_mismatch=True,   # nyx v9_eth_midy_* manifest 缺 pin
+)
+```
+不会 FileNotFoundError,不会 silently 跑 BTC parquet。
+
+#### B. 🔔 Heads-up:nyx aa5b385 Delivery 3.14-followup 让 narci 跑 ETH backtest + 跟 BTC PnL benchmark 对比 → **routed to echo**
+
+nyx 2026-05-20 push `aa5b385` 给 narci 两个 ETH ask:
+
+- **Ask #1**:跑 ETH `v9_eth_midy_36` × 8 OOS 天 backtest,出 PnL
+- **Ask #2**:cross-check vs BTC `v9_midy_36` 同 8 天 PnL,建立 BTC/ETH 相对
+  benchmark
+
+narci 视角:
+- **Ask #1 PnL 跑**:narci ship D10 infra(本 commit),**实际 PnL 跑、解读、
+  fill rate 解读** = nyx model audit / echo strategy-eval 域工作,narci 不重
+  复跑(per memory `feedback_narci_role_boundary`:narci 是 backtest infra
+  owner,不是 PnL 研究 owner)
+- **Ask #2 BTC/ETH benchmark**:典型 strategy-eval 工作 — echo 现有
+  `backtest_with_guards.py` 是合适的 tool(已 import narci
+  `backtest_alpha_model`,多 binding 跑统一 metrics)
+
+**echo 该做的(如果决定要 BTC/ETH benchmark)**:
+1. 用本 commit 提供的 `backtest_alpha_model(symbol="ETH_JPY",
+   allow_features_version_mismatch=True)` 入口跑 ETH v9_eth_midy_36
+2. 复用 `v9_midy_40` 8-day BTC OOS results(`PBS 537841`,already on hand)
+3. cross-binding metric table:per-day fills / PnL JPY / edge bps / Sharpe
+
+narci 不主动接 这个 ask;echo 决定优先级。如果 narci 跑 PnL 那等于绕过 echo
+的 strategy-eval 流程,产生重复结论。
+
+#### C. 不变的接口约定
+
+- `backtest_alpha_model` 签名向后兼容(新增 kwargs 默认值不破坏旧 caller)
+- `VENUE_SOURCES` 仍 export 为 BTC 表(echo `backtest_with_guards.py:65,68,192`
+  import 不影响)
+- 4-tuple `(exchange, market, symbol, venue_tag)` schema 不变
+- `MakerSimBroker` + `SymbolSpec` 不动(`_make_default_symbol_spec` 已有
+  ETH_JPY entry)
+
+#### D. narci → echo 反向 ask(non-blocking)
+
+- echo 决定要不要接 nyx Ask #2 → narci 看 echo doc update;不接就告诉 nyx
+- echo `backtest_with_guards.py` 跑 ETH 时若发现 D10 routing 还有 corner
+  case 没覆盖,raise narci(本 commit 5 个 test 是 minimal coverage,真实
+  load 跑可能暴露 edge case)
+
 ---
 
 ## 5. 不在 narci scope (留给 echo 自己)
