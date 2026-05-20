@@ -975,3 +975,84 @@ air session 在写)对接 narci-sg:`9100`。验证 5 条:
 
 **这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
 `7.8 — reply to echo Delivery 9`。
+
+### 8.3 Delivery 10 — `simulation/backtest_alpha._stream_days` symbol 参数化 (open · low priority)
+
+- **来源**:echo `docs/INTERFACE_ECHO_NARCI.md §15` (committed
+  2026-05-20)
+- **状态**:open · low priority(不在 Phase 1a critical path 上)
+
+#### 背景
+
+narci `4ecaaed` 已把 `research/segmented_replay.py` 的
+`VENUE_SOURCES_BY_SYMBOL` 参数化(nyx ETH/JPY 训练用)。但
+`simulation/backtest_alpha.py` 这边的 runtime backtest 路径
+(`backtest_alpha_model` + `_stream_days` + `_multi_venue_first_tss`)
+**还在用模块级硬编码的 BTC-only `VENUE_SOURCES`**。
+
+#### 影响
+
+echo 现在想跑 nyx Delivery 3.14 ask G(`v9_eth_midy_36` 在 0517 跑
+1-day dry-run on narci 端 canonical `backtest_alpha_model`),但:
+
+```python
+backtest_alpha_model(
+    model_path=".../v9_eth_midy_36",
+    days=["20260517"],
+    symbol="ETH_JPY",   # broker/priors 接受了
+)
+```
+
+→ `_stream_days(days)` 走 `VENUE_SOURCES` BTC-only → 打开
+`BTC_JPY_RAW_20260517_DAILY.parquet` 而不是
+`ETH_JPY_RAW_20260517_DAILY.parquet`,FB 喂 BTC 数据给 ETH binding,
+predictions garbage。echo 的 `backtest_with_guards.py`(line 65,68,192
+import narci `_stream_days`)同样阻塞。
+
+#### Ask
+
+mirror `research/segmented_replay.py:44-58` 在
+`simulation/backtest_alpha.py`,然后 thread `symbol` 进:
+
+- `_stream_days(days, max_hours=None, *, symbol="BTC_JPY")`
+- `_multi_venue_first_tss(day, *, symbol="BTC_JPY")`
+- `_multi_venue_anchor_ts(day, *, symbol="BTC_JPY")`
+- `backtest_alpha_model(...)` 已经接 `symbol`,只需 pass through
+
+**estimated**:~15 LOC + 1 backward-compat alias
+(`VENUE_SOURCES = VENUE_SOURCES_BY_SYMBOL["BTC_JPY"]`)。
+
+完整 diff 建议在 echo §15.2。
+
+#### 不在 ask 范围
+
+- ❌ 不动 `VENUE_SOURCES_BY_SYMBOL` schema
+- ❌ 不动 `MakerSimBroker` / `SymbolSpec` defaults(已经支持 ETH_JPY
+  via `_make_default_symbol_spec` line 186-197)
+- ❌ 不加新 venue / 新 schema
+
+#### 时间表
+
+**低优先级**。D9 (narci-sg publisher) 是 Phase 1a critical path,这条
+只是解开 research-tier 1-day dry-run。**无 deadline**,narci 有 slack
+hour 时做即可。
+
+#### 验收
+
+narci ship 后,echo 跑:
+
+```python
+from narci.simulation.backtest_alpha import backtest_alpha_model
+r = backtest_alpha_model(
+    model_path="<v9_eth_midy_36 path>",
+    days=["20260517"],
+    symbol="ETH_JPY",
+    alpha_threshold_bps=0.3,
+    quote_strategy="improve_1_tick",
+)
+# expect: r['daily_pnl']['20260517'] finite, r['n_fills'] > 0,
+#         no FileNotFoundError
+```
+
+**这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
+`7.9 — reply to echo Delivery 10`。
