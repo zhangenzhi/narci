@@ -1227,3 +1227,107 @@ narci-sg → cold-tier 自己接。
 **这一条 done 后**(narci 决定 option a/b/c 之后)把 §A 移到
 done;§C 状态会在 echo Option A 落地 + 第一 bundle 到 inbox 之后
 自动 close。
+
+### 8.5 Delivery 12 — 扩展 `TARGET_KINDS` + `SAMPLING_MODES` 接受 BJ-target bindings (open · trivial fix)
+
+- **来源**:echo SHA pending · `docs/INTERFACE_ECHO_NARCI.md §17`
+  (committed 2026-05-21)
+- **状态**:open · ~6 LOC fix · echo backtest 已 monkeypatch 绕过,
+  production 需要 narci 端正式合入
+
+#### 背景
+
+nyx 2026-05-20/21 两个 commit 引入 BJ-target binding 家族:
+
+- `7f7f10f` v9_bj_midy_36 (BTC/JPY BJ mid-y)
+- `26bafa2` v9_bj_eth_midy_36 (ETH/JPY BJ mid-y)
+
+两个 binding 引入了 narci canonical set 没有的两个枚举值:
+- `target_kind = "bj_l2_mid_log_return_1s"` ← 不在 `TARGET_KINDS`
+- `sampling_mode = "event_at_bj_trade"` ← 不在 `SAMPLING_MODES`
+
+`narci/calibration/alpha_models.py:166-175` 硬 reject 任何不在 frozenset
+里的 target_kind / sampling_mode,**没 bypass flag**。
+
+echo PBS 539458 backtest 用 in-process monkeypatch 绕过测试,但 production
+echo-air `load_alpha_model` 不能 ship runtime monkey patches。
+
+#### Ask
+
+`narci/calibration/alpha_models.py:54-65`:
+
+```python
+TARGET_KINDS = frozenset({
+    # 原有...
+    'cc_l2_microprice_log_return_1s',
+    'cc_l2_mid_log_return_1s',
+    'cc_maker_conditional_fill_pnl_buy_τ1000ms',
+    'cc_maker_conditional_fill_pnl_sell_τ1000ms',
+    'cc_mid_event_log_return',
+    'cc_trade_event_log_return',
+    'mid_10s_log_return',
+    'mid_1s_log_return',
+    'mid_30s_log_return',
+    'mid_5s_log_return',
+    'trade_10s_log_return',
+    'trade_1s_log_return',
+    'trade_30s_log_return',
+    'trade_5s_log_return',
+    # NEW (nyx 7f7f10f / 26bafa2):
+    'bj_l2_mid_log_return_1s',
+    'bj_l2_microprice_log_return_1s',  # future-proof
+})
+```
+
+`narci/calibration/alpha_models.py:100-108`:
+
+```python
+SAMPLING_MODES = frozenset({
+    '1s_grid',
+    'event_at_book_update',
+    'event_at_cc_trade',
+    # NEW:
+    'event_at_bj_trade',
+})
+```
+
+**~6 LOC, 无语义改动** — 只是 enum 扩展,跟 `4ecaaed` symbol 化套路一样。
+
+#### 为啥从 echo 走
+
+这其实是 **nyx 的责任** — ship 新 binding 家族时应该跟 narci 协调
+canonical 值的扩展。但 echo 是发现 breakage 的下游:
+
+1. echo backtest 第一时间撞到这个 gate
+2. echo 已有 D11 / D10 inbox 渠道到 narci,pipeline 一下省事
+3. fix 不依赖 echo PnL 数据,narci 可以独立 ship
+
+**Process suggestion**:narci 这次 merge 之后,narci ↔ nyx 约定:**未来
+nyx 在 ship 新 binding 家族(v10 family、新 venue、新 target...)时,canonical
+扩展跟 binding PR 一起进**,而不是 echo 撞墙后才反推回来。
+
+#### 验收 (echo 端)
+
+narci ship 后,echo 跑:
+
+```python
+from narci.calibration.alpha_models import load_alpha_model
+m = load_alpha_model(".../v9_bj_midy_36",
+                     allow_features_version_mismatch=True)
+# 期望: no ValueError on target_kind or sampling_mode
+```
+
+然后 echo 删 PBS 539458 里的 monkeypatch,clean re-ship。
+
+#### 不在 ask 范围
+
+- ❌ narci 不需要 validate BJ target 语义正确性 (nyx 域)
+- ❌ narci 不需要加 BJ-side broker / matching (echo 仍 trade CC)
+- ❌ narci 不需要改 feature pipeline
+
+#### 时间表
+
+无 deadline,但 cheap (单文件 6 行)。任何 narci slack 时间都可以做。
+
+**这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
+`7.10 — reply to echo Delivery 12`。
