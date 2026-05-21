@@ -1,16 +1,34 @@
 """TCP/JSON-lines live event broadcaster — narci-sg → echo-air channel.
 
-Spec: echo INTERFACE_ECHO_NARCI.md §14 Delivery 9 (2026-05-19 pivot).
+Spec: echo INTERFACE_ECHO_NARCI.md §14 Delivery 9 (2026-05-19 pivot) +
+§18 Delivery 13 (2026-05-21 wire v2 multi-symbol fix).
+
 The recorder tees each WS event off `self.buffers[sym].extend(...)` and
 fans it out to subscribed TCP clients as JSON lines:
 
-    {"venue":"um","ts_ms":1779164453356,"side":2,"price":68234.5,"qty":0.123}
-    {"venue":"um","ts_ms":1779164453402,"side":0,"price":68234.5,"qty":0.5}
+**Wire protocol v2** (2026-05-21):
+
+    {"kind":"hello","protocol_version":2}                                          ← sent once on connect
+    {"venue":"um","symbol":"BTCUSDT","ts_ms":1779164453356,"side":2,"price":68234.5,"qty":0.123}
+    {"venue":"um","symbol":"BTCUSDT","ts_ms":1779164453402,"side":0,"price":68234.5,"qty":0.5}
     {"kind":"heartbeat","ts_ms":1779164458356}
 
-One JSON object per line, UTF-8, terminated `\\n`. `side` 0/1=bid/ask
-update, 2=aggTrade (qty sign = aggressor), 3/4=bid/ask snapshot. `qty`
-preserves sign for trade events (negative = seller maker).
+One JSON object per line, UTF-8, terminated `\\n`. Fields:
+  - `venue`: echo-side venue tag (`um` / `bs` etc) — broadcaster-assigned
+  - `symbol`: native exchange symbol (`BTCUSDT` etc) — passed through
+    from `ExchangeAdapter.parse_message`. **Added in v2** to fix the
+    multi-symbol contamination bug (echo D13 §18) — v1 was implicit
+    one-symbol-per-venue, multi-symbol fan-out collapsed all symbols
+    into one L2Reconstructor on subscriber side.
+  - `ts_ms`: event timestamp (ms since UTC epoch)
+  - `side`: 0/1=bid/ask update, 2=aggTrade, 3/4=bid/ask snapshot
+  - `qty`: positive for book updates; preserves sign for trade events
+    (negative = seller maker / buyer-aggressed)
+
+The `hello` frame announces protocol_version=2 to subscribers; legacy
+v1 subscribers that don't parse `hello` should ignore unknown
+`kind` values and simply ignore the extra `symbol` field on data lines
+(standard JSON forward-compat).
 
 Heartbeat every `heartbeat_sec` seconds when no real events flowed.
 
@@ -32,13 +50,21 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 
+PROTOCOL_VERSION = 2
+
+
 class LivePublisher:
-    """TCP/JSON-lines broadcaster — multi-venue capable.
+    """TCP/JSON-lines broadcaster — multi-venue + multi-symbol capable.
 
     A single publisher process handles many venues (e.g. `um` + `bs` on
-    narci-sg) on the same port; venue_tag is supplied per `fanout()`
-    call so subscribers receive a single mixed stream and disambiguate
-    by the `venue` field in each line.
+    narci-sg) and many symbols on the same port; (venue_tag, symbol) is
+    supplied per `fanout()` call so subscribers receive a single mixed
+    stream and disambiguate by the `venue` and `symbol` fields in each
+    line.
+
+    Wire protocol v2 (2026-05-21): every data line carries both `venue`
+    and `symbol`. Sends a one-shot `{"kind":"hello","protocol_version":2}`
+    frame to each subscriber immediately on connection.
     """
 
     def __init__(
@@ -84,6 +110,13 @@ class LivePublisher:
         self._subscribers.add(writer)
         log.info(f"[live_publisher] subscriber connected {peer} "
                   f"(total {len(self._subscribers)})")
+        # v2: send hello frame so subscribers can negotiate protocol version.
+        # v1 subscribers will see an unknown `kind` and (per JSON forward-compat
+        # convention) ignore it — non-fatal.
+        hello = (json.dumps(
+            {"kind": "hello", "protocol_version": PROTOCOL_VERSION},
+            separators=(",", ":")) + "\n").encode("utf-8")
+        self._try_write(writer, hello)
         try:
             # Subscriber never sends us anything; just hold the socket
             # until they disconnect.
@@ -101,9 +134,17 @@ class LivePublisher:
         except Exception:
             pass
 
-    def fanout(self, venue_tag: str, records: Iterable[Iterable]) -> None:
+    def fanout(self, venue_tag: str, symbol: str,
+                records: Iterable[Iterable]) -> None:
         """Push raw 4-tuple records `(ts_ms, side, price, qty)` tagged
-        with `venue_tag` to every subscriber. Non-blocking — never awaits."""
+        with `(venue_tag, symbol)` to every subscriber. Non-blocking —
+        never awaits.
+
+        `symbol` is the native exchange symbol (e.g. ``BTCUSDT``) and is
+        emitted as the `symbol` field on every JSON line. Added 2026-05-21
+        per echo D13 §18 to fix multi-symbol contamination — pre-v2 wire
+        omitted symbol, so a venue_tag with N symbols collapsed N
+        L2Reconstructor states on the subscriber side."""
         if not self._subscribers:
             return
         payload = bytearray()
@@ -111,6 +152,7 @@ class LivePublisher:
             ts_ms, side, price, qty = r[0], r[1], r[2], r[3]
             line = json.dumps({
                 "venue": venue_tag,
+                "symbol": symbol,
                 "ts_ms": int(ts_ms),
                 "side": int(side),
                 "price": float(price),

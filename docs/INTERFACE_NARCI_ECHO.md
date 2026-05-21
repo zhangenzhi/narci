@@ -739,6 +739,93 @@ contributor 看到 docstring 警告就好。
 
 ---
 
+### 4.11 回 echo 2026-05-21 `a7d3b28` §18 D13 — D9 wire protocol multi-symbol contamination — ✅ F1 + F2 DONE 本 commit
+
+读 echo §18 D13(2026-05-21):D9 wire protocol(`{venue, ts_ms, side, price, qty}`
+无 `symbol` 字段)+ `configs/event_publisher.yaml` 多 symbol fan-out → echo-air
+subscriber 端所有 symbols 塞同一个 `L2Reconstructor` → bid=BTC 77943 vs
+ask=XRP 25 crossed → `_resolve_top_non_crossing` 走 altcoin pair → um_mid
+≈ $25 → **`basis_um_bps ≈ -99,289`(training ±30)→ 15 个 UM-derived features
+全 OOD → live R² 37.7%→12.1%、Pearson 0.628→0.347**。
+
+narci 端责任:**echo §18 §3 明确两段都该 narci 拥有**(F1 yaml + F2 publisher 代码),
+本 commit 一并 ship。
+
+#### F1 ✅ — yaml 缩 BTCUSDT-only(contract-preserving config fix)
+
+`configs/event_publisher.yaml`:
+- UM venue_tag symbols 从 `[BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT]` 缩到 `[BTCUSDT]`
+- BS venue_tag symbols 从 `[BTCUSDT, ETHUSDT]` 缩到 `[BTCUSDT]`
+- 加 inline comment 说明 root cause 跟 §18 reference
+
+只动 config,**code 不变即 narci-sg push 出去的 wire 仍然是 v1 格式**(可以
+独立 deploy F1 而 echo 不动)。
+
+narci-reco 端 deploy:
+```bash
+cd ~/narci/reco
+./aws/recorder_restart.sh sg --service event-publisher
+```
+
+#### F2 ✅ — wire protocol v2:加 `symbol` field + `hello` frame
+
+| 文件 | 改动 |
+|---|---|
+| `data/live_publisher.py:35-78`(docstring + class header) | v2 wire spec + `PROTOCOL_VERSION = 2` 常量 |
+| `data/live_publisher.py:_handle_subscriber` | 新 subscriber 连进来立刻发 `{"kind":"hello","protocol_version":2}` 一次性 frame |
+| `data/live_publisher.py:fanout` | 签名 `fanout(venue_tag, symbol, records)` —— 加 `symbol` 必传参;JSON 每行加 `"symbol"` 字段 |
+| `data/event_publisher.py:_one_url` | 把 `sym, _, _ = adapter.parse_message(msg)` 拿到的 `sym` 透传给 `publisher.fanout(venue_tag, sym, records)` |
+| `calibration/tests/test_live_publisher.py` | 8 个 tests(原 6 个 + hello frame test + multi-symbol fan-out regression test);全 pass |
+
+**v2 wire format**:
+```json
+{"kind":"hello","protocol_version":2}
+{"venue":"um","symbol":"BTCUSDT","ts_ms":1779164453356,"side":0,"price":68234.5,"qty":0.5}
+{"venue":"um","symbol":"BTCUSDT","ts_ms":1779164453402,"side":2,"price":68234.55,"qty":-0.123}
+{"kind":"heartbeat","ts_ms":1779164458356}
+```
+
+**Backward-compat**(echo §18.2 Part B.5 提到):
+- 旧 v1 subscriber 看到 `hello` frame 的 unknown `"kind":"hello"` 应当 ignore
+  (per JSON forward-compat),`symbol` 字段也 ignore — narci 这边没 fallback
+  机制(每条 data line 都带 symbol),实现简洁。如果 echo 侧有不能容忍 unknown
+  kind 的 v1 subscriber,需要 echo 端先升级再 deploy
+- narci 这边**不维护 v1-emitting mode**(只一种 wire,v2 永久)
+
+**Multi-symbol 重新放开**:F2 ship 之后,narci-sg 端**可以**把 yaml symbols
+list 重新放回多个(BTC/ETH/SOL 等)。echo subscriber 端按 echo §18.2 Part
+B.4 的 `(venue, symbol) → FB venue tag` dispatch table 路由就好。但本
+commit 暂时**保留 BTCUSDT-only**,等 echo 端 ship dispatch table 之后 narci
+端 yaml 改回多 symbol 再独立 deploy(避免乱序导致 echo air 端 transient
+contamination)。
+
+#### Acceptance(预期 echo 端验)
+
+| 指标 | F1 单独 ship 前 | F1+F2 ship 后 |
+|---|---|---|
+| `basis_um_bps` 均 \|Δ\| | 99,283 bps | < 5 bps |
+| `um_n_5s` 均 \|Δ\| | 84 events | < 5 events |
+| `r_um` 均 \|Δ\| | ~5 bps | < 0.5 bps |
+| live Pearson 1-2h soak | 0.318 | ≥ 0.55 |
+| hello frame on connect | (无) | ✅ 每个新 subscriber 收到 |
+| 多 symbol fan-out 时 `(venue,symbol)` 区分 | (collide) | ✅ subscriber 自己 dispatch table 路由 |
+
+#### echo 端 follow-up(echo 域)
+
+按 echo §18.2 Part B.4:`runtime/sg_subscriber.py` 加 `(venue, symbol) → FB
+venue tag` dispatch table + drop 不在 table 的事件。narci 端 ship 完毕,等
+echo ship dispatch 后我们再把 yaml 放开。
+
+#### 反向 ack(narci 自责)
+
+echo §18.1 写了 lab 自己也有 share of blame(§14.2 spec 没明 `symbol`)。但
+narci 这边在 `3a4e572` ship D9 时**没意识到 spec 的隐含 single-symbol
+assumption**,直接按 yaml 多 symbol 跑,这一段是 narci 实施层的疏忽。下次 echo
+spec 出多个 examples 时 narci 端要主动 challenge "spec 是不是对全部 examples
+class 都覆盖"。
+
+---
+
 ## 5. 不在 narci scope (留给 echo 自己)
 
 为避免越界,以下事项 narci 不会主动跟进,echo 自己 own:

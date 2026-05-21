@@ -90,8 +90,12 @@ async def _stream_venue(
                         if event_type not in ("depth", "trade"):
                             continue
                         records = adapter.standardize_event(event_type, data)
+                        # 2026-05-21 (echo D13 §18 F2): pass `sym` from
+                        # parse_message to fanout — wire v2 carries per-record
+                        # symbol so multi-symbol fan-out no longer collapses
+                        # on subscriber side.
                         if records:
-                            publisher.fanout(venue_tag, records)
+                            publisher.fanout(venue_tag, sym, records)
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as e:

@@ -21,17 +21,23 @@ publisher:
   max_subscriber_buffer_bytes: 1048576
 
 venues:
+  # 2026-05-21 F1 缩到 BTCUSDT-only (echo D13 urgent fix):
+  # 原 §14.2 wire spec 只携带 {venue, ts_ms, side, price, qty}, 没 symbol
+  # 字段。echo-air subscribe 一个 venue_tag 时所有 symbols 塞进同一个
+  # L2Reconstructor → bid=BTC 77943 vs ask=XRP 25 → crossed book →
+  # _resolve_top_non_crossing 走到 altcoin pair → um_mid ≈ $25 →
+  # basis_um_bps ≈ -99,289 (training ±30) → 所有 UM-derived features OOD →
+  # live R² 37.7% → 12.1%, Pearson 0.628 → 0.347.
+  # 修法:contract-preserving config fix — 把 yaml 缩回 §14.2 wire spec
+  # 隐含的 one-symbol-per-venue 假设。echo D13 §18.2 Part A。
+  # F2 (wire v2 加 symbol field) ship 后可以放开 fan-out 多 symbol,echo
+  # subscriber 端会按 (venue, symbol) 路由表 drop 不需要的。
   - venue_tag: um
     exchange: binance
     market_type: um_futures
     interval_ms: 100
     symbols:
-      - BTCUSDT
-      - ETHUSDT
-      - SOLUSDT
-      - BNBUSDT
-      - XRPUSDT
-      - DOGEUSDT
+      - BTCUSDT     # 缩自 [BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT]
   - venue_tag: bs
     exchange: binance
     market_type: spot
@@ -40,5 +46,4 @@ venues:
     # references binance spot mid as denominator. Echo's existing
     # FeatureBuilder venue mapping is `bs` for Binance global spot.
     symbols:
-      - BTCUSDT
-      - ETHUSDT
+      - BTCUSDT     # 缩自 [BTCUSDT, ETHUSDT]
