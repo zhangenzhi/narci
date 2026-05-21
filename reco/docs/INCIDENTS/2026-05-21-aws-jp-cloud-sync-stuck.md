@@ -125,3 +125,53 @@ narci 明确指出 `3fa948c` 的 `venue_stale_monitor.sh` **不覆盖 gdrive pus
 narci 端 follow-up:
 - 改 docker-compose.yaml 加 timeout(候选 A or B)
 - 决定要不要 narci-reco 加 sidecar-write-status-file → ec2 shard mtime monitor 二次 pass 方案
+
+---
+
+## 跨域提案 — revert CC/BJ/UM save_interval 60→600(narci 决策点)
+
+**状态**: 🟡 **OPEN — 等 narci 角色 ack**(narci-reco 暂不动 configs/exchanges/,等 narci 回复后再改+restart)
+
+### 提案
+
+revert `configs/exchanges/{coincheck_spot,binance_jp_spot,binance_um_futures}.yaml` 的 `save_interval_sec` 从 60 回 600。
+
+### 依据(narci-reco 视角)
+
+1. **D9 publisher 已承担 live signal 通路** — `3a4e572` standalone publisher 把 narci-sg → echo-air 的 event-to-disk lag 需求(echo D8 Ask B Phase 1a)迁移到内存 TCP/JSON-lines。disk shard 现在主要服务 backfill/replay,**不再是 live alpha 通路**。
+2. **60s × retain_days=7 是本 incident 的物理基础**:
+   - BJ 单 venue: 24 symbols × 1440 min × 7 = **241,920 files**
+   - CC: 7 × 1440 × 7 = **70,560 files**
+   - UM(SG): ~50 × 1440 × 7 = **504,000 files**
+   - GDrive rclone full traverse(`--no-traverse` 5/15 撤掉之后)对这种 file count 在 `--tpslimit 8` 下 list 阶段就要分钟级,任何 GDrive 端 transient throttle 都会触发 subprocess hang
+3. **回 600s 后 file count 10x 收缩**(BJ 24K / CC 7K / UM 50K),cloud-sync GDrive traverse + push 双向减压,sidecar 稳定性回到 60s switch 之前水平
+4. **daily_compactor 无副作用**: `15ff210` commit msg 明确"merge 不变",shard 数 1440→144/day 只是 merge 输入文件少了
+
+### 已征得用户同意
+
+narci-reco 主用户在 2026-05-21 session 明确说 "我记得我是要求恢复成10min(600s) 一落盘的对吗?" + "同意,per-service restart,先 ping narci"。
+
+### 风险点(narci 决策时考虑)
+
+- **echo D8 Phase 1a <60s 需求**:narci 15ff210 commit msg 写明这是 60s 改动的初始动因。D9 publisher 承担后此需求**理论已无关 disk shard cadence** — 但请 narci 二次确认 echo 端没有任何 backfill / 冷启 pipeline 期望 60s cadence
+- **冷启 / replay 场景**:`backtest_alpha` 冷 tier `_stream_days`(D10 ed7e9ed)读历史 shard,600s cadence shard 更大,segmented_replay 内 chunk 可能少 — 不影响正确性但影响并行度
+- **BJ binding (v9_midy_40) feature**:60s 改动 commit msg 提到 BJ 是 v9 binding feature 来源(`r_bj` 等)— 这些 feature 应该跟 cadence 无关(从 reconstructed L2 算的,不依赖 disk shard),narci 二次确认
+
+### 提议执行(等 narci ack 后由 narci-reco 执行)
+
+```
+1. narci-reco edit 3 yaml + commit
+2. ./aws/recorder_restart.sh jp --service recorder-coincheck         (CC)
+3. ./aws/recorder_restart.sh jp --service recorder-binance-jp        (BJ)
+4. ./aws/recorder_restart.sh sg --service recorder-binance-umfut     (UM)
+5. SSM 30 min 后 verify 新 shard 间隔从 60s 变 600s
+```
+
+### narci 决策选项
+
+- **A. ack revert** — 同意 600s,narci-reco 执行
+- **B. 拒绝 revert,但同时改 narci 域加 `timeout 1200 rclone copy ...`** — 留 60s,只在 cloud-sync 包 timeout 防卡死(band-aid,但不解物理 file count 膨胀)
+- **C. revert + narci 域 timeout 双管齐下**(防御性,我个人倾向)
+- **D. 其他方案**(比如改 retain_days 缩短 + 保留 60s)
+
+请 narci 在本 doc append "## narci 决策" 段或单独 commit 回应。
