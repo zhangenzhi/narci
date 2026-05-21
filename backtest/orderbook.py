@@ -1,6 +1,20 @@
 """
 事件驱动的 L2 订单簿状态机 + 限价单 FIFO 队列匹配。
 
+⚠️ Venue compatibility (added 2026-05-21 per echo D11):
+This class is incremental-L2 only. SIDE_BID_SNAP (3) / SIDE_ASK_SNAP (4)
+are applied via the same upsert path as incremental updates — works for
+Binance UM / Binance spot (which send proper qty=0 deletes), BREAKS for
+CC / bitbank / GMO / bitFlyer which send full top-N snapshots without
+explicit deletes for disappeared levels. On those venues the top-of-book
+will gradually drift (bid[0] stays at highest-ever-seen even after the
+market moves down).
+
+For full-snapshot venues use `narci.data.l2_reconstruct.L2Reconstructor`,
+which atomically replaces the bid/ask book at each new snapshot ts (see
+l2_reconstruct.py:257-258). Echo's MakerSimBroker.book uses L2Reconstructor
+for this reason.
+
 输入: RAW 4 列事件流 (timestamp, side, price, quantity)，side 编码同 ABC：
   0 = bid update (qty=0 表示删除)
   1 = ask update

@@ -91,7 +91,14 @@ class MakerSimBroker:
         self.symbol_spec = symbol_spec
         self.symbol = params.symbol
 
-        self.book = L2Reconstructor(depth_limit=depth_limit)
+        # prune_snapshot_dust=True (default flipped 2026-05-21 per echo
+        # D11 §16.2(c)): on CC / BJ / etc. full-snapshot venues, strip
+        # cross-side dust at every snapshot batch close. Parity with
+        # lab signal_publisher.py:163. Snapshot-reset (l2_reconstruct.py:
+        # 257-258) already handles the primary case; dust prune is
+        # belt-and-suspenders for crossing-level remnants.
+        self.book = L2Reconstructor(depth_limit=depth_limit,
+                                    prune_snapshot_dust=True)
         self.book.reset()
 
         self.active_orders: dict[str, SimOrder] = {}

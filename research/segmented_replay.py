@@ -240,6 +240,7 @@ def replay_days_parallel(
     incremental_ready_threshold: int = 5,
     verbose: bool = True,
     symbol: str = "BTC_JPY",
+    cc_venue_tag: str = "cc",
 ) -> dict:
     """Top-level: split given days into segments, run workers in parallel,
     return concatenated arrays sorted by ts.
@@ -249,7 +250,13 @@ def replay_days_parallel(
         recorder outages early in day).
     symbol: CC-side symbol selecting the venue table from
         VENUE_SOURCES_BY_SYMBOL. Default "BTC_JPY" preserves legacy
-        behavior. Added 2026-05-19 per nyx ETH/JPY generalization."""
+        behavior. Added 2026-05-19 per nyx ETH/JPY generalization.
+    cc_venue_tag: which venue tag (4th element of venue tuples) should
+        emit feature samples. Default "cc" (legacy: emit at CC trades).
+        Pass "bj" for BJ-native bindings (e.g. v9_bj_midy_36) — workers
+        will emit features on every BJ trade arrival instead of CC.
+        Added 2026-05-21 per nyx 2026-05-20 晚 Ask #3 (lift
+        emit-at-venue param from build_segment_worker to top level)."""
     venues = VENUE_SOURCES_BY_SYMBOL.get(symbol)
     if venues is None:
         raise ValueError(
@@ -276,19 +283,22 @@ def replay_days_parallel(
     t0 = time.time()
     # Always wrap in partial when venues != default BTC table, so workers
     # get the per-symbol venue list. Also handle the existing P1/P1-C/P3
-    # kwargs for staleness/dust/ready-threshold.
+    # kwargs for staleness/dust/ready-threshold, plus the new top-level
+    # cc_venue_tag (BJ-native binding support).
     needs_partial = (
         venues is not VENUE_SOURCES
         or book_staleness_seconds > 0
         or prune_snapshot_dust
-        or incremental_ready_threshold != 5)
+        or incremental_ready_threshold != 5
+        or cc_venue_tag != "cc")
     if needs_partial:
         from functools import partial
         worker_fn = partial(build_segment_worker,
                             book_staleness_seconds=book_staleness_seconds,
                             prune_snapshot_dust=prune_snapshot_dust,
                             incremental_ready_threshold=incremental_ready_threshold,
-                            venues=venues)
+                            venues=venues,
+                            cc_venue_tag=cc_venue_tag)
     else:
         worker_fn = build_segment_worker
     with mp.get_context("spawn").Pool(n_workers) as pool:

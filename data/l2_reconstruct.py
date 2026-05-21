@@ -7,6 +7,20 @@ import numpy as np
 _ITEMGETTER_0 = operator.itemgetter(0)
 
 class L2Reconstructor:
+    """Full-snapshot-aware L2 orderbook reconstructor.
+
+    On every new snapshot ts (side=3 or 4), atomically replaces the
+    corresponding side's book — stale levels from previous snapshots /
+    past incrementals are wiped. This makes it correct for both
+    incremental-L2 venues (Binance UM/spot) and full-snapshot venues
+    (CC / bitbank / GMO / bitFlyer) which don't emit explicit deletes
+    for disappeared levels.
+
+    Counterpart: `narci.backtest.orderbook.Orderbook` is incremental-L2
+    only — see its module docstring. Anything reading live CC/BJ/etc.
+    WS should consume via L2Reconstructor, not Orderbook.
+    """
+
     def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0,
                  prune_snapshot_dust: bool = False,
                  incremental_ready_threshold: int = 5):

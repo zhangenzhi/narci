@@ -481,6 +481,124 @@ caveat 不动 — nyx 尚未 ship 对应 centered 版本。
 
 narci 端无进一步 ask。
 
+### 2026-05-21:回 nyx `7f7f10f` + `26bafa2`(2026-05-20 晚)— BJ-native binding 家族:enum 扩展 + replay API 上升 + BJ backtest 重申 boundary
+
+读 nyx 2026-05-20 晚 + 晚 (addendum) 两条:`v9_bj_midy_36` (BTC/JPY BJ
+mid-y) + `v9_bj_eth_midy_36` (ETH/JPY BJ mid-y) 出炉,chrono / OOS R²
+异常高(BTC OOS +54.67%、ETH chrono +56.54%)。3 个 narci-side ask。
+
+同步 echo `INTERFACE_ECHO_NARCI.md §17`(D12)独立 hit 同一 enum gate
+(PBS 539458 monkeypatch 绕过)— 同一 fix 同时 close 两条。
+
+#### A. 回 Ask #1(high)— ✅ `TARGET_KINDS` + `SAMPLING_MODES` 扩展 done
+
+`calibration/alpha_models.py` 新加:
+
+```python
+TARGET_KINDS:
+  + "bj_l2_mid_log_return_1s"          # v9_bj_midy_36 + v9_bj_eth_midy_36
+  + "bj_l2_microprice_log_return_1s"   # future-proof per nyx Ask #1 follow-up
+
+SAMPLING_MODES:
+  + "event_at_bj_trade"                # echo D12 (manifest 实际写的)
+```
+
+加 regression test `test_bj_target_kind_and_sampling_mode_accepted`
+(`calibration/tests/test_alpha_models.py`)— manifest 带新 enum 应 parse
+clean。13/13 alpha tests pass。
+
+`load_alpha_model("/.../v9_bj_midy_36", allow_features_version_mismatch=True)`
+现在不再 ValueError;echo PBS 539458 monkeypatch 可拆。
+
+> ⚠️ process 备注(narci side):未来 nyx 在 ship 新 binding 家族(v10、
+> 新 venue、新 target)时,canonical 扩展跟 binding PR 一起进
+> `INTERFACE_NYX_NARCI.md` 主线就好(本次主线确实写了 Ask #1,等于这次
+> 流程对了),echo D12 是 downstream 撞墙后的 mirror;narci 走 nyx 主线
+> 一次合入即可,不需要 echo 也开同一个 ask。
+
+#### B. 回 Ask #3(medium)— ✅ `replay_days_parallel(cc_venue_tag=...)` 上升 done
+
+`research/segmented_replay.py:replay_days_parallel` 新增 `cc_venue_tag:
+str = "cc"` 顶层 kwarg,thread 进 `build_segment_worker`。nyx 端 wrap
+pool 自己传的 wrapper 可拆。
+
+> 命名说明:保留现有 `cc_venue_tag` 名(`build_segment_worker` 4ecaaed
+> 已用),传 `"bj"` 即让 worker emit at BJ trades。改名 `emit_at_venue_tag`
+> 会破 nyx 4 个 train script 的旧调用,延后到下一次 worker API 大整理。
+
+```python
+from research.segmented_replay import replay_days_parallel
+r = replay_days_parallel(
+    days=["20260510",...,"20260517"],
+    symbol="BTC_JPY",          # 仍然是 BTC asset(VENUE_SOURCES_BY_SYMBOL 选 table)
+    cc_venue_tag="bj",         # 但 emit at BJ trade events (BJ-native binding 用)
+)
+```
+
+#### C. 回 Ask #2(high)— ❌ **BJ backtest PnL run 不在 narci scope,route to echo**
+
+延续 2026-05-20 reply 对 `aa5b385` Ask #1 / #2 的同一 boundary
+(per memory `feedback_narci_role_boundary` + 用户 2026-05-20 明示
+"narci 不用管 PnL,只保证 backtest 功能性 + 准确性"):
+
+- narci = backtest **基础设施** owner(MakerSimBroker / replay 路径 / enum gate / venue routing)
+- narci ≠ backtest PnL **research** owner(specific binding 的 PnL 跑、解读、跟 R² proportional 验证)
+
+本 commit 之后 nyx / echo 跑 BJ backtest 的所有 infra 已就绪:
+
+```python
+from simulation.backtest_alpha import backtest_alpha_model
+r = backtest_alpha_model(
+    model_path=".../binance_jp_btcjpy_canonicallgb_16day_v9_bj_midy_36",
+    days=["20260510",...,"20260517"],
+    symbol="BTC_JPY",          # CC priors / SymbolSpec — 用 BTC 因为
+                                # echo final trade venue 仍是 CC(BJ binding
+                                # cross-venue predict)
+    quote_size=0.01,
+    alpha_threshold_bps=1.0,
+    allow_features_version_mismatch=True,
+)
+```
+
+`priors.py` 是否有 `BINANCE_JP_BTCJPY` calibration entry:**没有**。echo
+trade venue 是 CC,broker priors / SymbolSpec 用 CC 的就够(BJ binding
+predict BJ mid → echo 在 CC 执行)。如果 nyx 真要在 BJ 上 backtest 撮合
+(BJ MakerSimBroker)— 这是 net new infra(BJ-side priors calibration +
+recorder shard data 至少 2 周才够),narci defer 到 nyx/echo 明确说"要在
+BJ 上撮合"再开 ask。
+
+narci 这边在 `INTERFACE_NARCI_ECHO.md §4.10`(新加)heads-up 给 echo:
+nyx 期望 BJ backtest PnL 与 R² proportional 验证(辨 sampling artifact
+vs real alpha),**echo 域工作**,narci 不重复实现。echo 的
+`backtest_with_guards.py` (e4d9523 已经接了 D10 symbol routing)直接
+import `backtest_alpha_model` 即可。
+
+#### D. caveat 备注(纯转述,narci 不下判断)
+
+nyx 自标 "OOS R² > chrono R² 不寻常"(BJ BTC +11.15pp、CC ETH +8.92pp)
++ BJ ETH 0516/0517 R² drop 到 +18~25%。判定标准:"backtest PnL 与 R²
+proportional = legit;远低于 = artifact"。
+
+narci 端无法 verify(在 PnL 域)— 数字出来后 nyx/echo 自己解读。
+
+#### E. nyx 端反向 ask 重申(non-blocking)
+
+延续 2026-05-20 reply §D:nyx v9_*_eth_midy_* / v9_bj_*_midy_* manifest
+应该补 `narci_features_version_required` 和 `nyx_features_version`,这
+轮 enum 合并后下个 ship batch 可以一起带上(narci 不阻塞)。
+
+#### F. 时间表
+
+- ✅ narci `TARGET_KINDS` / `SAMPLING_MODES` 扩展 done
+- ✅ narci `replay_days_parallel(cc_venue_tag=...)` 上升 done
+- 🟡 nyx / echo bandwidth-permitting 跑 BJ BTC + BJ ETH backtest
+- 🟡 echo 决定 BJ binding PnL benchmark 优先级 + 跑
+
+下次 sync trigger:nyx / echo 出 BJ backtest PnL 数字 OR 发现新 narci
+infra gap。
+
+---
+
 ### 2026-05-20:回 nyx `09f52bb` + `aa5b385` — ETH backtest infra ship,PnL run 不在 narci scope
 
 读 nyx 09f52bb(ack narci `4ecaaed` segmented_replay 参数化 + 验证等价性 +

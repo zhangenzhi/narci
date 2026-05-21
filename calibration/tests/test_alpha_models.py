@@ -271,6 +271,35 @@ def test_unknown_target_kind_rejected():
         assert "target_kind" in str(e)
 
 
+def test_bj_target_kind_and_sampling_mode_accepted():
+    """Regression: nyx 7f7f10f / 26bafa2 + echo D12 — narci must accept
+    bj_l2_mid_log_return_1s + event_at_bj_trade. Pre-fix both frozensets
+    rejected these canonical values; echo had to monkeypatch in PBS."""
+    from calibration.alpha_models import TARGET_KINDS, SAMPLING_MODES
+    assert "bj_l2_mid_log_return_1s" in TARGET_KINDS
+    assert "bj_l2_microprice_log_return_1s" in TARGET_KINDS
+    assert "event_at_bj_trade" in SAMPLING_MODES
+    # Manifest with the new values should parse cleanly.
+    good = {
+        "schema_version": "v1",
+        "model_kind": "lgb",
+        "weights_filename": "weights.txt",
+        "feature_names": ["bj_imb_1s"],
+        "input_shape": "snapshot",
+        "target_kind": "bj_l2_mid_log_return_1s",
+        "exchange": "binance_jp", "symbol": "BTCJPY",
+        "train_period_start": "x", "train_period_end": "x",
+        "test_period": "x", "test_metrics": {},
+        "expected_inference_latency_us": 0,
+        "nyx_features_version": FEATURES_VERSION,
+        "narci_features_version_required": FEATURES_VERSION,
+        "sampling_mode": "event_at_bj_trade",
+    }
+    m = Manifest.from_dict(good)
+    assert m.target_kind == "bj_l2_mid_log_return_1s"
+    assert m.sampling_mode == "event_at_bj_trade"
+
+
 def test_ols_beta_length_mismatch_raises():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp) / "mismatch"

@@ -91,6 +91,15 @@ TARGET_KINDS = frozenset({
     # `_1000ms`) to avoid cross-tool encoding issues.
     "cc_maker_conditional_fill_pnl_buy_τ1000ms",
     "cc_maker_conditional_fill_pnl_sell_τ1000ms",
+    # Added 2026-05-21 per nyx INTERFACE_NYX_NARCI.md 2026-05-20 晚 Ask #1
+    # (v9_bj_midy_36 + v9_bj_eth_midy_36) — first BJ-native target family.
+    # Sample at BJ trade events (sampling_mode=event_at_bj_trade) and
+    # target forward 1s log return on BJ L2-reconstructed mid:
+    # y = log(p_bj_l2_mid(ts+1000ms) / p_bj_l2_mid(ts)).
+    # micro variant added future-proof per nyx Ask #1 follow-up (no
+    # v9_bj_microy binding shipped yet, just unblocks).
+    "bj_l2_mid_log_return_1s",
+    "bj_l2_microprice_log_return_1s",
 })
 
 
@@ -101,6 +110,12 @@ SAMPLING_MODES = frozenset({
     "1s_grid",                 # sample at every 1s wall-clock boundary
     "event_at_cc_trade",       # sample on every CC trade arrival
     "event_at_book_update",    # sample on every L2 book change
+    # Added 2026-05-21 per nyx 2026-05-20 晚 BJ binding family — sample
+    # on every BJ (Binance Japan) trade arrival. Mirrors event_at_cc_trade
+    # semantics but on the BJ venue; segmented_replay supports this via
+    # build_segment_worker(cc_venue_tag="bj") (and now via
+    # replay_days_parallel(cc_venue_tag="bj") top-level).
+    "event_at_bj_trade",
 })
 
 

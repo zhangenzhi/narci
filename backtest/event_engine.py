@@ -49,6 +49,11 @@ class EventBacktestEngine:
         self.order_latency_ms = int(order_latency_ms)
         self.symbol_spec = symbol_spec if symbol_spec is not None else get_spec(self.symbol)
 
+        # NOTE 2026-05-21 (echo D11): Orderbook is incremental-L2 only.
+        # Backtest replays narci-recorded parquet which carries snapshots
+        # via side=3/4 in the same exchange's recording format — for
+        # Binance markets this is fine, for CC/BJ/etc. consider feeding
+        # the broker an L2Reconstructor instead (see MakerSimBroker.book).
         self.book = Orderbook(depth=depth, max_orders=max_orders)
         broker.orderbook = self.book
         broker.engine = self  # broker.place_limit_order / cancel_order 通过它访问 latency + spec

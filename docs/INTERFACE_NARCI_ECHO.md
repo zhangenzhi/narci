@@ -616,6 +616,77 @@ narci 不主动接 这个 ask;echo 决定优先级。如果 narci 跑 PnL 那等
 
 ---
 
+### 4.10 回 echo 2026-05-20 `4419c91` §16 D11 — Orderbook CC bug + `raw_l2` scope — ✅ (b)+(c) DONE 本 commit
+
+读 echo §16 D11(2026-05-20 14:25):两件事 — narci `Orderbook` 对 CC
+全 snapshot 协议不兼容 heads-up + §3.1 first-non-empty bundle 状态。
+
+#### A. (b)+(c) 双管齐下,合 echo lean
+
+| 选项 | 文件 | 状态 |
+|---|---|---|
+| (b) `Orderbook` docstring 加 venue-compat warning | `backtest/orderbook.py:1-21` (header) | ✅ |
+| (b) `L2Reconstructor` 加 class docstring + cross-ref `Orderbook` | `data/l2_reconstruct.py:9-22` (class top) | ✅ |
+| (b) `EventEngine` `Orderbook` 实例化点加 inline note | `backtest/event_engine.py:52-56` | ✅ |
+| (c) `MakerSimBroker.book` 默认 `prune_snapshot_dust=True` | `simulation/maker_broker.py:94-100` | ✅ |
+
+(a)(port snapshot-reset 进 Orderbook)**deferred**:撮合引擎状态机
+touch 风险大,(b)+(c) 已经 cover echo air Option A 的边界。如果未来真要
+把 `Orderbook` 喂 CC-style live WS,再独立做 (a)。
+
+#### B. 影响范围
+
+- echo air Option A(`AlphaAwareMakerStrategy` 读 `broker.book` 而非
+  `engine.book`)继续 work — narci 不动 echo 端
+- `MakerSimBroker.book` 现在默认 `prune_snapshot_dust=True`,所有 echo
+  端 + narci 端 backtest 自动获 belt-and-suspenders。**反向影响**:某些
+  cross-spread short-run dust 会被 prune 掉,与之前对比可能 fill 率有
+  微调(向 ground truth 靠拢,不应 hurt)
+- `Orderbook` 行为不变,只是 doc 上明示 venue 限制
+- `EventEngine` 行为不变,只是 inline note 提醒未来 contributors
+
+回归:`test_maker_broker.py` + `test_maker_smoke.py` + 邻近 broker tests
+全 pass(29/29)。
+
+#### C. 回 echo §16.3 §3.1 open Q:`raw_l2/` 是否包含 UM/BS
+
+**narci 立场:✅ echo 默认假设正确 — `raw_l2/` 只放 CC + BJ**。
+
+理由:
+- narci-sg 收 UM / BS WS → 写 cold-tier parquet + 推 narci-air (D9 path,
+  `data/event_publisher.py`)。**narci-sg 的 cold-tier 是 authoritative
+  source of truth**(gdrive-pushed,有 daily compact validation)
+- echo air predict_loop in-memory consume narci-sg TCP forward 是为了
+  inference fresh,**不应再 echo-side disk-fork** — 那会产生第二份不
+  authoritative 的 raw_l2
+- cross-host UM/BS event pairing audit:narci 这边走 `narci-sg cold-tier
+  parquet` ↔ `narci-air cold-tier parquet` ↔ `echo bundle CC+BJ`,三方
+  按 ts_ms join,不需要 echo bundle 自己也带 UM/BS
+
+如果 narci 未来真发现 cross-host pairing 有 ms-级 latency anomaly 怀疑
+narci-sg TCP forward 链路,会单开 ask 让 echo fork 一份 SGSubscriber 到
+disk 用于 audit。**现在不需要,echo 不要预先实现 fork-to-disk。**
+
+#### D. §3.1 bundle ETA 接受
+
+echo §16.3 给出 ETA "minutes after Option A merges + soak restarts"。
+narci 端等 bundle 到 `calibration/inbox/`,届时:
+- round-trip 验证 narci 三 schema(decisions / fills / cancels)
+- 用 fills / quote_ts 估 fill latency 分布(filling out
+  [[project_place_latency_deferred]] 的 measurement loop)
+
+#### E. narci-internal future-proof TODO(非紧急,non-blocking)
+
+`narci.backtest.event_engine.EventEngine:52` 用 `Orderbook`。当前 narci
+backtest 通过的是 daily compact 后的 parquet(side=3/4 是 narci recorder
+自己写的,**recorder 端已经把 venue 协议归一化** — Binance 是 incremental
++ qty=0 delete,CC 是 full snap 但 recorder 用 `L2Recorder` 状态机 dedupe
+后再写盘),所以 backtest 喂 `Orderbook` 不会撞 echo air 的 bug。但
+**任何把 `Orderbook` 接到 raw live WS 的 code 都会 hit** — 内部 future
+contributor 看到 docstring 警告就好。
+
+---
+
 ## 5. 不在 narci scope (留给 echo 自己)
 
 为避免越界,以下事项 narci 不会主动跟进,echo 自己 own:
@@ -1141,7 +1212,14 @@ r = backtest_alpha_model(
 **这一条 done 后** 把状态从 open 改成 done,并在 §7 增加
 `7.9 — reply to echo Delivery 10`。
 
-### 8.4 Delivery 11 — heads-up + §3.1 status (open · low priority heads-up + §3.1 status update)
+### 8.4 Delivery 11 — heads-up + §3.1 status (✅ (b)+(c) DONE 2026-05-21 · §3.1 still waiting echo bundle · 见 §4.10)
+
+> **状态变更 2026-05-21**:§A heads-up 走 (b)+(c) 合 echo lean,本 commit
+> ship。(a) deferred。§C `raw_l2/` open Q 回:**默认 CC+BJ 不含 UM/BS**
+> 正确,narci-sg cold-tier 是 authoritative。§B §3.1 first non-empty bundle
+> 等 echo Option A 落地后到 inbox。详见 §4.10。
+
+
 
 - **来源**:echo SHA `c9a17c3` · `docs/INTERFACE_ECHO_NARCI.md §16`
   (committed 2026-05-20)
@@ -1228,7 +1306,15 @@ narci-sg → cold-tier 自己接。
 done;§C 状态会在 echo Option A 落地 + 第一 bundle 到 inbox 之后
 自动 close。
 
-### 8.5 Delivery 12 — 扩展 `TARGET_KINDS` + `SAMPLING_MODES` 接受 BJ-target bindings (open · trivial fix)
+### 8.5 Delivery 12 — 扩展 `TARGET_KINDS` + `SAMPLING_MODES` 接受 BJ-target bindings (✅ DONE 2026-05-21 · 通过 nyx 主线合入 · 见 §4.10 邻近 + INTERFACE_NARCI_NYX 2026-05-21 entry)
+
+> **状态变更 2026-05-21**:done。narci 通过 nyx 7f7f10f 主线 ask #1 合入
+> `bj_l2_mid_log_return_1s` + `bj_l2_microprice_log_return_1s` (future-proof)
+> +`event_at_bj_trade`,加 `test_bj_target_kind_and_sampling_mode_accepted`
+> 回归。详见 `INTERFACE_NARCI_NYX.md` 2026-05-21 entry §A。echo PBS 539458
+> 的 monkeypatch 可拆。
+
+
 
 - **来源**:echo SHA pending · `docs/INTERFACE_ECHO_NARCI.md §17`
   (committed 2026-05-21)
