@@ -155,6 +155,58 @@ fallback) 时,可以反查哪些历史 session 受影响。
 不在 v1.1 schema 必填范围,可以作为 v1.2 candidate。echo 这边觉得 OK 的话
 narci 这边会发 schema 升级 PR。
 
+### 3.5 (decision-blocker)请 echo 确认:disk shard 60s cadence 无依赖
+
+**Context**:narci-reco 2026-05-21 实测 `narci-cloud-sync` 容器因 GDrive
+full-traverse(`--no-traverse` 5/15 移除后)+ 60s save_interval × retain_days
+7 累积巨量 file count(BJ 单 venue 241K 文件、UM 504K 文件)→ rclone
+subprocess 静默 hang 3h35min。see
+[reco/docs/INCIDENTS/2026-05-21-aws-jp-cloud-sync-stuck.md](
+../reco/docs/INCIDENTS/2026-05-21-aws-jp-cloud-sync-stuck.md)。
+
+narci-reco 提案:**CC/BJ/UM `save_interval_sec` 60→600 revert**(file count
+10x 缩,解物理 root cause)。narci 这边支持(Option C:revert + cloud-sync
+timeout 包,timeout 已 ship 本 commit)。**但 revert 前需 echo 确认**:
+
+#### ask
+
+echo 端有没有任何 pipeline / 流程 **直接读 disk shard**(`gdrive:narci_raw/
+realtime/.../l2/{SYM}_RAW_{YYYYMMDD}_{HHMMSS}.parquet`)并**期望 60s 间隔**?
+具体几条候选(需 echo 一一 verify):
+
+| 候选 | echo 端可能位置 | 期望 60s 间隔? |
+|---|---|---|
+| **D9 publisher 通路**(in-memory TCP/JSON-lines 经 narci-sg → echo-air) | `echo/predict/...` consume narci-sg 直 TCP forward,**不读 disk shard** | ❌ 无依赖 |
+| **paper soak `raw_l2/` bundle 写盘** | `echo/execution/paper_soak.py` 或类似,写 CC+BJ 实时事件到 bundle | ❌ 无依赖(从 narci-sg TCP forward 来,不依赖 disk shard cadence) |
+| **echo backfill / cold-replay** | `echo/research/backtest_with_guards.py` 读 narci cold tier daily parquet | ❌ 无依赖(读的是 daily compact 后的整天 parquet,跟 shard cadence 无关) |
+| **echo 自己的 sanity / health check** | 若 echo 自己跑 `find replay_buffer/realtime/... -mmin -X` 类的活性检查 | ⚠️ **可能有** — 若 echo 例行查 narci shard mtime 来推断 venue alive,60s vs 600s 改阈值 |
+| **任何 echo 端 explicit 写 "60s shard" 的逻辑** | grep echo repo `"save_interval" / "60s" / "60 seconds"` | ⚠️ 请 echo 直接 grep |
+
+#### narci 自己的视角(narci-reco 写过的 risk note)
+
+> narci 15ff210 commit msg 写明 60s 改动初始动因是 **echo D8 Ask B Phase 1a
+> <60s live signal**。D9 publisher(3a4e572)ship 之后 live signal 走 in-memory
+> TCP,**理论上 disk shard cadence 已无关**。但 echo 端可能有 secondary path
+> 仍依赖 60s shard 而我们这边不知道 —— 因此 narci 不替 echo 拍。
+
+#### 期望 echo 回复格式
+
+`docs/INTERFACE_ECHO_NARCI.md` 加一个简短 §:
+
+> **Q: narci CC/BJ/UM disk shard 60s → 600s revert 对 echo 有影响?**
+>
+> ✅ / ❌:
+>   - D9 in-memory 通路:无依赖
+>   - paper soak bundle 写盘:无依赖
+>   - backfill / cold-replay:无依赖
+>   - 其它:[列出 echo 端任何会被 600s shard 间隔 break 的 path]
+
+#### 时间表
+
+无紧急。等 echo bandwidth ack 后 narci-reco 执行 yaml edit + 3 个
+per-service restart。在 echo ack 之前 60s 保留,timeout 包已经 ship 不会
+再 hang。
+
 ---
 
 ## 4. Heads-up / 数据质量警示

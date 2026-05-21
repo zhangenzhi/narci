@@ -302,12 +302,25 @@ services:
           # 对新嵌套目录 (如 bitbank/spot/l2/) 会静默 skip,因为 rclone 没去 list
           # 目标,GDrive 又不会自动建中间 folder。常规每 600s 一次 traverse 在我们
           # 这种 source-driven 场景代价微小 (~几百 ms),换来新 venue 自动 catch up。
-          rclone copy /data "$${RCLONE_REMOTE}" \
+          #
+          # 2026-05-21 加 `timeout 1200` 包 rclone:incident
+          # `reco/docs/INCIDENTS/2026-05-21-aws-jp-cloud-sync-stuck.md` 实测
+          # rclone subprocess 在 GDrive traverse 阶段被 API throttle 静默 hang
+          # 3h35min 不退出。1200s = 2× SYNC_INTERVAL(600s)上限,卡死时强杀让
+          # 下一轮自动接力;正常每轮 ~12-15 min 远低于 1200,无副作用。
+          # 退出码:124 = 超时(进下一轮),0 = 成功,其它 = rclone 自己的错。
+          timeout 1200 rclone copy /data "$${RCLONE_REMOTE}" \
             --transfers 4 \
             --log-level NOTICE \
             --tpslimit 8 \
             --tpslimit-burst 8
-          echo "[cloud-sync] done"
+          rc=$$?
+          if [ "$$rc" = "124" ]; then
+            echo "[cloud-sync] WARN: rclone timed out after 1200s; killed + entering next cycle"
+          elif [ "$$rc" != "0" ]; then
+            echo "[cloud-sync] WARN: rclone exited rc=$$rc"
+          fi
+          echo "[cloud-sync] done (rc=$$rc)"
 
           # ---- per-venue staleness check ----
           for vd in /data/realtime/*/*/l2; do
