@@ -153,5 +153,5 @@ Reconstructed feature files (via nyx's `L2Reconstructor`) add: `mid_price`, `imb
 - `RCLONE_GDRIVE_TOKEN` — Google Drive OAuth token JSON
 - `RCLONE_GDRIVE_FOLDER_ID` — Google Drive folder ID
 - `NARCI_RETAIN_DAYS` — Local retention days before auto-cleanup
-- `SYNC_INTERVAL` — rclone sync period (sec, default 300)
+- `SYNC_INTERVAL` — rclone sync period (sec, default 3600 = 1h)
 - `TARDIS_API_KEY` — Tardis.dev API key for historical downloads

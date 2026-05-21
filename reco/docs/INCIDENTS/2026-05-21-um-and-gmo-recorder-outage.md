@@ -4,7 +4,7 @@
 - **Status**: 🟢 **UM RESOLVED / gmo PARKED** — narci-reco 已接管 live recorders;narci 端补完 UM 0518/0519 trade-only cold tier
   - ✅ UM live recorder restart 02:17 UTC,193 shards/0521 实时落盘(见 `## Resolution(narci-reco)`)
   - ✅ UM 0518/0519 trade-only DAILY 已 backfill via Vision aggTrades(见 `## Partial Resolution(narci)`)
-  - 🟡 gmo silent-ban 等 narci 决策(EIP / GMO support / 放弃 — 见 `## Resolution`)
+  - ✅ gmo silent-ban,narci 决策 **Option 3 = 放弃一段时间**(2026-05-21),container stopped 保留,见 `## Resolution`
   - 🟡 UM 0520 partial(150 shards)+ 0518/0519 L2 depth 永久不可恢复(Vision 无 depth archive)
 - **First detect**: 2026-05-21 ~02:00 UTC(narci 端 cold-tier 例行核查发现)
 - **Affected venues**:
@@ -243,7 +243,7 @@ state machine 累积失同步,**restart 重置 stream 序列 + REST 起点同 ep
 - 0518 / 0519 / 0520 (~22h) UM 数据可从 Binance Vision 拉 — 等 donor 角色
   跑 `BinanceVisionSource.download_day()` + lustre1 compact override
 
-### GMO 🟡 PARKED — 升级到 silent deep ban,本次 stop 等 narci 决策
+### GMO 🟡 PARKED — 升级到 silent deep ban,**narci 决策:放弃一段时间(Option 3)**(2026-05-21)
 
 **Action**:`docker compose stop recorder-gmo-spot recorder-gmo-leverage`
 (2026-05-21 02:16:56 UTC)
@@ -280,6 +280,31 @@ drop 该 IP 的所有 data push)。继续 retry 不会自然恢复。
 **Container 状态**:stopped(不删 container 也不删 volume,等决策),JP
 instance 上 docker compose ps gmo-spot/leverage 显示空(stopped service
 不出现在 ps 输出)。
+
+#### ✅ narci 决策(2026-05-21):**Option 3 — 放弃 gmo 一段时间**
+
+理由:
+- gmo 不在 v9_midy_* / v9_eth_midy_* / v9_bj_midy_* binding 的 feature
+  source list(per memory `project_nyx_research_focus`,nyx 当前主攻 LGB
+  on CC/BJ/UM feature universe)
+- gmo features 在 NARCI_V6 schema 里有(`r_gmo_*`, `gmo_imb_*`)但所有
+  现役 binding 的 feature_names 都没 reference,research 不阻塞
+- 换 EIP 影响其他 6 venue WS session 风险大于收益
+- GMO support 申诉时间成本高,且即使解封也无法保证下次 watchdog 行为不复发(已 4 次同类 incident,产品级 venue 不稳)
+
+narci-reco 端 action:
+- ✅ 保持当前 `docker compose stop recorder-gmo-spot recorder-gmo-leverage` 状态
+- ❌ 不重启 gmo container
+- ❌ 不申请新 EIP,不联系 GMO support
+
+narci 端 action(本 commit):
+- 在 [[project-recording-topology]] memory 加 gmo PARKED 状态(防止未来误以为 gmo 数据 fresh)
+- 不动 `configs/gmo_*_recorder.yaml`(代码保留,未来需要时直接 docker compose start 即可恢复)
+
+恢复 trigger(future):
+- 若 nyx ship 出 gmo-feature 依赖的 binding(目前 0 个) — 解 park
+- 若用户主动指示 — 解 park
+- 否则一段时间内(无 deadline)gmo 保持 stopped
 
 ---
 

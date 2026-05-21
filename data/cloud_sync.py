@@ -116,8 +116,8 @@ def main():
     parser.add_argument(
         "--interval",
         type=int,
-        default=int(os.environ.get("SYNC_INTERVAL", "300")),
-        help="同步间隔秒数 (默认 300)",
+        default=int(os.environ.get("SYNC_INTERVAL", "3600")),
+        help="同步间隔秒数 (默认 3600 = 1h,2026-05-21 从 300 升上来降 gdrive API 压力)",
     )
     parser.add_argument(
         "--transfers",

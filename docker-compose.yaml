@@ -286,7 +286,7 @@ services:
         fi
 
         echo "[cloud-sync] remote: $${RCLONE_REMOTE}"
-        echo "[cloud-sync] interval: $${SYNC_INTERVAL:-600}s"
+        echo "[cloud-sync] interval: $${SYNC_INTERVAL:-3600}s"
         rclone mkdir "$${RCLONE_REMOTE}" 2>/dev/null || true
 
         # Per-venue stale alert (2026-05-16):扫 /data/realtime/<exchange>/<market>/l2/,
@@ -320,8 +320,8 @@ services:
             fi
           done
 
-          echo "[cloud-sync] sleeping $${SYNC_INTERVAL:-600}s"
-          sleep $${SYNC_INTERVAL:-600}
+          echo "[cloud-sync] sleeping $${SYNC_INTERVAL:-3600}s"
+          sleep $${SYNC_INTERVAL:-3600}
         done
     environment:
       - NARCI_RCLONE_REMOTE=${NARCI_RCLONE_REMOTE:-gdrive:/narci_raw}
@@ -331,7 +331,7 @@ services:
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
       - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
-      - SYNC_INTERVAL=${SYNC_INTERVAL:-600}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-3600}
       - NARCI_STALE_ALERT_MIN=${NARCI_STALE_ALERT_MIN:-1440}
     volumes:
       - narci-data:/data:ro
