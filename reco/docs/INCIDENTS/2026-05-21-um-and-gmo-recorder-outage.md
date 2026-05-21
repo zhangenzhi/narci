@@ -1,7 +1,7 @@
 # 2026-05-21 binance/um_futures + gmo (spot+leverage) 双 recorder 静默死亡 — narci → narci-reco handoff
 
 - **Severity**: 高(UM 已 ~2.5 天全无数据;gmo 已 ~24h 全无数据)
-- **Status**: 🟡 **OPEN / 待 narci-reco 接管**
+- **Status**: 🟢 **UM RESOLVED / gmo PARKED** — narci-reco 已接管,见下方 Resolution 节
 - **First detect**: 2026-05-21 ~02:00 UTC(narci 端 cold-tier 例行核查发现)
 - **Affected venues**:
   - `binance/um_futures`(aws-sg)— UM perpetual,6 symbols(BNB/BTC/DOGE/ETH/SOL/XRPUSDT)
@@ -213,3 +213,83 @@ data-loss(0 rows 或 file absent)。
 
 narci 端无主动 fix 动作(crypto network 禁,本次状态分析 + handoff 是
 narci 域 boundary 的全部责任)。
+
+---
+
+## Resolution(narci-reco,2026-05-21 02:17 UTC)
+
+### UM ✅ RESOLVED — restart 解决 alignment stuck
+
+**Action**:`docker compose restart recorder-binance-umfut`(2026-05-21 02:17:05 UTC)
+
+**Root cause**:WS stream u/U 序列累积过深(container `Up 4 days`),REST
+snapshot `last_id` 拉到的时候 stream 已经走得太远,`流偏移过大 → 重拉 →
+仍偏移` 死循环。不是 Binance endpoint 漂移、不是 IP 封,而是 alignment
+state machine 累积失同步,**restart 重置 stream 序列 + REST 起点同 epoch
+就恢复了**。
+
+**Verify**(t+32min,02:49 UTC):
+- 0521 shard count: **193**(从 0 涨到 193,符合 6 symbols × 60s save_interval
+  × 32 min ≈ 192)
+- latest shard:`DOGEUSDT_RAW_20260521_024933.parquet`(实时)
+- log:`✅ XXXX 深度流对齐成功` for all 6 symbols,数据固化 8920 ~ 85256 行/shard
+- 偶尔仍出现 `⚠️ 流偏移过大` 但 self-recover,不再死循环
+
+**Backfill 决策**(donor scope):
+- 0518 / 0519 / 0520 (~22h) UM 数据可从 Binance Vision 拉 — 等 donor 角色
+  跑 `BinanceVisionSource.download_day()` + lustre1 compact override
+
+### GMO 🟡 PARKED — 升级到 silent deep ban,本次 stop 等 narci 决策
+
+**Action**:`docker compose stop recorder-gmo-spot recorder-gmo-leverage`
+(2026-05-21 02:16:56 UTC)
+
+**Symptom 这次跟前 3 次都不同**:
+- WS connect 成功、subscribe 成功(1.1s 间隔符合官方限制,看 log 时间戳)
+- **没有 ERR-5003**(对比 [2026-05-17-gmo-rate-limit-reconnect-storm](
+  ./2026-05-17-gmo-rate-limit-reconnect-storm.md) 是每次 subscribe 立刻
+  ERR-5003)
+- subscribe 之后 GMO server **完全沉默**,180s 后 watchdog 强制重连,
+  又是同样的 silent loop
+- 11h container uptime 累积 0 shard
+
+**推测**:5/16-5/17 反复 hammer GMO 几小时后,IP `13.158.181.37` 被 GMO
+端**升级为"silent ban"**(不再返回 ERR-5003 节省 server 资源,直接 silent
+drop 该 IP 的所有 data push)。继续 retry 不会自然恢复。
+
+**narci-reco 范围内的 fix 已经穷尽**:
+- ✅ subscribe 间隔合规(1.1s,符合 docs/#restrictions-public-ws-api)
+- ✅ ERR-5003 graceful handle + 指数 backoff
+- ✅ watchdog ws.closed 兼容 v14+
+- ✅ stop 后等 24h 让 IP 冷却(`v2 nohup`)— 无效
+- ❌ silent ban 阶段,任何 client-side fix 都无法触发 GMO 端解封
+
+**等 narci 决策路径**(narci-reco 范围外):
+1. **换 EIP**(JP instance):释放当前 `13.158.181.37`,allocate 新 EIP
+   。影响其他 6 venue 的 WS session(理论上 client-initiated 不影响,但
+   稳妥起见会有短暂中断)。$0.005/h 新 EIP 成本。
+2. **联系 GMO support 申诉**:`13.158.181.37` 用途说明 + 请求解封 +
+   commit 后续按 1req/s spec。narci 决定。
+3. **放弃 gmo 一段时间**:gmo 不在当前 v9_*/v10_* binding 的 feature
+   source list,research 不阻塞。等 binding 升级到需要 gmo 再处理。
+
+**Container 状态**:stopped(不删 container 也不删 volume,等决策),JP
+instance 上 docker compose ps gmo-spot/leverage 显示空(stopped service
+不出现在 ps 输出)。
+
+---
+
+## Lessons / TODO 补 narci-reco 侧
+
+5. **alignment 累积失同步 = "soft-bug,restart 就好"**:UM 这次没有任何
+   代码或环境变化,纯粹是 stream 跑久了 u/U + REST last_id 序列追不上。
+   `docker compose restart` 30 秒解决。narci 端可考虑加 watchdog 检测
+   `align 失败 > N 次/min → 自我 restart`(代码改动小、narci 域内)。
+6. **silent ban 是新形态**:GMO 在反复 ERR-5003 之后切换到 silent drop —
+   client 完全看不到任何 server-side signal,只能从「subscribe 后 0
+   message」推断。narci-reco 的 ops 工具(`health_probe.sh`)看不到这种,
+   需要 narci 角色加 per-venue per-day shard count audit(已经在 lesson
+   1 提到 narci task #85)。
+7. **incident doc 的 narci → narci-reco handoff workflow 很顺**:narci
+   把症状 + 推测 + ops recipe 写清楚,narci-reco 直接照着跑,30 min 内
+   解决 UM。这是个好的协作模板。
