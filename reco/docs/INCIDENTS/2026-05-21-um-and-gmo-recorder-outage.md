@@ -1,7 +1,11 @@
 # 2026-05-21 binance/um_futures + gmo (spot+leverage) 双 recorder 静默死亡 — narci → narci-reco handoff
 
 - **Severity**: 高(UM 已 ~2.5 天全无数据;gmo 已 ~24h 全无数据)
-- **Status**: 🟢 **UM RESOLVED / gmo PARKED** — narci-reco 已接管,见下方 Resolution 节
+- **Status**: 🟢 **UM RESOLVED / gmo PARKED** — narci-reco 已接管 live recorders;narci 端补完 UM 0518/0519 trade-only cold tier
+  - ✅ UM live recorder restart 02:17 UTC,193 shards/0521 实时落盘(见 `## Resolution(narci-reco)`)
+  - ✅ UM 0518/0519 trade-only DAILY 已 backfill via Vision aggTrades(见 `## Partial Resolution(narci)`)
+  - 🟡 gmo silent-ban 等 narci 决策(EIP / GMO support / 放弃 — 见 `## Resolution`)
+  - 🟡 UM 0520 partial(150 shards)+ 0518/0519 L2 depth 永久不可恢复(Vision 无 depth archive)
 - **First detect**: 2026-05-21 ~02:00 UTC(narci 端 cold-tier 例行核查发现)
 - **Affected venues**:
   - `binance/um_futures`(aws-sg)— UM perpetual,6 symbols(BNB/BTC/DOGE/ETH/SOL/XRPUSDT)
@@ -293,3 +297,76 @@ instance 上 docker compose ps gmo-spot/leverage 显示空(stopped service
 7. **incident doc 的 narci → narci-reco handoff workflow 很顺**:narci
    把症状 + 推测 + ops recipe 写清楚,narci-reco 直接照着跑,30 min 内
    解决 UM。这是个好的协作模板。
+
+---
+
+## Partial Resolution (narci side, 2026-05-21 ~03:00 UTC)
+
+User 决策 Option B(只补 aggTrades trade-only;**完整 L2 depth 永不可恢复**)。
+narci 这边用已 pull 到本地的 Binance Vision aggTrades + 既有工具
+`data/backfill_vision_trades.py --create-if-missing`(see
+[[reference-backfill-tools]])合出 12 个 trade-only DAILY 进 cold tier。
+
+### 已写入 cold tier(`replay_buffer/cold/binance/um_futures/`)
+
+| Symbol | 0518 rows | 0519 rows | 备注 |
+|---|---|---|---|
+| BNBUSDT | 277,039 | 181,237 | side=2 only |
+| BTCUSDT | 1,611,557 | 991,693 | side=2 only |
+| DOGEUSDT | 278,005 | 154,317 | side=2 only |
+| ETHUSDT | 1,384,400 | 871,635 | side=2 only |
+| SOLUSDT | 261,556 | 191,346 | side=2 only |
+| XRPUSDT | 225,015 | 173,722 | side=2 only |
+
+共 12 files / 44MB / ~6.6M trade events,全 24h UTC 覆盖。
+
+### 验证
+
+- ✅ Schema 一致(timestamp/side/price/quantity,dtype int64/int64/f64/f64)
+- ✅ Sign convention 一致 recorder(is_buyer_maker → qty<0,verified by
+  cross-check vs Vision source row count + sign per row)
+- ✅ Byte-equivalent to canonical tool output(per-frame pd.DataFrame.equals)
+
+### 命令(future incidents 直接复用,不要再写 ad-hoc 脚本)
+
+```bash
+cd /lustre1/work/c30636/narci
+for sym in BNBUSDT BTCUSDT DOGEUSDT ETHUSDT SOLUSDT XRPUSDT; do
+  python -m data.backfill_vision_trades \
+    --symbol $sym --market um_futures \
+    --days 20260518,20260519 \
+    --create-if-missing
+done
+```
+
+### Downstream 影响
+
+- `simulation/backtest_alpha.py` + `research/segmented_replay.py` 用到
+  UM 的 features(`b_p_*/a_p_*/imb_*/spread_*` 等多档 L2)在 0518/0519 上
+  **全 NaN**(因为 backfill 文件无 side=0/1/3/4)。**这些天不能用作 backtest 的有效 day。**
+- 只能用作:
+  - `aggregator` 类 trade-flow feature(若 nyx 有 `*_um_trade_*` features)
+  - cross-venue trade ts 对账 / sanity_gate per-day audit
+  - last-trade-price 当 mid 的 proxy(粗略但 functional)
+
+### 待恢复(仍 OPEN)
+
+- UM 0520 partial(150 shards / ~0.5h) → 等 recorder 恢复后,可考虑
+  `python -m data.backfill_vision_trades --symbol BTCUSDT --market um_futures
+   --days 20260520 --force` 把 partial 0520 的 side=2 替换为完整 Vision day
+- UM 0521 → 等 recorder 恢复 + 明天 cron 自动归档,如 recorder 仍死则同上
+- **gmo 0520/0521 不可恢复**(GMO 不在 Binance Vision 上)
+- ~~live recorder restart 仍是 narci-reco 域~~ → ✅ 已由 narci-reco 02:17 UTC restart 解决,见上方 `## Resolution`
+
+### Update post-merge(narci-reco UM 已恢复)
+
+narci-reco 的 `## Resolution` UM 已 alive(02:17 UTC restart, 193 shards/0521 落盘),意味着:
+- UM 0521 不再需要 backfill — recorder 自己写,今天 12:00 JST cron 进 cold
+- UM 0520 partial(150 shards / 0.5h)可走 `--force` 模式合并完整 Vision day:
+  ```bash
+  for sym in BNBUSDT BTCUSDT DOGEUSDT ETHUSDT SOLUSDT XRPUSDT; do
+    python -m data.backfill_vision_trades --symbol $sym --market um_futures \
+      --days 20260520 --force
+  done
+  ```
+  → 等 12:00 JST cron 先把 0520 partial 归档进 cold,然后 narci 端再 force 合 Vision aggTrades 把 trade-only 区段填满。**注意**:0520 cold tier 落地后会有真的 side=0/1/3/4(15:15 UTC 前的 0.5h depth events)加上 partial side=2 → `--force` 只替换 side=2,保留 depth → 0520 cold 是 0.5h L2 + 24h trades 的混合。
