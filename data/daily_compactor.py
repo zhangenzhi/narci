@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 
 from data.historical import HistoricalSource
 
@@ -84,8 +85,50 @@ class DailyCompactor:
             logger.warning(f"[{self.symbol}] 未找到 {self.date_str} 的任何录制文件")
             return False
 
-        logger.info(f"[{self.symbol}] 合并 {len(files)} 个切片 (PyArrow Dataset)")
-        table = ds.dataset(files, format="parquet").to_table()
+        # 2026-05-22 incident: single corrupted shard (e.g. recorder killed
+        # mid-write 留下的 4KB 无 footer 文件) 会让 `ds.dataset(...).to_table()`
+        # 抛 ArrowInvalid,整个 cron run 直接挂,导致后面 venue 全部错过当日
+        # 归档。改成两段:先 pre-validate per file 把 readable 的挑出来,把
+        # corrupted 隔离成 .corrupted 后缀(保留 inspect),再聚合 valid 部分。
+        # Single bad file 不应该污染当日剩余 venue 的 cron run。
+        good_files = []
+        bad_files = []
+        for f in files:
+            try:
+                # cheap read just to surface footer / schema errors
+                pq.read_metadata(f)
+                good_files.append(f)
+            except Exception as e:
+                bad_files.append((f, type(e).__name__, str(e)))
+
+        if bad_files:
+            for f, etype, emsg in bad_files:
+                quarantine = f + ".corrupted"
+                try:
+                    os.rename(f, quarantine)
+                    logger.warning(
+                        f"[{self.symbol}] corrupted shard 隔离: "
+                        f"{os.path.basename(f)} ({etype}: {emsg[:80]}) "
+                        f"→ {os.path.basename(quarantine)}"
+                    )
+                except OSError as rename_err:
+                    logger.error(
+                        f"[{self.symbol}] 隔离 corrupted shard 失败 "
+                        f"{f}: {rename_err}; skipping but not renaming"
+                    )
+
+        if not good_files:
+            logger.warning(
+                f"[{self.symbol}] {self.date_str}: 所有 shard 均 corrupted, "
+                f"无 valid shard 可合"
+            )
+            return False
+
+        logger.info(
+            f"[{self.symbol}] 合并 {len(good_files)} 个切片 (PyArrow Dataset)"
+            + (f" — {len(bad_files)} 个 corrupted 已隔离" if bad_files else "")
+        )
+        table = ds.dataset(good_files, format="parquet").to_table()
         df = table.to_pandas()
         df = df.sort_values(by=["timestamp", "side"], ascending=[True, False]).reset_index(drop=True)
         df.to_parquet(self.daily_file_path, index=False)
