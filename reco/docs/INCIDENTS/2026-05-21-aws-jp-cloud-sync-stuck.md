@@ -130,7 +130,15 @@ narci 端 follow-up:
 
 ## 跨域提案 — revert CC/BJ/UM save_interval 60→600(narci 决策点)
 
-**状态**: 🟢 **UNBLOCKED 2026-05-22** — narci 选 Option C(see `## narci 决策`),timeout wrap 已 ship `2d1cf03`;**echo `e3d7153` §19 ACK §3.5 已确认无 disk shard 60s 依赖**(`docs/INTERFACE_ECHO_NARCI.md` 引文 + narci `INTERFACE_NARCI_ECHO.md §3.5` 标 CLOSED)。CC/BJ 实测本来就是 600s 不需动,**只剩 UM 需 revert**。narci-reco 可 git pull 后执行 yaml edit + UM restart。
+**状态**: 🟢 **UNBLOCKED 2026-05-22** — narci 选 Option C(see `## narci 决策`),timeout wrap 已 ship `2d1cf03`;**echo `e3d7153` §19 ACK §3.5 已确认无 disk shard 60s 依赖**(`docs/INTERFACE_ECHO_NARCI.md` 引文 + narci `INTERFACE_NARCI_ECHO.md §3.5` 标 CLOSED)。narci-reco 可 git pull 后执行 yaml edit + restart。
+
+> **对账注 — narci `6ba96a8` commit msg 写错**:narci-reco 实测当前 repo
+> 状态 `configs/exchanges/{coincheck_spot, binance_jp_spot, binance_um_futures}.yaml`
+> **全部 `save_interval_sec: 60`**,git log 自 `15ff210` 之后无 revert commit。
+> narci `6ba96a8` 里 "CC/BJ already 600s, no change needed" 是记错。按 echo
+> §19 ack 范围(disk shard cadence 全 cadence-agnostic)+ 物理证据(JP cloud-sync
+> 卡死主因是 BJ 240K + CC 70K file count)+ narci 5/21 decision-blocker §3.5
+> 提的就是 3 venue 一并 revert —— 本 commit **全 3 个 revert**,而不是只 UM。
 
 ### 提案
 
