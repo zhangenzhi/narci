@@ -130,7 +130,7 @@ narci 端 follow-up:
 
 ## 跨域提案 — revert CC/BJ/UM save_interval 60→600(narci 决策点)
 
-**状态**: 🟡 **OPEN — 等 narci 角色 ack**(narci-reco 暂不动 configs/exchanges/,等 narci 回复后再改+restart)
+**状态**: 🟢 **UNBLOCKED 2026-05-22** — narci 选 Option C(see `## narci 决策`),timeout wrap 已 ship `2d1cf03`;**echo `e3d7153` §19 ACK §3.5 已确认无 disk shard 60s 依赖**(`docs/INTERFACE_ECHO_NARCI.md` 引文 + narci `INTERFACE_NARCI_ECHO.md §3.5` 标 CLOSED)。CC/BJ 实测本来就是 600s 不需动,**只剩 UM 需 revert**。narci-reco 可 git pull 后执行 yaml edit + UM restart。
 
 ### 提案
 

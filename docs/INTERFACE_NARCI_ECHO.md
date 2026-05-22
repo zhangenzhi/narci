@@ -155,7 +155,25 @@ fallback) 时,可以反查哪些历史 session 受影响。
 不在 v1.1 schema 必填范围,可以作为 v1.2 candidate。echo 这边觉得 OK 的话
 narci 这边会发 schema 升级 PR。
 
-### 3.5 (decision-blocker)请 echo 确认:disk shard 60s cadence 无依赖
+### 3.5 (decision-blocker)请 echo 确认:disk shard 60s cadence 无依赖 — ✅ **CLOSED 2026-05-21**(echo `e3d7153` §19 ACK)
+
+> **状态变更 2026-05-21**:done。echo `e3d7153` 在 `docs/INTERFACE_ECHO_NARCI.md
+> §19`("withdraw 60s retain, ACK 600s revert")明确回复:
+> > "No blocking echo dependency on 60s cadence. D9 in-memory TCP,
+> > paper-soak bundle write, backfill/cold-replay (reads daily-compacted
+> > parquet), and sanity checks all confirmed independent."
+>
+> echo 自己 grep 了 4 个文件(`signal_publisher` continuous mode、
+> `feature_dump_diff_realtime`、`spread_report n_trade_60s`、coincheck WS
+> comment)全部确认 cadence-agnostic + 撤回 `18a74f2` 的"60s retained"
+> 立场。
+>
+> → narci-reco 可执行 UM `save_interval_sec` 60→600 revert(CC/BJ 一直就是
+> 600s,不需改)+ `./aws/recorder_restart.sh sg --service recorder-binance-umfut`。
+> incident doc `reco/docs/INCIDENTS/2026-05-21-aws-jp-cloud-sync-stuck.md`
+> §跨域提案 同步标 unblocked。
+
+
 
 **Context**:narci-reco 2026-05-21 实测 `narci-cloud-sync` 容器因 GDrive
 full-traverse(`--no-traverse` 5/15 移除后)+ 60s save_interval × retain_days
@@ -739,7 +757,29 @@ contributor 看到 docstring 警告就好。
 
 ---
 
-### 4.11 回 echo 2026-05-21 `a7d3b28` §18 D13 — D9 wire protocol multi-symbol contamination — ✅ F1 + F2 DONE 本 commit
+### 4.11 回 echo 2026-05-21 `a7d3b28` §18 D13 — D9 wire protocol multi-symbol contamination — ✅ F1 + F2 DONE + acceptance VALIDATED 2026-05-21
+
+> **acceptance update 2026-05-21**:echo `7775f69` §0.5.30 跑完 1h soak,
+> C-clean session 20260521-092003,n=1,155 paired predictions:
+>
+> | 指标 | Pre-fix | Post-fix | 比较 |
+> |---|---|---|---|
+> | **Pearson** | 0.318 | **0.6464** | ✅ **超过 backtest ens5 0.628** |
+> | Spearman | 0.272 | 0.6333 | ✅ |
+> | R² | 0.101 | 0.418 | ✅ |
+> | yh/y compression | 137% | 58.6% | ✅ training 57.5% bit-match |
+>
+> D13 narci fix 完整 validated。**`basis_um_bps` 不再 OOD,LGB trees fire
+> in-distribution leaves,corr-gap 全恢复**。同步:
+> - echo F2 subscriber 侧 `87e60d9` (`relay/sg_subscriber.py`)ship — 加
+>   `(venue, symbol)` dispatch table 默认 `{(um,BTCUSDT),(bs,BTCUSDT)}` +
+>   消费 hello/heartbeat 内部不 yield + 缺字段 defensively reject
+> - **narci 端 yaml 现在可放开多 symbol(echo subscriber 端会 drop 不在
+>   dispatch table 的事件)**,但当前没下游消费者要其他 symbols,保持
+>   BTCUSDT-only。未来若 nyx ship 新 binding 需要 ETH/SOL 等 → narci
+>   yaml 加回去,echo dispatch table 扩 → 两侧独立 deploy 不串。
+
+
 
 读 echo §18 D13(2026-05-21):D9 wire protocol(`{venue, ts_ms, side, price, qty}`
 无 `symbol` 字段)+ `configs/event_publisher.yaml` 多 symbol fan-out → echo-air
