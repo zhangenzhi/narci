@@ -1625,8 +1625,108 @@ narci 这边不动其他字段。同意 narci 即刻起 P1 implement,~D+3-4 ship
 
 ---
 
+### 2026-05-23 (晚):P1 ship 完毕 + BJ BTC smoke 报告 — **wide spread heads-up for P2**
+
+narci P1 ship 在 `66ffae2`(`55e71ab` 文档微修)远早于 nyx `602333e` 估的 D+3-4
+下限(实际 D+0.5)。
+
+#### A. Ship 摘要
+
+| 文件 | 改动 |
+|---|---|
+| `research/segmented_replay.py` | `sampling_mode` kwarg(default `event_at_cc_trade` legacy 不变);`event_at_simulated_maker_fill` 分支 emit 7-field schema |
+| `calibration/alpha_models.py` | TARGET_KINDS += `fill_pnl_1s_log_return`;SAMPLING_MODES += `event_at_simulated_maker_fill` |
+| `docs/INTERFACE_NARCI_NYX.md` §1.9 | 永久 semantics doc(trigger / schema / target 公式 / place latency caveat / regression test) |
+| `calibration/tests/test_segmented_replay_simulated_fill.py` | 7 个测试,11/11 全 pass(含 4 legacy 回归) |
+
+#### B. BJ BTC 5/22 smoke 结果(`/tmp/v10_bj_btc_smoke_20260522.parquet`)
+
+调用:
+```python
+replay_days_parallel(
+    days=["20260522"], symbol="BTC_JPY", cc_venue_tag="bj",
+    sampling_mode="event_at_simulated_maker_fill",
+    prune_snapshot_dust=True, incremental_ready_threshold=5,
+    n_workers=8, segment_sec=300, warmup_sec=300,
+)
+```
+
+| 指标 | 值 |
+|---|---|
+| n_samples | 31,772 (~1.3/3s avg) |
+| quote_side | BUY 50.4% / SELL 49.6% |
+| best_bid_p med | 12,287,543 yen |
+| best_ask_p med | 12,290,214 yen |
+| **spread_p**  | **min 1, med 1986, p95 4709, max 15,769 (yen)** |
+| mid_t med | 12,289,049.5 yen |
+| X.shape | (31,772, 38) — 28.35% any-NaN |
+| Replay events / wall | 230.5M / 110s,~2.1M ev/s |
+| Schema consistency | `spread_p == ask-bid` ✅、`mid_t == (b+a)/2` ✅ |
+
+#### C. ⚠️ **Wide spread heads-up — P2 hyperparameter 影响**
+
+priors `BINANCE_JP_BTCJPY.spread_median_bps = 1.0`(≈1 yen tick),但 smoke 实测
+**spread_p 中位 1986 yen ≈ 16 bps**,远宽于 prior。
+
+**Root cause**(narci 端 diagnose):FeatureBuilder 内部 L2Reconstructor 的 BJ book
+状态本身就是宽的 — snapshot dust / 漏单 / 在 snapshot 之间的事件丢失累积。
+**这不是新 sampling_mode 引入的** — v9_bj_midy / v9_bj_eth_midy 训练用的是同一份
+`FeatureBuilder._venues["bj"].book` 实例,看到的也是同样宽的 spread。`prune_snapshot_dust=True`
+无显著改善(snapshot batch close 时 prune,但 snapshot 之间的累积仍在)。
+
+**对 P2 设计的具体含义**:
+
+1. **`tick_size_threshold = 1.5 yen` default(nyx c13d657 §A-Q2 提的)**会 filter
+   掉 ~99% 样本(median spread 1986 yen >> 1.5),`wide_only` 训练数据池基本为空
+2. **inverse-spread weighting** 会被 wide-spread 样本主导(median 1986 / p95 4709
+   差 2.4 倍,weight 比例差很大)
+3. **all-include train**(nyx Q2 §A 第一档)是**唯一**目前 sample size 足够的选项,
+   但 wide-spread 子集占绝大多数,模型学到的 `E[fill_pnl|X,filled]` 更接近 wide-market
+   下的 fill PnL,不一定是 echo paper soak 实际场景
+
+#### D. nyx-side 建议 P2 调整
+
+| 项 | 改动建议 |
+|---|---|
+| `SPREAD_FILTER_THRESHOLD` default | 从 `1.5 yen` 改为 **基于实测 quantile** —— eg. `np.quantile(spread_p, 0.10)` ≈ 拿前 10% tightest samples;或者直接用 1 bps 等价 yen 阈值算: `ceil(1.0 / 10000 * median(mid_t))` ≈ 1229 yen,差不多接近 spread_p 中位 |
+| 训练对照 plan | (i) all-include 跑通基线;(ii) `spread_p <= quantile(p10)` filter;(iii) inverse-spread weighted,先看 OOS R² 哪个 robust |
+| BJ book hygiene 调查 | 与本 ask 解耦,长期 narci-side task(可能要 nyx 反向 ask narci diagnose missing-delete event ratio);v10 ship 不阻挡 |
+
+#### E. narci-side 提议(可选,等 nyx 表态)
+
+如 nyx 想看 CC BTC 对照(CC 是后续 Path 6 multi-venue 的目标,**CC 端 spread 更接近
+production 实际**),narci 可立刻跑一个 CC BTC 5/22 smoke(只改 `cc_venue_tag="cc"`,
+~2 min)发数字。**不重复实现工作 — 只是确认非 BJ-specific 的 spread 行为**。
+
+#### F. 当前 narci 状态
+
+- ✅ P1 完成,push 到 `origin/main` 至 `55e71ab`
+- ⏳ 等 nyx P2 / P3 startup;不需要 narci 进一步动作
+- ❌ 若 nyx P2 需要 narci 端 diagnose BJ book hygiene(missing-delete ratio
+  / snapshot-vs-incremental drift 等),narci 会立项作为 follow-up task
+
+#### G. 给 nyx 的 1 个 explicit ack ask
+
+**看一眼 §C 的 spread 数字,确认 P2 `SPREAD_FILTER_THRESHOLD` default 是否要从
+1.5 yen 调到更高**(eg. `quantile(spread_p, 0.10)` ≈ 实测的 ~5-bps-equivalent)。
+要不然 wide_only 训练池近乎空。
+
+下次 sync trigger:nyx P2 ack §G default 调整 OR nyx P3 train v10 第一组 OOS
+回来(narci review manifest)OR narci 收到反向 ask diagnose BJ book hygiene。
+
+---
+
 ## Changelog
 
+- **2026-05-23** (晚) — P1 ship 完毕(narci `66ffae2` / `55e71ab`)+ BJ BTC 5/22 smoke
+  报告 §6 新 entry。Smoke 验证 sampling_mode + schema + 一致性全 pass(31,772
+  samples,quote_side 50/50,7-field schema 完整,2.1M ev/s 吞吐)。但 surface
+  一个 P2-relevant 发现:**BJ BTC spread_p 中位 1986 yen ≈ 16 bps,远宽于 priors
+  1 bps**(根因是 FeatureBuilder BJ book 累积 dust,**与新 mode 无关**,v9_bj 也
+  看到同样宽 spread)。Heads-up 给 nyx:P2 `SPREAD_FILTER_THRESHOLD` default 若
+  保持 1.5 yen 会 filter 掉 ~99% 样本,`wide_only` 池空;建议改成 quantile-based
+  阈值或重新校准。可选:narci 跑 CC BTC 对照 smoke(确认非 BJ-specific 行为)。
+  narci P1 完成,等 nyx P2 ack §G default 调整。
 - **2026-05-23** (后) — 回 nyx `c13d657` ack。Phase 1 5 Q + priority 全部 ack
   narci 推荐选项,锁定 ~10 calendar day timeline。本 commit doc-only:汇总 nyx
   决议,**flag 1 个 nyx 实现 pseudo 与 Q1 设计的内部矛盾**(`spread_eq_1tick`
