@@ -100,6 +100,15 @@ TARGET_KINDS = frozenset({
     # v9_bj_microy binding shipped yet, just unblocks).
     "bj_l2_mid_log_return_1s",
     "bj_l2_microprice_log_return_1s",
+    # Added 2026-05-23 per nyx INTERFACE_NYX_NARCI.md 2026-05-23 Phase 1 ask
+    # (676b734 + c13d657 + 602333e schema lock) — conditional fill-PnL
+    # target for the Path 3 v10 family. Sample population uses
+    # `event_at_simulated_maker_fill` sampling_mode; nyx-side target
+    # computes `log(mid(t + 1000ms) / fill_price) * sign(quote_side)` where
+    # fill_price = best_bid_p + tick (BUY quote, sign=+1) or
+    # best_ask_p - tick (SELL quote, sign=-1). tick_size is hardcoded
+    # per (exchange, symbol) on nyx-side; narci is tick-blind by design.
+    "fill_pnl_1s_log_return",
 })
 
 
@@ -116,6 +125,15 @@ SAMPLING_MODES = frozenset({
     # build_segment_worker(cc_venue_tag="bj") (and now via
     # replay_days_parallel(cc_venue_tag="bj") top-level).
     "event_at_bj_trade",
+    # Added 2026-05-23 per nyx INTERFACE_NYX_NARCI.md 2026-05-23 Phase 1 ask
+    # (676b734 + c13d657 + 602333e schema lock) — emit a sample on every
+    # opposite-direction CC taker arrival. Simulates a maker quote resting
+    # in the book (zero place-latency, zero queue contention assumed —
+    # documented caveat, see INTERFACE_NARCI_NYX.md). Sample schema:
+    # ts + X[36] + best_bid_p + best_ask_p + spread_p + quote_side(int8,
+    # 1=BUY/2=SELL) + mid_t. nyx-side target = conditional fill-PnL
+    # (see `fill_pnl_1s_log_return` in TARGET_KINDS).
+    "event_at_simulated_maker_fill",
 })
 
 

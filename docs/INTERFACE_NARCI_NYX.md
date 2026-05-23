@@ -171,6 +171,66 @@ raw 46.4 / 1.04×)。**Fix**:`rows.sort(key=lambda r: (r[0], r[1]))` stable sort
 
 ---
 
+### 1.9 `event_at_simulated_maker_fill` sampling mode(v10 family,2026-05-23 加)
+
+`research.segmented_replay.replay_days_parallel(..., sampling_mode="event_at_simulated_maker_fill")`
+为 nyx 2026-05-23 Phase 1 ask(`676b734` + `c13d657` + `602333e` schema lock)
+新加的 emit 模式,服务 v10 conditional fill-PnL binding 家族。**`sampling_mode`
+也作为 top-level kwarg**;默认 `"event_at_cc_trade"` 保留 §1.8 既有 3-field 输出
+不变(v9 系列 / OLS / BJ-native 全部不动)。
+
+**Trigger**:对每个 cc_venue_tag 上的 `side==2`(trade event),**不管 price gate
+是否满足**,emit 一个 sample。`qty < 0`(SELL taker)→ 模拟 BUY maker quote 被
+fill;`qty > 0`(BUY taker)→ 模拟 SELL maker quote 被 fill。Book 未 ready / top1
+不可用时(warmup 段或 crossed-book 无法 resolve)**skip 不 emit**(行为与 §1.8
+1:1 emit 不一样,但同一行为不变量:此 mode 只对 trade events 生效)。
+
+**输出 schema**(per emit,parquet-friendly column names,nyx `602333e` 锁定):
+
+| column | dtype | meaning |
+|---|---|---|
+| `ts` | int64 (ms) | trade event 的 raw ts |
+| `X[0..35]` | float64 | NARCI_V6 features at ts(`FEATURE_NAMES` 顺序) |
+| `best_bid_p` | float64 | cc_venue 的 best_bid_p @ ts(book.get_top1 返回值,trade 事件不动 book 所以是 taker arrival 前的 book 状态) |
+| `best_ask_p` | float64 | cc_venue 的 best_ask_p @ ts |
+| `spread_p` | float64 | `best_ask_p - best_bid_p`(raw,float;narci **不**做 tick threshold 比较 — Q1 design 锁定 narci 零 tick 知识) |
+| `quote_side` | int8 | `1` = BUY simulated quote;`2` = SELL simulated quote。**与 RAW 4-col `side` enum 语义不同**(那个 2=trade),故用独立 column name |
+| `mid_t` | float64 | `(best_bid_p + best_ask_p) / 2` @ ts(redundant 但 audit/debug 方便) |
+
+`replay_days_parallel` 聚合结果在新 mode 下**不**返回 `price`;`build_segment_worker`
+亦然。Legacy 默认模式 `event_at_cc_trade` 的输出仍是 `ts/price/X`,**完全无变化**
+(per regression `test_legacy_mode_schema_unchanged`)。
+
+**nyx-side target 计算公式**(narci 不实现,文档收录):
+```
+fill_price = best_bid_p + tick   if quote_side == BUY
+fill_price = best_ask_p - tick   if quote_side == SELL
+y          = log(mid(ts + 1000ms) / fill_price) × sign(quote_side)
+             # sign: BUY → +1, SELL → -1
+```
+`tick` 由 nyx-side `(exchange, symbol) → tick_size` 表 hardcode(narci 零 tick
+知识,Q1 design lock)。target 注册名:`fill_pnl_1s_log_return`(§1.3
+TARGET_KINDS,2026-05-23 加)。
+
+**Place latency caveat**(narci §B-Q4 + nyx ack §A-Q4 锁定文字):
+
+> P1 `event_at_simulated_maker_fill` sample 隐含假设:simulated quote 在 trade
+> event ts 时刻**已成功挂在 book 上**(zero place latency,zero queue position
+> contention)。**真实 production fill 子集**受 echo place latency 分布(目前未
+> 实测,等 paper soak 数据)影响,模型在 production 的 PnL 跟 paper-soak 实测之间
+> 预计有 latency-induced bias。
+> **校正路径**:echo paper soak 数据回来后评估 bias 显著性;如显著,narci P5 加
+> place latency simulation(数据驱动)。
+
+v10 binding manifest 必须在 `do_not_use_warning`(或等价 notes 字段)copy 上述
+caveat,以便消费方代码 path(echo backtest / dashboard 等)在 load 时能看到。
+
+**Regression tests**:`calibration/tests/test_segmented_replay_simulated_fill.py`
+覆盖 emit cardinality / quote_side encoding / schema 完整性 / book 值一致性 /
+book-not-ready skip / legacy mode 不回归 / enum 与 alpha_models 一致性 共 7 个测试。
+
+---
+
 ## 2. 稳定性承诺
 
 ### 2.1 同一 FEATURES_VERSION 内
