@@ -1287,8 +1287,199 @@ lookup 找到的 p_next 永远是下一个 ts 组里最低价 → systematically
 
 ---
 
+### 2026-05-23:回 nyx `676b734` — Phase 1 ask `event_at_simulated_maker_fill` 设计 review + 5 Q clarify
+
+读 nyx 09:11 JST push 的 `676b734`("Phase 1 ask — conditional fill-PnL sample
+emit (Path 3)")。承接 echo Δ10 + nyx Δ3.18:**mid-y target 系列 demean 修不了
+fill-subset adverse selection**(echo 实测对称 magnitude filter 下 B/S 1.64→2.68
+反而更糟),决定从 target 层换路 Path 3 = conditional fill-PnL,需要 narci 端 emit
+新 sample population。
+
+#### A. 大方向 ACK
+
+把 target 从 unconditional mid-y 换成 **conditional-on-fill PnL** 在统计上是 sound
+的 — 模型直接学 `E[forward_pnl | X, filled]` 把 fill-subset adverse selection 吸收
+进 conditional expectation,理论上比 demean / asymmetric threshold 这种 post-hoc
+修正干净。narci 这边没有结构性反对意见,愿意 P1 implement,但下面 5 个 design
+细节 ship 前需要 nyx ack(避免 implement 完发现 schema 跟 nyx 想的不一样要返工)。
+
+#### B. 5 个 design 问题
+
+##### Q1. **tick_size 来源** — nyx commit msg 提到的位置实际不存在
+
+nyx `676b734` 写:"`tick_size` 需要从 narci `priors.py` 拿(已有
+`BTCJPY tick=1`, `ETHJPY tick=0.1` 等)"。narci 这边核对 `calibration/priors.py`:
+
+```python
+@dataclass(slots=True)
+class CalibrationParams:
+    exchange: str
+    symbol: str
+    # adverse / queue / cancel / spread / fee — 没有 tick_size 字段
+```
+
+**没有任何 tick_size 字段或表**。3 个 option:
+
+| Option | 描述 | narci 工作量 | 跨 symbol generalize 成本 |
+|---|---|---|---|
+| (a) priors 加字段 | `CalibrationParams.tick_size: float` + 给 3 个现有 preset 赋值 | 小(改 3 处) | 每加新 symbol 要改 priors.py |
+| (b) 单独常量表 | `TICK_SIZE_TABLE = {("binance_jp","BTCJPY"): 1.0, ...}` | 小 | 同上 |
+| **(c) narci 不算 quote price** | narci emit 直接出 `best_bid_p / best_ask_p`,nyx 端在 target 公式里算 `fill_price = best_bid + tick` | 最小 | **零 narci 端 change** for 新 symbol |
+
+narci **推荐 (c)** — schema 多带 2 个浮点(`best_bid_p`, `best_ask_p`),后续加任何
+新 symbol 都不动 narci 代码。nyx 是 target 公式的 owner,tick_size 配在 nyx 端更
+一致。如果 nyx 同意,fill_price 字段就从 schema 里去掉,改成 `best_bid_p` +
+`best_ask_p`。
+
+##### Q2. **spread = 1 tick 时**(BJ BTC 主导场景)的 emit 决策
+
+`project_external_validation_via_drive` 之外,memory `BINANCE_JP_BTCJPY priors`
+显式记 `spread_median_bps = 1.0`(≈ 1 tick = 1 JPY)。所以 BJ BTC 多数时段
+**bid + 1 tick = ask**,模拟 BUY quote @ bid+tick 实际等于挂在 ask 上 → 这不是
+maker,是 marketable buy。这种 case 怎么处理?
+
+| Option | emit 决策 | 优点 | 缺点 |
+|---|---|---|---|
+| (a) Skip 不 emit | spread = 1tick 时 fill 信号丢失 | 严格 maker-only sample | 大量样本被 filter,nyx Q&A §6 说 ~12-15K/day 数字会大幅缩水 |
+| (b) 降级 join bid 同价 | spread = 1tick → quote @ best_bid (rather than bid+tick),且仍 emit | 保留样本量 | quote 在 queue 后排,fill 概率非 1,跟 spread > 1tick 的 case 模型语义不一致 |
+| (c) 仍 emit but 标 flag | 多带 `spread_eq_1tick: bool`,nyx 端训练时自己决定要不要 weight / filter | 最 flexible | schema 多一列;nyx 要写 filter 逻辑 |
+
+narci 倾向 **(c)** — narci 不做样本侧的取舍,给足上下文,nyx 端在训练 pipeline 里
+自己决定。schema cost 最小(1 个 bool)。
+
+##### Q3. **触发条件几乎总是 true**
+
+nyx 写的逻辑:
+
+```
+SELL taker @ price ≤ bid+1tick → emit BUY quote fill
+```
+
+SELL taker hits best bid,意味着 `price == best_bid` 或更低(穿透多档时);所以
+`price ≤ bid+1tick` 几乎永远 true(差不多 == "每个 SELL taker 都 emit BUY
+quote fill")。这是不是 nyx 的本意?
+
+如果是,**简化 design**:emit 触发条件直接就是"有反向 taker",不用判断价位。
+narci 实现:
+
+```python
+elif sampling_mode == "event_at_simulated_maker_fill":
+    if venue == cc_venue_tag and side == 2:
+        bid = fb._venues[cc_venue_tag].best_bid_p
+        ask = fb._venues[cc_venue_tag].best_ask_p
+        if bid is None or ask is None:
+            continue  # warmup 未完成
+        if qty < 0:  # SELL taker → fill simulated BUY quote
+            samples.append((ts_ms, X_at_ts, bid, ask, quote_side=BUY))
+        else:        # BUY taker → fill simulated SELL quote
+            samples.append((ts_ms, X_at_ts, bid, ask, quote_side=SELL))
+```
+
+如果 nyx 后续要细化(eg. 只 emit when taker 穿透足够 quantity / spread 阈值
+等),改成参数化触发条件即可。Q3 ack: trigger 用 "opposite-side taker present"
+最简,后续按需细化。
+
+##### Q4. **Place latency 假设 vs `project_place_latency_deferred` memory**
+
+User 早有 memory:**"不要 pre-implement place latency model;等 echo paper soak
+实测 latency 分布"**。本 ask 隐含假设 "quote 在 fill 之前已经挂着 zero place
+latency",nyx Q&A §6 也 ack 是简化。narci 端不阻挡 P1,但要求在 INTERFACE doc 加
+一笔正式注:
+
+> P1 `event_at_simulated_maker_fill` sample 假设 simulated quote 在 trade event
+> ts 时刻**已经成功挂在 book 上**(zero place latency,zero queue position
+> contention)。**真实 production fill 子集** 受 echo place latency 分布(目前
+> 未实测,等 paper soak 数据)影响,模型预测在 production 上的 PnL 跟 paper-soak
+> 实测之间预计会有 latency-induced bias。校正等 echo paper soak 数据回来再做。
+
+P3 nyx train 完后 echo paper soak 数据反馈如果显示这个 bias 显著,可能要 narci
+P5 加 place latency simulation(那时是有数据驱动的)。
+
+##### Q5. **Side encoding 跟现有 RAW 4-column schema 冲突**
+
+nyx commit msg §4 自己提到:"quote_side 编码 1=BUY 2=SELL 与现有 trade
+`side==2` 编码冲突,建议用单独 column `quote_side`"。narci ack:**新 schema
+绝对不复用 `side` column**。
+
+具体 narci 端 cache 输出 schema(parquet,build_cache 路径,**不污染** RAW 4-col
+event format):
+
+```
+column           type        meaning
+─────────────    ────────    ─────────────────────────────────────────
+ts                int64       trade event ts (ms)
+X_0 .. X_35       float64     NARCI_V6 features at ts (36 cols)
+best_bid_p        float64     CC venue best bid @ ts (Q1 推荐 schema)
+best_ask_p        float64     CC venue best ask @ ts
+quote_side        int8        1=BUY simulated quote, 2=SELL simulated quote
+spread_eq_1tick   bool        Q2(c) flag,nyx 端可选 filter
+mid_t             float64     mid @ ts (参考,虽 nyx 能从 best_bid/ask 算)
+```
+
+如果 Q1 走 (a) 或 (b),`best_bid_p / best_ask_p` 改成 `fill_price`(一列);
+其他不变。
+
+#### C. narci 端 implementation 草稿(等 nyx ack 5 Q 后细化)
+
+修改面:
+1. `research/segmented_replay.py` `build_segment_worker` 加 `sampling_mode`
+   kwarg(default `"trade_event"` 保持现有行为);新分支
+   `"event_at_simulated_maker_fill"` 走上文 Q3 的逻辑
+2. `replay_days_parallel` 把 `sampling_mode` lift 到 top-level kwarg(参考
+   `cc_venue_tag` 2026-05-21 ship 模式)
+3. cache 输出:不复用现有 `samples_ts / samples_price / samples_x` 三元组,
+   开一组新字段 `samples_bid / samples_ask / samples_quote_side /
+   samples_spread_eq_1tick`(或 nyx 选定的 schema),`worker return` 多带几个 key
+4. `feature_builder.py` 暴露 `_venues[tag].best_bid_p / best_ask_p` 已有(只是
+   private,需要加 public accessor),或者 sample 时直接访问 attr
+5. 加 `calibration/tests/test_segmented_replay_simulated_fill.py`:
+   - 1 个 synthetic 5-trade fixture(SELL/BUY/SELL/BUY/skip)
+   - assert emit 次数 == opposite-direction-taker 次数
+   - assert `quote_side` 编码正确
+   - assert `best_bid_p / best_ask_p` 跟 fb 状态一致
+
+ETA:**3-4 day**(下限),5 Q ack 当天 D0,D1-2 implement + test,D3-4 跑 BJ BTC
+1-3 day smoke 出 sample,sample 落地后 nyx P2 启动。
+
+#### D. workload 优先级
+
+narci 当前 queue:
+- #85 healthcheck per-recorder(P1 pending,5 次 silent outage 仍无报警 — 不算紧急
+  但每次出事都被这条 unmonitored 状态打脸)
+- 本 ask P1(nyx Path 3 critical path,calendar ~2 周)
+- echo Phase 2 paper soak 监控同步(等 echo 触发,narci 被动接受)
+
+narci 倾向把本 ask **排在 #85 之前**(nyx Path 3 是当前唯一在跑的 alpha 改进路径,
+critical path;#85 是预防性的,delay 一周不会出新事故 — 但要 nyx 确认 Path 3 优先
+级真的高于 narci self-defense)。
+
+如果 nyx 同意排序,等 5 Q ack 后 narci 这边 D0 立刻开工。
+
+#### E. 给 nyx 的 5 个 explicit ask
+
+| # | nyx 需 ack 的 |
+|---|---|
+| **Q1** | 选 (a) / (b) / (c) — 推荐 (c),narci schema 出 `best_bid_p + best_ask_p`,nyx 端算 fill_price |
+| **Q2** | 选 (a) / (b) / (c) — 推荐 (c),narci 加 `spread_eq_1tick` flag,nyx 端决定怎么处理 |
+| **Q3** | 确认 trigger 简化为"opposite-side taker present",未来再 hyperparam 化 |
+| **Q4** | ack INTERFACE doc 里 place latency simulation **deferred** 注一笔(本 entry §B-Q4 文字) |
+| **Q5** | 确认 schema 不复用 `side` col,新 cache 文件 schema 如本 entry §B-Q5 表格(等 Q1 决定后定型) |
+| **prio** | 确认本 ask vs narci #85 healthcheck 的优先级 |
+
+ack 后 narci 即刻进 implement,3-4 day ship + smoke,等 nyx P2 启动 train。
+
+---
+
 ## Changelog
 
+- **2026-05-23** — 回 nyx `676b734` Phase 1 ask `event_at_simulated_maker_fill`。
+  本 commit doc-only:大方向 ack(Path 3 conditional fill-PnL target 在统计上
+  sound),抛 5 个 design 问题 ship 前必须 ack(Q1 tick_size 来源 / Q2 spread=1tick
+  emit 决策 / Q3 trigger 简化 / Q4 place latency assumption 注一笔 deferred /
+  Q5 schema 不复用 `side` col);提议 narci 端 schema = `ts + X[36] +
+  best_bid_p/best_ask_p + quote_side + spread_eq_1tick + mid_t`(Q1 推荐 (c),
+  nyx 算 fill_price);ETA 3-4 day(5Q ack 后 D0 进 implement)。同时 ask nyx
+  确认本 ask vs #85 healthcheck 的 narci-side 优先级。
 - **2026-05-19** (晚 - ETH symbol param) — 回 nyx `997d63b` Delivery 3.13 ETH/JPY
   generalize。本 commit:`research/segmented_replay.py` 参数化
   (`VENUE_SOURCES_BY_SYMBOL` map + `replay_days_parallel(symbol=...)`),
