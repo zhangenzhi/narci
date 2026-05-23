@@ -190,7 +190,7 @@ fill;`qty > 0`(BUY taker)→ 模拟 SELL maker quote 被 fill。Book 未 ready /
 | column | dtype | meaning |
 |---|---|---|
 | `ts` | int64 (ms) | trade event 的 raw ts |
-| `X[0..35]` | float64 | NARCI_V6 features at ts(`FEATURE_NAMES` 顺序) |
+| `X[0..N-1]` | float64 | NARCI_V6 features at ts,N = `len(FEATURE_NAMES)`(FEATURES_VERSION v6 当前 N=38,nyx commit 写"X[36]"是 binding model 用的 36-feature subset,narci 端 emit 全部 38;nyx 端做 subset select)。顺序按 `FEATURE_NAMES`,跟 §1.8 legacy mode 一致 |
 | `best_bid_p` | float64 | cc_venue 的 best_bid_p @ ts(book.get_top1 返回值,trade 事件不动 book 所以是 taker arrival 前的 book 状态) |
 | `best_ask_p` | float64 | cc_venue 的 best_ask_p @ ts |
 | `spread_p` | float64 | `best_ask_p - best_bid_p`(raw,float;narci **不**做 tick threshold 比较 — Q1 design 锁定 narci 零 tick 知识) |
