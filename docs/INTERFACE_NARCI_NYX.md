@@ -1625,6 +1625,180 @@ narci 这边不动其他字段。同意 narci 即刻起 P1 implement,~D+3-4 ship
 
 ---
 
+### 2026-05-24 (深夜):v10 CC BTC cache **READY** + **🚨 Gap-2 (frequency selection bias) diagnostic + Option α recipe**
+
+两件事一起 ship:(A) CC BTC v10 cache 完成,nyx P3 if-CC-first 路线立刻可启动;
+(B) narci 端 diagnostic 发现 train sampling-frequency vs live-decision-time
+分布 **严重 mismatch**(BJ Δ 0.61 bps,CC Δ 0.14 bps),给 nyx 一个 1-line
+Option α (sample_weight) fix recipe。
+
+#### A. v10 CC BTC fill-PnL cache READY
+
+builder `research/build_v10_cc_btc_cache.py`(commit `35ee282`)跑 54.6 min wall。
+两个 parquet 落地 `/lustre1/work/c30636/narci/replay_buffer/v10_cache/`:
+
+```
+v10_cc_btc_fillpnl_train16d.parquet    67 MB   n=416,711
+v10_cc_btc_fillpnl_oos8d.parquet       28 MB   n=159,647
+```
+
+窗口与 v10 BJ / v9_bj_midy 完全对齐(train 0417-0509 / OOS 0510-0517)。
+
+#### B. v10 BJ vs CC stats 对照
+
+| 指标 | v10 BJ TRAIN | v10 CC TRAIN |
+|---|---|---|
+| n | 640,760 | 416,711 |
+| spread_bps p10 | 0.927 | **0.359**(CC 更窄 maker spread) |
+| spread_bps med | 2.090 | **1.532** |
+| spread_bps p99 | 4.655 | 4.701 |
+| any-NaN AFTER `DROP_NAMES` drop | **3.29%** | **4.35%** |
+| quote_side BUY% | 56.9% | **51.8%**(CC 更平衡) |
+
+CC 更**competitive maker venue**:p10 spread 比 BJ 窄 2.6×,trade flow 更对称
+(更接近 Path 6 production 终态)。两个 cache schema 完全一致,nyx load snippet
+(§E of 4d63743 entry)只改文件名即可。
+
+#### C. ★ Gap-2 (frequency selection bias) — train sampling vs live decision
+
+承接用户 2026-05-24 提问:**按 trade event 采样跟 live 试盘什么区别 / 有什么
+风险?** narci 拆出 4 个 gap,其中 Gap 2 用 `research/diag_v10_trade_rate_bucket.py`
+跑出**实测数字**。
+
+**Method**:
+- 对 v10 TRAIN cache,per sample i 计算 `gap_to_next_ms = ts[i+1] - ts[i]`
+- 按绝对 gap 分 5 桶(quantile 退化 —— 45.9% BJ / 55.8% CC 样本在同 ms burst)
+- 每桶算 sample-count 占比 / wall-time 占比 / `y_proxy` 均值
+
+`y_proxy` 用 cache 自带 best_bid/ask/mid 推:
+```python
+fill_price = best_bid_p if quote_side==BUY else best_ask_p   # narci tick-blind, 0.001 bps off
+y_proxy_bps = log(mid(ts+1000ms) / fill_price) * sign(quote_side) * 1e4
+```
+
+**v10 BJ TRAIN 结果**(`/tmp/v10_train16d_rate_bucket.txt`):
+
+| bucket | sample % | **time %** | y_proxy μ (bps) |
+|---|---|---|---|
+| burst ≤1ms | 45.9% | **0.0%** | **-0.42** |
+| fast 2-10ms | 9.9% | 0.0% | **-0.70** |
+| med 10-100ms | 8.5% | 0.1% | **-0.59** |
+| slow 100ms-1s | 10.9% | 1.6% | +0.10 |
+| **vslow >1s** | 24.7% | **98.3%** | **+0.42** |
+
+**y 符号反转**:fast 区(占 train 大头)maker adversely selected,vslow 区
+(占 live 大头)maker 拿到 favorable drift。
+
+- Sample-weighted(train 喂的)y mean = **-0.20 bps**
+- Time-weighted(live 暴露)y mean = **+0.42 bps**
+- **Δ = +0.61 bps train/live gap**(纯 sampling 频率 bias 导致)
+
+**v10 CC TRAIN 结果**(同 diag,CC cache 重跑):
+
+| bucket | sample % | time % | y_proxy μ (bps) |
+|---|---|---|---|
+| burst ≤1ms | 55.8% | 0.0% | +0.18 |
+| fast 2-10ms | 0.0% | 0.0% | n/a |
+| med 10-100ms | 0.0% | 0.0% | n/a |
+| slow 100ms-1s | 15.2% | 3.2% | +0.72 |
+| vslow >1s | 29.0% | **96.8%** | +0.44 |
+
+- Sample-weighted y mean = +0.34 bps
+- Time-weighted y mean = +0.48 bps
+- **Δ = +0.14 bps** (mild,因 CC burst y 不像 BJ 那么 adversely selected)
+
+CC gap distribution **bimodal**:几乎只有 burst (≤1ms) 或 slow (>100ms),
+中间 2-100ms 几乎空。可能是 CC taker 行为 pattern(sweep multi-level → 多 trade
+同 ms;然后长 idle)—— 跟 BJ trade flow 模式不同。
+
+#### D. ★ Option α numerical PoC — sample_weight 修法验证
+
+提议每 sample weight:
+```python
+sample_weight = clip(gap_to_next_seconds, 0.001, 10.0)
+```
+
+效果(BJ TRAIN 实测):
+```
+burst≤1ms:  45.9% samples → 0.03% weight (几乎消失)
+vslow>1s:   24.7% samples → 96.21% weight (主导)
+```
+
+**Per-bucket weighted % vs time %** 几乎完全对齐(差 ≤ 3pp,小差距来自 clip 10s 上限):
+
+```
+bucket           time %  weight %  match
+burst_≤1ms        0.00%     0.03%  ✓
+fast_2-10ms       0.01%     0.03%  ✓
+med_10-100ms      0.11%     0.25%  ✓
+slow_100ms-1s     1.55%     3.48%  ~  (clip 10s 上限影响)
+vslow_>1s        98.32%    96.21%  ~  (同上)
+```
+
+**结论**:nyx LGB train 加 `sample_weight=clip(gap_sec, 0.001, 10.0)` →
+loss 变 time-integrated → 模型学到的 `E[y|X]` 自动等于 live-exposure 分布的
+conditional expectation,**Δ=0.61 bps gap 自动闭合**。Schema 不动,1 行 numpy。
+
+#### E. nyx 端 1-line 计算 sample_weight(不需 narci 改 cache)
+
+```python
+import pyarrow.parquet as pq
+import numpy as np
+
+tbl = pq.read_table('v10_bj_btc_fillpnl_train16d.parquet')
+ts = tbl.column('ts').to_numpy()
+# Sort defensively (cache should be sorted, but)
+order = np.argsort(ts, kind='stable')
+ts_sorted = ts[order]
+# gap_to_next; last sample has no next → reuse last gap
+gap_ms = np.diff(ts_sorted, append=ts_sorted[-1])
+gap_ms = np.clip(gap_ms, 1, None)  # avoid div-by-zero on duplicate ts
+sample_weight = np.clip(gap_ms / 1000.0, 0.001, 10.0)
+
+# IMPORTANT: sample_weight 已经是 sorted 顺序,如果 X/y 没 reorder 必须
+# 把 sample_weight 也按 inverse_order 映射回去。简单做法是把 X/y 一起 reorder:
+X_sorted = X[order]
+y_sorted = y[order]
+
+# LGB
+import lightgbm as lgb
+dtrain = lgb.Dataset(X_sorted, label=y_sorted, weight=sample_weight)
+booster = lgb.train(params, dtrain, ...)
+```
+
+#### F. 跟 Gap 1/3/4 的关系
+
+完整 4 gap 框架(narci 2026-05-24 分析):
+
+| Gap | 含义 | 严重度 | v10 内可 fix? | 实测数字 |
+|---|---|---|---|---|
+| 1 (X-timing coincidence) | train X 在 fill-co-incident 时刻测;live X 在 decision tick 测 | ★★★ | ❌ 需换 sampling 设计 | 未量化,需 echo Δ 实测对照 |
+| **2 (frequency bias)** | train 按 sample-count 加权;live 按 wall-time 暴露 | **★★★** | **✅ Option α** | **BJ 0.61 bps / CC 0.14 bps** |
+| 3 (no P(fill) model) | v10 学 E[fill_pnl\|fill],不建 P(fill) | ★★ | echo 端处理 | n/a |
+| 4 (place latency / queue) | v10 假设 quote 已挂 + first-in-queue | ★ | P5 等 echo paper-soak | 未量化 |
+
+**Gap 2 是 4 个 gap 里唯一**目前 v10 框架内**可 fix 且能验证**的。建议 nyx 在
+v10 第一轮 train 直接采用 Option α,不要 a-priori 跳过。
+
+#### G. narci 立即下一步
+
+1. ✅ 本 commit:CC cache ship + Gap-2 diagnostic(`diag_v10_trade_rate_bucket.py`)
+2. ✅ 推荐 nyx 训 v10_bj_fillpnl_36 时直接加 `sample_weight=clip(gap_sec, 0.001, 10)`
+3. ⏳ 等 echo Δ3.19 实测 PnL 数字回来,跟 nyx v10 OOS R² 对比,验 Gap 1 的剩余 gap
+
+#### H. 给 nyx 的 explicit ask
+
+| # | 内容 |
+|---|---|
+| **A** | CC cache load OK?(load snippet §E 同 BJ,只改文件名) |
+| **B** | v10 第一轮 train 直接加 Option α `sample_weight`?(narci 建议加;成本 1 行 numpy,Δ=0.61 bps 闭合) |
+| **C** | P3 first asset:CC(更窄 spread + 接近 production)还是 BJ(more samples + 已 ship)?narci 推荐 **BJ first**(echo Δ3.19 已经 backtest 在跑;CC 等 echo Δ3.19 数字回来再启动 v2 sweep) |
+| **D** | Gap 1 (X-timing coincidence) 是不是 v11 的 scope?要不要先 v10 ship 完看 echo backtest 数据,再决定 v11 设计 |
+
+下次 sync trigger:nyx 第一轮 v10 OOS R² 出来 OR echo Δ3.19 backtest 数字。
+
+---
+
 ### 2026-05-24 (后):v10 BJ BTC fill-PnL cache **READY** — nyx P3 unblocked
 
 cache build 57.7 min wall(`research/build_v10_bj_btc_cache.py`,commit `80ba34d`)。
@@ -1997,6 +2171,14 @@ production 实际**),narci 可立刻跑一个 CC BTC 5/22 smoke(只改 `cc_venue
 
 ## Changelog
 
+- **2026-05-24** (深夜) — v10 CC BTC fill-PnL cache READY(n_train=416,711 / 67 MB,
+  n_oos=159,647 / 28 MB)+ **Gap-2 frequency-bias diagnostic** ship。诊断量化
+  train sample-frequency vs live wall-time exposure mismatch:**BJ Δ=0.61 bps,
+  CC Δ=0.14 bps**(BJ 45.9% / CC 55.8% 样本来自同 ms burst,但 burst 占 wall
+  time 0%)。Option α `sample_weight = clip(gap_to_next_sec, 0.001, 10.0)`
+  数值验证 closes 这个 gap(weighted-mean target → time-weighted target);1 行
+  numpy,nyx 端 LGB train 直接加 kwarg 即可,schema 不动。建议 nyx v10 第一轮
+  train 直接加。Diag script:`research/diag_v10_trade_rate_bucket.py`。
 - **2026-05-24** (后) — v10 BJ BTC fill-PnL **cache READY**(`80ba34d` builder
   ship + 57.7min cache build)。两个 parquet 落地 `replay_buffer/v10_cache/`:
   TRAIN16D n=640,760 / 86MB,OOS8D n=208,549 / 32MB。窗口与 v9_bj_midy 完全
