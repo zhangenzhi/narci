@@ -21,6 +21,11 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/coincheck_recorder.yaml
+      # Per-container healthcheck scope — sees ONLY this recorder's
+      # output subtree. Prevents shared-volume false-green when
+      # OTHER venues (BJ/UM/BS) still write fresh shards while this
+      # one's recorder is dead (2026-05-23 UM 28h silent death pattern).
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/coincheck
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -44,6 +49,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/binance_jp_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/binance_jp
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -71,6 +77,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/bitbank_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/bitbank
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -106,6 +113,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/bitflyer_spot_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/bitflyer/spot
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -124,6 +132,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/bitflyer_fx_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/bitflyer/fx
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -142,6 +151,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/gmo_spot_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/gmo/spot
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -160,6 +170,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/gmo_leverage_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/gmo/leverage
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -182,6 +193,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/spot_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/binance/spot
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro
@@ -205,6 +217,7 @@ services:
     command: ["record"]
     environment:
       - NARCI_CONFIG=configs/um_future_recorder.yaml
+      - NARCI_HEALTH_DATA_DIR=/app/replay_buffer/realtime/binance/um_futures
     volumes:
       - narci-data:/app/replay_buffer
       - ./configs:/app/configs:ro

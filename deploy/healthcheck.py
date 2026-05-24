@@ -6,6 +6,12 @@
   3. trade 流是否在写 (最近 30 分钟内是否有 side=2 事件)
      —— 防止 2026-04-23 那种 aggTrade endpoint 改动导致 trade 流静默死亡
         但 depth 仍流畅、文件 mtime 仍刷新的情况
+  4. ★ per-(venue,symbol) staleness check (task #85, 2026-05-24 加)
+     —— 防止 2026-05-23 UM alignment-loop 28h 静默死亡:UM container
+        看 shared volume 里其它 venue (CC/BJ/BS) 新 shards,聚合 max(mtime)
+        看起来 fresh,但 UM 自己的 BTCUSDT/ETHUSDT/... 6 个 symbol 全部死。
+        per-(venue, symbol) 维度独立 stale check 才能 catch 这种 case。
+        See reco/docs/INCIDENTS/2026-05-23-um-alignment-loop-28h-silent-death.md
 """
 import os
 import re
@@ -17,12 +23,20 @@ import glob
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-DATA_DIR = "/app/replay_buffer/realtime"
+DATA_DIR = os.environ.get("NARCI_HEALTH_DATA_DIR", "/app/replay_buffer/realtime")
 # save_interval_sec 在所有 recorder config 是 600,所以两次 save 之间最新
 # 文件年龄会自然走到 ~600s。原值 300 (5min) 系统性低于 save cycle → 半数
 # 时间窗口 /health 翻 unhealthy(narci-reco 624e054 dry-run 在 SG 复现)。
 # 改成 900s = 1.5x save_interval,留余量吸收 IO 抖动 / cron skew。
 STALE_THRESHOLD_SEC = 900              # 15 分钟无新文件视为不健康
+# Per-(venue,symbol) 维度也用 STALE_THRESHOLD_SEC 同阈值。如果一个 (venue,
+# symbol) 最新 shard 比这老 → 该 symbol stale。
+PER_SYMBOL_STALE_THRESHOLD_SEC = int(
+    os.environ.get("NARCI_PER_SYMBOL_STALE_SEC", STALE_THRESHOLD_SEC)
+)
+# Retired/PARKED venue 阈值:超过 7 天没新 shard 的 (venue, symbol) 视为
+# 故意停止(eg. gmo PARKED),不再 report stale 避免 noise alert。
+RETIRED_AGE_THRESHOLD_SEC = 7 * 86400  # 7 天
 DISK_WARN_PERCENT = 90                 # 磁盘使用超过 90% 告警
 TRADE_WINDOW_SEC = 1800                # 30 分钟检测窗口
 TRADE_WARMUP_SEC = 1800                # 启动后前 30 分钟不检 trade（让缓冲落盘）
@@ -79,6 +93,85 @@ def _list_recent_shards(now: float, max_age_sec: int) -> list[tuple[str, float]]
         if mt >= cutoff:
             out.append((path, mt))
     return out
+
+
+def _scan_all_per_symbol_latest() -> dict[tuple[str, str], float]:
+    """Walk DATA_DIR fully, return {(venue_path_rel, symbol): max_mtime}.
+
+    venue_path_rel: dir relative to DATA_DIR (e.g. "binance/um_futures/l2")
+                    — uniquely identifies the recorder responsible for
+                    these shards on the shared narci-data volume.
+    symbol:        from filename {SYMBOL}_RAW_{date}_{time}.parquet via
+                    `_SHARD_NAME_RE` capture group.
+
+    Used by per-(venue,symbol) staleness check to catch single-venue
+    silent death where shared-volume aggregate mtime would still look
+    fresh (UM 2026-05-23 incident).
+    """
+    latest: dict[tuple[str, str], float] = {}
+    for path in glob.glob(os.path.join(DATA_DIR, "**", "*_RAW_*.parquet"),
+                          recursive=True):
+        bn = os.path.basename(path)
+        if "DAILY" in bn:
+            continue
+        m = _SHARD_NAME_RE.match(bn)
+        if not m:
+            continue
+        symbol = m.group(1)
+        mt = _safe_mtime(path)
+        if mt is None:
+            continue
+        venue_rel = os.path.relpath(os.path.dirname(path), DATA_DIR)
+        key = (venue_rel, symbol)
+        if mt > latest.get(key, 0.0):
+            latest[key] = mt
+    return latest
+
+
+def check_per_symbol_staleness(now: float) -> tuple[list[str], dict]:
+    """Flag stale (venue, symbol) pairs.
+
+    A pair is stale if its newest shard mtime is > PER_SYMBOL_STALE_THRESHOLD_SEC
+    AND <= RETIRED_AGE_THRESHOLD_SEC. Pairs older than RETIRED are assumed
+    intentionally PARKED (gmo case) and skipped.
+
+    Returns at most 10 stale pairs in `issues` (avoids unbounded list on
+    catastrophic outage) plus a `stale_per_symbol` count in info.
+    """
+    info: dict = {}
+    issues: list[str] = []
+    latest = _scan_all_per_symbol_latest()
+    if not latest:
+        # _list_recent_shards / global check above will catch this case.
+        return [], {"per_symbol_pairs": 0}
+    stale_pairs = []
+    parked_pairs = []
+    for (venue_rel, symbol), mt in latest.items():
+        age = now - mt
+        if age > RETIRED_AGE_THRESHOLD_SEC:
+            parked_pairs.append((venue_rel, symbol, age))
+            continue
+        if age > PER_SYMBOL_STALE_THRESHOLD_SEC:
+            stale_pairs.append((venue_rel, symbol, age))
+
+    info["per_symbol_pairs"] = len(latest)
+    info["per_symbol_parked"] = len(parked_pairs)
+    info["per_symbol_stale"] = len(stale_pairs)
+
+    if stale_pairs:
+        # Sort by age descending so worst offender is first
+        stale_pairs.sort(key=lambda x: -x[2])
+        for venue_rel, symbol, age in stale_pairs[:10]:
+            issues.append(
+                f"per_symbol_stale: {venue_rel}/{symbol} "
+                f"age={int(age)}s (threshold={PER_SYMBOL_STALE_THRESHOLD_SEC}s)"
+            )
+        if len(stale_pairs) > 10:
+            issues.append(
+                f"per_symbol_stale: ... and {len(stale_pairs)-10} more "
+                f"(see info.per_symbol_stale)"
+            )
+    return issues, info
 
 
 def _count_trades_in_files(paths: list[str]) -> int:
@@ -165,6 +258,14 @@ def check_health():
     trade_issues, trade_info = check_trade_rate(now, recent, warmup_done)
     issues.extend(trade_issues)
     info.update(trade_info)
+
+    # 2b. Per-(venue,symbol) staleness check (#85, 2026-05-24 加)
+    #     Catches single-venue silent death on shared-volume deployments
+    #     where global max(mtime) would still look fresh.
+    if warmup_done:
+        per_sym_issues, per_sym_info = check_per_symbol_staleness(now)
+        issues.extend(per_sym_issues)
+        info.update(per_sym_info)
 
     # 3. 磁盘空间
     try:
