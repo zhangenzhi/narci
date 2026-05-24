@@ -104,6 +104,33 @@ class L2Recorder:
         self.stream_aligned = {s: False for s in self.symbols}
         self.running = True
 
+        # 6. Alignment-loop circuit breaker (#85, 2026-05-24).
+        # Prevents 2026-05-23 UM 28h silent death: recorder kept re-pulling
+        # snapshots (128 attempts, 0 successful alignment, 0 落盘) because
+        # WS stream `u` always ran ahead of REST `lastUpdateId+1`. With no
+        # circuit breaker, the loop ran indefinitely + container appeared
+        # healthy. Per-sym tracking: count re-snapshot attempts since last
+        # successful alignment + wall-time since last_alignment_ok. When
+        # either crosses threshold, exit so supervisord/docker restarts
+        # the container — clean restart_count visibility + chance of fresh
+        # WS connection succeeding. See:
+        #   reco/docs/INCIDENTS/2026-05-23-um-alignment-loop-28h-silent-death.md
+        self.alignment_max_retries = int(
+            self.config.get("alignment_max_retries",
+                            os.environ.get("NARCI_ALIGNMENT_MAX_RETRIES", 10))
+        )
+        self.alignment_max_duration_sec = int(
+            self.config.get("alignment_max_duration_sec",
+                            os.environ.get("NARCI_ALIGNMENT_MAX_DURATION_SEC", 600))
+        )
+        # Per-sym counters: # of "流偏移过大" retries since last successful
+        # alignment. Reset to 0 when stream_aligned[sym] flips True.
+        self.alignment_retry_count = {s: 0 for s in self.symbols}
+        # Per-sym timestamp of last successful alignment (or process start
+        # time when never aligned). Used for elapsed-time circuit-breaker.
+        _t0 = time.time()
+        self.last_alignment_ok_ts = {s: _t0 for s in self.symbols}
+
         # bitbank 等用 socket.io 的 adapter 不走 ws_url 路径,跳过构造。
         # 见 ExchangeAdapter.uses_custom_stream() 契约。
         if self.adapter.uses_custom_stream():
@@ -145,6 +172,54 @@ class L2Recorder:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 {sym.upper()} 初始快照已就绪, ID: {last_id}")
         except Exception as e:
             print(f"❌ {sym.upper()} 初始化快照失败: {e}")
+
+    def _maybe_trip_alignment_breaker(self, sym: str,
+                                       retry_n: int, elapsed: float) -> None:
+        """Circuit-breaker: if a symbol has been stuck unaligned past either
+        retry-count or wall-time threshold, exit the recorder process.
+
+        Rationale (#85, 2026-05-23 UM incident): when WS `u` consistently
+        outruns REST `lastUpdateId+1`, the `_handle_depth` re-snapshot
+        path loops forever. Container appears healthy (`state=running,
+        restarts=0`) while 0 bytes land on disk for hours/days. By exiting
+        on threshold, supervisord/docker restarts the container — fresh
+        WS connection + visible `restart_count > 0` + per-symbol
+        healthcheck flips 503. Better to die loud than zombie silent.
+
+        Override action via env: NARCI_ALIGNMENT_BREAKER_ACTION ∈
+          - "exit"  (default) — os._exit(2), let supervisord/docker restart
+          - "log"   — only print loudly, keep retrying (debugging)
+
+        Thresholds are config-overridable per recorder:
+          - alignment_max_retries        (default 10)
+          - alignment_max_duration_sec   (default 600 = 10 min)
+        """
+        retry_tripped = retry_n >= self.alignment_max_retries
+        time_tripped = elapsed >= self.alignment_max_duration_sec
+        if not (retry_tripped or time_tripped):
+            return
+        reason_bits = []
+        if retry_tripped:
+            reason_bits.append(f"retries={retry_n}>={self.alignment_max_retries}")
+        if time_tripped:
+            reason_bits.append(
+                f"elapsed={elapsed:.0f}s>={self.alignment_max_duration_sec}s")
+        reason = ", ".join(reason_bits)
+        action = os.environ.get("NARCI_ALIGNMENT_BREAKER_ACTION", "exit").lower()
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 {sym.upper()} "
+            f"alignment-loop circuit-breaker TRIPPED ({reason}). "
+            f"action={action}. See "
+            f"reco/docs/INCIDENTS/2026-05-23-um-alignment-loop-28h-silent-death.md",
+            flush=True,
+        )
+        if action == "exit":
+            # Hard exit; bypass asyncio cleanup so supervisord/docker
+            # restart cycle is immediate + visible. Exit code 2 distinguishes
+            # this from normal exit (0) and uncaught exception (typically 1).
+            os._exit(2)
+        # else "log" — fall through to re-snapshot; next attempt may trip
+        # again but at least the operator gets repeated alerts in logs.
 
     # ------------------------------------------------------------------ #
     # 事件处理
@@ -287,6 +362,9 @@ class L2Recorder:
                     self._process_depth_event(sym, d)
                     self.stream_aligned[sym] = True
                     self.pre_align_buffer[sym] = []
+                    # Reset circuit-breaker counters on success.
+                    self.alignment_retry_count[sym] = 0
+                    self.last_alignment_ok_ts[sym] = time.time()
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {sym.upper()} 深度流对齐成功")
                     return
 
@@ -300,10 +378,22 @@ class L2Recorder:
             if combined:
                 newest_u = self.adapter.get_update_id(combined[-1])
                 if newest_u > self.last_update_ids[sym] + 1:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大 (newest u={newest_u}, snapshot last_id+1={self.last_update_ids[sym]+1})，重新拉快照")
+                    self.alignment_retry_count[sym] += 1
+                    retry_n = self.alignment_retry_count[sym]
+                    elapsed = time.time() - self.last_alignment_ok_ts[sym]
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} 流偏移过大 "
+                          f"(newest u={newest_u}, snapshot last_id+1={self.last_update_ids[sym]+1}, "
+                          f"retry={retry_n}/{self.alignment_max_retries}, "
+                          f"elapsed={elapsed:.0f}s/{self.alignment_max_duration_sec}s)，重新拉快照")
                     self.is_initialized[sym] = False
                     self.stream_aligned[sym] = False
                     self.pre_align_buffer[sym] = []
+                    # Circuit breaker check: if either retry-count or
+                    # elapsed time threshold crossed → exit so supervisord/
+                    # docker restarts. Better to die loud (restart_count > 0
+                    # + per-symbol healthcheck red) than silently zombie
+                    # for 28h with container healthy.
+                    self._maybe_trip_alignment_breaker(sym, retry_n, elapsed)
                     asyncio.create_task(self.init_symbol_snapshot(sym))
             return
 
