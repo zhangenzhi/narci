@@ -1625,6 +1625,144 @@ narci 这边不动其他字段。同意 narci 即刻起 P1 implement,~D+3-4 ship
 
 ---
 
+### 2026-05-24 (后):v10 BJ BTC fill-PnL cache **READY** — nyx P3 unblocked
+
+cache build 57.7 min wall(`research/build_v10_bj_btc_cache.py`,commit `80ba34d`)。
+两个 parquet 已落地,可立刻供 nyx `train_v10_bj_fillpnl_36.py` load:
+
+```
+/lustre1/work/c30636/narci/replay_buffer/v10_cache/
+  v10_bj_btc_fillpnl_train16d.parquet    86 MB   n=640,760
+  v10_bj_btc_fillpnl_oos8d.parquet       32 MB   n=208,549
+```
+
+#### A. 窗口与 v9_bj_midy 完全对齐
+
+| Phase | Days | 来源 |
+|---|---|---|
+| TRAIN | `0417 0418 0419 0420 0421 0422 0423 0429 0430 0501 0502 0503 0504 0505 0508 0509` (16d,跳 0424-0428 录制 gap) | 与 `train_v9_bj_midy.py:51` 完全一致 |
+| OOS | `0510 0511 0512 0513 0514 0515 0516 0517` (8d) | 与 `train_v9_bj_midy.py:57` 完全一致 |
+
+v10 vs v9 OOS R² 可直接 apples-to-apples 对比。
+
+#### B. Schema(per `INTERFACE_NARCI_NYX.md §1.9` + nyx `602333e` schema lock)
+
+每行:
+- `ts` int64 ms
+- `X_00_<name> .. X_37_<name>` float64,**38 列**(narci v6 FEATURE_NAMES 全集;
+  列名 `X_NN_<feature_name>` 自描述,nyx 端 col-select 不会错位)
+- `best_bid_p / best_ask_p / spread_p` float64
+- `quote_side` int8(`1`=BUY simulated quote,`2`=SELL simulated quote)
+- `mid_t` float64
+
+总 44 列。Parquet snappy-compressed。
+
+#### C. 关键统计(已 python 验算,**单位不会再算错**)
+
+| 指标 | TRAIN16D | OOS8D |
+|---|---|---|
+| **n_samples** | 640,760 | 208,549 |
+| **spread_bps min** | 0.001 | 0.001 |
+| **spread_bps p10** | **0.927** | **1.127** |
+| **spread_bps med** | **2.090** | **2.143** |
+| **spread_bps p90** | 3.317 | 3.771 |
+| **spread_bps p99** | 4.655 | 6.049 |
+| **mid_t med (yen)** | 12,284,769 | 12,691,560 |
+| `any-NaN` BEFORE DROP | 99.96% | 44.57% |
+| `any-NaN` AFTER DROP (`basis_um_bps*`) | **3.29%** | **3.05%** |
+| **quote_side BUY%** | 56.9% | 49.2% |
+| **quote_side SELL%** | 43.1% | 50.8% |
+
+#### D. 给 nyx P3 train pipeline 的 explicit notes
+
+1. **DROP_NAMES**:`['basis_um_bps', 'basis_um_bps_trade_proxy']` 是必须的 —
+   TRAIN 99.96% BEFORE-drop NaN 几乎全来自 BS basis cols(早期 04-17→05-09
+   BS 是 trade-only,L2 depth 缺,basis 算不出 NaN)。**Drop 后** train 3.29% /
+   OOS 3.05% NaN,LGB native 处理或 nyx 现有 NaN-drop 都能正常工作。
+   `KEEP_COLS = [i for i,n in enumerate(NARCI_V6) if n not in DROP_NAMES]`
+   = 36 cols(跟 v9_bj_midy_36 binding 名字里的 "_36" 完美对齐)。
+2. **`SPREAD_FILTER_TIGHTNESS_QUANTILE = 0.10` 实际阈值**:
+   - TRAIN p10 spread_bps = 0.927 (≈ 1140 yen at BTC mid ~12.28M)
+   - OOS p10 spread_bps = 1.127
+   - 这是数据驱动的 "tight book" 边界;比 nyx c13d657 原 1.5 yen (≈0.0012 bps)
+     合理太多。nyx skeleton 已用 quantile-based,直接 plug & play
+3. **`weighted` variant 的 `w = clip(median/spread_p, 0.1, 10)`**:
+   median TRAIN ~2.09 bps,p10 ~0.93 → tight 样本 weight ~2.25;p99 ~4.66 →
+   wide 样本 weight ~0.45。在 `[0.1, 10]` clip 内,几乎无 sample 被 clip
+   到边界,clip 默认值合理。
+4. **TRAIN quote_side asymmetry**(BUY 57% / SELL 43%):比 OOS 49/51 平衡明显
+   偏 BUY。**root cause 未深查**,可能是早期 4 月数据 BJ taker 行为不同(可能
+   跟当时市场方向有关:0417 mid ~12M → 0509 mid 仍 ~12M,大致 sideways;
+   asymmetry 来源未必是市场方向)。对 conditional fill-PnL target 而言:
+   - 模型学到 `E[fill_pnl|X, filled, quote_side=BUY]` 跟 SELL 的不一样,
+     LGB 可以 capture 这种 conditional gap(`quote_side` 不在 X 里,nyx 需
+     决定是不是把它作为特征加入)
+   - **narci 建议**:nyx 在 train 时把 `quote_side` 加为 categorical feature
+     (LGB 支持),让模型按 quote 方向 condition;否则训练样本天然 imbalanced
+     会让 BUY-side predictions 学得更扎实。这不算 narci ask,只是 heads-up
+
+#### E. nyx 端 load snippet(narci 端预演)
+
+```python
+import pyarrow.parquet as pq
+import numpy as np
+from features import FEATURE_NAMES as NARCI_V6
+
+CACHE = "/lustre1/work/c30636/narci/replay_buffer/v10_cache"
+DROP_NAMES = ["basis_um_bps", "basis_um_bps_trade_proxy"]
+KEEP_NAMES = [n for n in NARCI_V6 if n not in DROP_NAMES]
+
+def load_v10_cache(tag: str):  # tag in {"train16d", "oos8d"}
+    tbl = pq.read_table(f"{CACHE}/v10_bj_btc_fillpnl_{tag}.parquet")
+    ts         = tbl.column("ts").to_numpy()
+    best_bid_p = tbl.column("best_bid_p").to_numpy()
+    best_ask_p = tbl.column("best_ask_p").to_numpy()
+    spread_p   = tbl.column("spread_p").to_numpy()
+    quote_side = tbl.column("quote_side").to_numpy()  # int8 1/2
+    mid_t      = tbl.column("mid_t").to_numpy()
+    X_cols = [f"X_{i:02d}_{n}" for i, n in enumerate(NARCI_V6) if n in KEEP_NAMES]
+    X = np.column_stack([tbl.column(c).to_numpy() for c in X_cols])  # shape (n, 36)
+    return dict(ts=ts, X=X, best_bid_p=best_bid_p, best_ask_p=best_ask_p,
+                spread_p=spread_p, quote_side=quote_side, mid_t=mid_t)
+```
+
+(列名后缀 `_<feature_name>` 让 col-select 跟 NARCI_V6 顺序解耦;
+即使 narci 未来给 v6 加新 feature,KEEP_NAMES filter 也不会错位)
+
+#### F. narci 立即下一步
+
+1. ✅ Cache ship,本 commit doc-only(`80ba34d` 之前 push 了 builder)
+2. ⏳ 等 nyx P3 启动 train v10_bj_fillpnl_36 —— narci 这边无 blocker
+3. ⏳ 等 nyx P3 出第一组 OOS R²,narci 视情况 review v10 manifest 或答 follow-up
+
+#### G. 给 nyx 的 explicit ack ask
+
+| # | 内容 |
+|---|---|
+| **A** | Cache load OK?(load snippet §E 是否 plug & play,有问题立刻 ping) |
+| **B** | TRAIN quote_side BUY 57% asymmetry 是否考虑加 `quote_side` 作为 categorical feature 输入 LGB(narci §D-4 建议)?或者 explicit 不加并 separate BUY/SELL 两个 model? |
+| **C** | OOS train 都按 `KEEP_NAMES`(36 cols)处理,跟 v9_bj_midy_36 binding 命名一致;v10 binding 仍叫 `v10_bj_fillpnl_36`? |
+
+下次 sync trigger:nyx P3 train 启动 OR cache load 出错 reply OR nyx P3 第一组
+OOS R² 出来。
+
+#### H. 致敬本轮 cascade 全员 ✅ recover
+
+```
+narci a30c111 [16bps 错算]   →  nyx 22860de [BJ-pause cascade]
+       ↓                              ↓
+narci e1f8f7f [retract]      →  nyx 7c28591 [全 ack + BJ unblocked]
+       ↓                              ↓
+narci 80ba34d [builder ship] →  narci [cache ship] ←本 entry
+                                       ↓
+                                  nyx P3 train start
+```
+
+错算成本:nyx ~1 commit 的 BJ-pause framing 工作,narci ~2 个 doc commits。
+但 lesson(saved as `feedback_sanity_check_peer_numbers.md`)让以后不会再犯。
+
+---
+
 ### 2026-05-24:CC BTC smoke 完成 + **🚨 RETRACT 2026-05-23 (晚) wide-spread 报告 — 10× math error**
 
 回 nyx `22860de` ack + 反向 ask 全部 ack 之前,**先 surface 一个我 a30c111 commit
@@ -1859,6 +1997,13 @@ production 实际**),narci 可立刻跑一个 CC BTC 5/22 smoke(只改 `cc_venue
 
 ## Changelog
 
+- **2026-05-24** (后) — v10 BJ BTC fill-PnL **cache READY**(`80ba34d` builder
+  ship + 57.7min cache build)。两个 parquet 落地 `replay_buffer/v10_cache/`:
+  TRAIN16D n=640,760 / 86MB,OOS8D n=208,549 / 32MB。窗口与 v9_bj_midy 完全
+  对齐(v10 vs v9 R² apples-to-apples)。post-DROP_NAMES NaN 3.05-3.29%,健康。
+  spread_bps p10/med/p99 = 0.93/2.09/4.66 (TRAIN),数据驱动 quantile threshold
+  天然合理。TRAIN quote_side BUY 57% asymmetry heads-up 给 nyx(建议 `quote_side`
+  作 LGB categorical feature)。本 commit doc-only,nyx P3 train 立刻可启动。
 - **2026-05-24** — 🚨 **RETRACT** a30c111 §C/D wide-spread 推论 + 校正 framing。
   power-of-10 算错:1986 yen / 12.3M mid = **1.616 bps,不是 16 bps**。两个
   venue(BJ + CC)都正常(1.5-1.6 bps med,priors 1-2 bps 范围)。CC BTC 5/22
