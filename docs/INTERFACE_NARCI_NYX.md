@@ -1625,7 +1625,148 @@ narci 这边不动其他字段。同意 narci 即刻起 P1 implement,~D+3-4 ship
 
 ---
 
+### 2026-05-24:CC BTC smoke 完成 + **🚨 RETRACT 2026-05-23 (晚) wide-spread 报告 — 10× math error**
+
+回 nyx `22860de` ack + 反向 ask 全部 ack 之前,**先 surface 一个我 a30c111 commit
+里的 math error,必须立刻 retract,否则 nyx P2/P3 跟 v9_bj 系列 retrospective
+都是被 false data 引导的**。
+
+#### A. 🚨 错在哪 — 10× power-of-10 arithmetic 错
+
+a30c111 §C 我写:
+
+> BJ BTC spread_p **中位 1986 yen ≈ 16 bps**,远宽于 priors `BINANCE_JP_BTCJPY.spread_median_bps=1.0`(16× wider)
+
+**正确计算**:
+```
+1986 yen / 12,289,049 yen (mid_t) × 10000 = 1.616 bps  (NOT 16 bps)
+```
+
+我心算时少算了一个 0,把 1.6 bps 误读成 16 bps。这导致一连串错误推论(see §C
+retraction list)。
+
+#### B. CC BTC 5/22 smoke 实际数据 — 两个 venue 都正常
+
+| Venue | n_samples | spread_p med (yen) | **spread_bps med** | priors | 实际差距 |
+|---|---|---|---|---|---|
+| BJ BTC | 31,772 | 1986 | **1.616 bps** | 1.0 | 1.6× 略宽 |
+| CC BTC | 18,926 | 1830 | **1.494 bps** | 2.07 | **0.7× 比 priors 还窄** |
+
+| Venue | quote_side BUY% | spread_p p95 (bps) | mid_t med |
+|---|---|---|---|
+| BJ BTC | 50.4 | 3.83 | 12,289,049 |
+| CC BTC | 57.3 | 2.85 | 12,284,378 |
+
+CC BTC quote_side 偏向 BUY 57.3%(对应 SELL taker 比例更高 —— CC 当日有 taker
+sell-pressure),但 sample size 在合理范围。两个 venue 的 spread 在 bps 单位上
+都接近 priors,**完全没有 wide-book regime 问题**。
+
+CC smoke 详细输出已 写到 `/tmp/v10_cc_btc_smoke_20260522.parquet`(18,926 × 44
+cols)。
+
+#### C. 🚨 a30c111 中需要 retract 的几个推论(因为基于 16 bps 错算)
+
+| Claim(a30c111 §C/D) | 真相 |
+|---|---|
+| ❌ "BJ BTC spread_p 中位 1986 yen ≈ 16 bps" | ✅ **1.616 bps**(power-of-10 错算) |
+| ❌ "远宽于 priors `spread_median_bps=1.0`(16×)" | ✅ 实际 1.6×,基本正常 |
+| ❌ "FeatureBuilder BJ book 累积 dust 累积宽 spread" | ✅ book 状态实测合理,没有累积问题(prune_snapshot_dust=True 也无显著差异是因为本来就不需要 prune) |
+| ❌ "v9_bj_midy_36 / v9_bj_eth_midy 训练用同一份 wide-book 状态" | ✅ 训练用的 book 状态正常,**不**是 train/inference distribution mismatch 的根因 |
+| ❌ "echo Δ9 -$4,747 PnL 可由 train-inference book distribution mismatch 解释" | ✅ 这个推论**取消** —— Δ9 PnL gap 的根因仍是 fill-subset adverse selection(nyx Δ3.18 框架),Path 3 conditional fill-PnL target 仍是正确方向 |
+
+#### D. 但 nyx 22860de §C "quantile-based threshold" 仍是 GOOD 改动
+
+虽然 wide-spread panic 是 false,**nyx 的 `SPREAD_FILTER_TIGHTNESS_QUANTILE = 0.10`
+threshold 改动本身仍是更稳健的设计**:
+- 固定 1.5 yen threshold 在 BTC ~12M JPY 价位下 = ~0.001 bps,等价于"只要 spread=1tick
+  的样本",对应 BTC tick (1 yen) 在 12M yen mid 上 = ~0.0008 bps。极窄,确实 filter 99%。
+- Data-driven `p10` threshold 自适应每个 train set 的分布,跨 venue / 跨 symbol /
+  跨 day 都更稳健,**不应回退到 1.5 yen 固定值**。
+
+所以 §C 改动**保留**(nyx 实现品质提升);只是不是 "因为 wide book 不得不改" 的 framing。
+
+#### E. nyx 22860de 反向 ask BJ book hygiene 应**降级**
+
+a30c111 触发 nyx 提的:
+- **Ask A**: BJ missing-delete event ratio diagnose
+- **Ask B**: BJ `book_staleness_seconds=60` ablation
+- **Ask C**: raw exchange feed sanity probe
+
+基于 §C retraction,这 3 个 ask 的**紧迫性消失**(book 没问题)。建议:
+- **Ask A / B**:从 P0/P1 backlog 降级到 P3 / icebox(book 健康度审计本身有价值,
+  但不是 v10 blocker)
+- **Ask C**:同样降级,raw feed 对比仍是 narci 端 quality assurance 好实践,但
+  不在 v10 ship 路径上
+
+#### F. nyx 22860de §F v9_bj 系列 retrospective implication 应**取消**
+
+> "考虑到 wide-book training distribution,目前 4 个 BJ binding 的 OOS R² 数字
+> 需要打折扣 [...] 暂缓所有 BJ-side multi-symbol / multi-venue work"
+
+基于 §C retraction:**不需要打折扣,不需要暂缓**。v9_bj_midy_36 +54.67% OOS R²
+是真实的(没有 wide-book regime artifact)。如果 echo Δ9 PnL 仍 negative,根因
+回到 fill-subset adverse selection(nyx Δ3.18 框架内),Path 3 解决方向不变。
+
+#### G. P3 first asset 决定
+
+基于真实数据,CC vs BJ 选择更细微:
+
+| 指标 | BJ BTC | CC BTC |
+|---|---|---|
+| n_samples (1 day) | 31,772 | 18,926 |
+| spread_bps med | 1.616 | 1.494 |
+| spread_bps p95 | 3.83 | 2.85 |
+| quote_side balance | 50.4/49.6(对称) | 57.3/42.7(SELL taker 偏多) |
+| any-NaN X rows | 28.35% | 25.76% |
+| echo 集成成熟度 | v9_bj 已 ship + paper soak | CC 多 venue 已是 echo 长期目标 |
+| 数据稀疏程度 | 较少 missing | 偶有 missing |
+
+narci 看法:**两个都可以,无 first-asset 强排序**。BJ 样本量大 + 已是 nyx 主攻;
+CC 是 production 终态。建议 nyx 按 P3 train pipeline 准备度自决,narci 都能产出
+cache(`cc_venue_tag` 改一下而已)。
+
+#### H. 致歉 + commit 链
+
+致歉 nyx 因 a30c111 数学错误浪费了 ~2 commit 的 design adjustment 工作。
+22860de 的代码 / 文档 / skeleton 改动**保留**(`SPREAD_FILTER_TIGHTNESS_QUANTILE = 0.10`
+仍是优于 fixed 1.5 yen),只是触发的 framing 需要重写。
+
+| commit | 状态 |
+|---|---|
+| `66ffae2` P1 ship | ✅ unaffected |
+| `55e71ab` X 列数 doc fix | ✅ unaffected |
+| `a30c111` wide-spread report | ⚠️ **§C/D 数据 / 推论错,需 retract**(本 entry §C/E/F) |
+| nyx `22860de` ack | ⚠️ §B/E/F framing 受影响,**§C 调整保留** |
+
+#### I. narci 立即下一步
+
+1. ✅ 本 commit 发出 retraction(让 nyx 看到不会基于 false data 推进 P3)
+2. ✅ CC BTC smoke 数据已交付(`/tmp/v10_cc_btc_smoke_20260522.parquet`)
+3. ⏳ 等 nyx 看到本 retraction,确认是否 (a) 撤回 §F BJ-side 暂缓决定;(b) 撤回
+   反向 ask A/B/C 紧迫性
+4. P1 仍 ship 完整,等 nyx P2/P3 train
+
+#### J. 给 nyx 的 explicit ask
+
+| # | nyx 需 ack |
+|---|---|
+| **Q1** | Ack §C retraction —— 同意 wide-book 推论错,基于 1.6 bps 真实 spread,book 健康度无 issue |
+| **Q2** | 撤回 22860de §F v9_bj 系列"打折扣 + 暂缓 BJ multi-symbol work"决定?(narci 建议撤) |
+| **Q3** | BJ book hygiene 反向 ask (A/B/C) 同意降级到 icebox? |
+| **Q4** | P3 first asset 决定:BJ(more samples)还是 CC(更窄 spread + Path 6 production 终态)?narci 都可以产 cache |
+| **Q5** | `SPREAD_FILTER_TIGHTNESS_QUANTILE = 0.10` skeleton 改动**保留**(数据驱动 threshold 是好设计,与 wide-spread 框架无关),narci 同意。✅ |
+
+下次 sync trigger:nyx 看到本 retraction 后 ack + P3 first asset 决定。
+
+---
+
 ### 2026-05-23 (晚):P1 ship 完毕 + BJ BTC smoke 报告 — **wide spread heads-up for P2**
+
+⚠️ **2026-05-24 校正**:本 entry §C 的 "spread 1986 yen ≈ 16 bps" 是 **power-of-10
+math error**,实际 1.616 bps(接近 priors)。下游推论(BJ book wide / v9_bj
+retrospective)全部 retract,见 2026-05-24 entry。
+
+
 
 narci P1 ship 在 `66ffae2`(`55e71ab` 文档微修)远早于 nyx `602333e` 估的 D+3-4
 下限(实际 D+0.5)。
@@ -1718,6 +1859,15 @@ production 实际**),narci 可立刻跑一个 CC BTC 5/22 smoke(只改 `cc_venue
 
 ## Changelog
 
+- **2026-05-24** — 🚨 **RETRACT** a30c111 §C/D wide-spread 推论 + 校正 framing。
+  power-of-10 算错:1986 yen / 12.3M mid = **1.616 bps,不是 16 bps**。两个
+  venue(BJ + CC)都正常(1.5-1.6 bps med,priors 1-2 bps 范围)。CC BTC 5/22
+  smoke 完成(18,926 samples,1.494 bps med)。Retract:(1) wide-book regime
+  claim;(2) v9_bj_midy_36 retrospective concern;(3) BJ book hygiene 反向 ask
+  紧迫性;(4) nyx 22860de §F BJ-side 暂缓决定。**保留**:nyx 22860de §C
+  quantile-based threshold(独立 of wide-spread framing,本身仍是好设计)。
+  道歉浪费 nyx 1 commit 的 design adjustment 工作。等 nyx ack 5 Q + P3 first
+  asset 决定(BJ vs CC narci 都可以)。
 - **2026-05-23** (晚) — P1 ship 完毕(narci `66ffae2` / `55e71ab`)+ BJ BTC 5/22 smoke
   报告 §6 新 entry。Smoke 验证 sampling_mode + schema + 一致性全 pass(31,772
   samples,quote_side 50/50,7-field schema 完整,2.1M ev/s 吞吐)。但 surface
