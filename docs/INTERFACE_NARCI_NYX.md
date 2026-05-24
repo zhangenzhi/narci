@@ -1625,6 +1625,128 @@ narci 这边不动其他字段。同意 narci 即刻起 P1 implement,~D+3-4 ship
 
 ---
 
+### 2026-05-24 (深夜²):**Supplementary** to Gap-2 entry — 3 个 nuance 必须明确(避免 nyx train 完误解 OOS R²)
+
+承接上一个 entry(2026-05-24 (深夜) v10 CC + Gap-2 diagnostic),user 在 review
+数字时 catch 出我**没说清楚的 3 个关键点**。补这一节是因为 nyx 拿 v10 第一轮
+OOS R² 出来时,如果不理解这 3 点,**很可能误判** "Option α 修了 Gap-2 → v10 work"
+其实里面混了其他 confounding。
+
+#### A. ★ y 分布是 **fat-tail asymmetric**,mean ≠ median 是核心特征
+
+之前 entry 报 "TRAIN sample-weighted y mean = -0.20 bps" 是对的,但**没说**
+median 和 quantile 形状。实测:
+
+```
+v10 BJ TRAIN (n=640,759 valid):
+  sample-mean   = -0.1975 bps  (负)
+  sample-median = +0.0794 bps  (正)
+  σ             =  2.5326 bps
+  y > 0 fraction= 52.6%        (52.6% 个样本是正的!)
+```
+
+**52.6% 样本 y 是正**,**但 mean 还是负**。原因是 **adverse selection 的标准
+distributional 指纹**:
+
+| Side | sample 数量 | per-sample magnitude | shape |
+|---|---|---|---|
+| y > 0 (favorable for maker) | 337,239 (52.6%) | 小(median ~+0.5 bps) | thin tail,σ 小 |
+| y < 0 (adverse) | 303,520 (47.4%) | 大(median ~-1.0 bps) | **heavy tail,σ 大** |
+
+少数 adverse fills(taker 拿到 short-term 反转信号 → mid 朝相反方向漂 5-10 bps)
+权重压倒多数小幅 favorable fills。
+
+**对 nyx 的 implication**:
+- LGB MSE loss 拟合 mean(被 fat negative tail 主导)
+- 如果 nyx 改 metric 看 median R² / quantile R²,数字会差别很大
+- Optimization 也可能受益于 huber-loss / quantile-loss(narci 不替 nyx 拍,但 heads-up)
+
+#### B. ★ TRAIN/OOS 自身有 distribution shift(独立于 Gap-2)
+
+**user 问到时新 verify 的**:不只 train 内部 sampling-bias,**train 跟 OOS 两段
+本身分布也不一样**。
+
+```
+                            TRAIN (16d 0417-0509)    OOS (8d 0510-0517)
+─────────────────────────────────────────────────────────────────────────
+sample-weighted mean        -0.1975 bps              +0.2191 bps     ← 符号反向!
+sample-weighted median      +0.0794 bps              +0.3891 bps
+time-weighted mean          +0.4159 bps              +0.6700 bps
+y > 0 fraction              52.6%                    63.1%           (+10.5pp)
+```
+
+**OOS 期间 maker 整体处境明显比 TRAIN 好**。可能原因(narci 不深 diagnose,
+留给后续):
+- 04月 BJ 流动性较薄 → informed flow 占比高 → adverse selection 重
+- 05月 BJ 流动性放宽 / 更多 retail flow → maker drift 更顺
+- Binance UM 0423 endpoint split (memory `project_binance_um_market_endpoint`)
+  导致 UM 信号 feature 在 04月 noisy,05月 clean,间接影响 backtest
+
+**对 nyx 的 implication**:
+- **OOS R² 高 ≠ v10 work**:OOS y 本身分布更"友好"(mean 偏 +),unweighted train
+  model 学到 -0.20 bps,在 OOS +0.22 bps 分布上算 R² 自然好看
+- 真实 production transferability **不能**仅看 OOS R²;要看 echo Δ3.19 实际
+  PnL(echo 的市场是 当前 → 未来,跟 OOS 的 05月窗口分布又不一样)
+- **建议 nyx 在 manifest test_metrics 里同时报 train 内部 walk-forward R²**
+  (eg. last-2-day-of-train as mini-OOS),作为 distribution-shift control
+
+#### C. ★ Option α 只 close Gap-2 — 不修 A 的 fat-tail bias、不修 B 的 train/OOS shift
+
+完整 attribution:
+
+| 问题 | 量级 | Option α 能 close? |
+|---|---|---|
+| Gap-2 sampling bias(burst over-rep) | Δ 0.61 bps(BJ) | ✅ 数学上完全 close |
+| A. fat-tail mean ≠ median | 一直存在 (intrinsic to maker data) | ❌ 不 close,但**weight 完后 fat-tail 仍在**(只是 sample 的相对贡献变了) |
+| B. TRAIN→OOS regime shift | Δ 0.42 bps(sample-w mean train→OOS) | ❌ 完全不 close — Option α 是 within-train 加权 |
+
+**Option α 闭合的 0.61 bps gap 是 train 内部 sampling 重新加权 → train target
+分布对齐 live exposure 分布**。它**不**让 model OOS R² 自动好看。
+
+**完整 picture**(预测 v10 BJ Option α 上后的 OOS R² 走向):
+- Option α 让 train model 学的 ŷ 偏 +0.42 bps(time-weighted)而不是 -0.20 bps
+- OOS 真实 sample-mean 是 +0.22 bps,time-mean +0.67 bps
+- 如果 nyx 直接看 OOS sample-MSE,Option α 模型 ŷ +0.42 偏离 OOS sample-mean +0.22 比
+  unweighted 模型 ŷ -0.20 偏离 +0.22 **稍大**(0.20 vs 0.42 的偏差)
+- → **R² 数字可能 surprise 下降**,但 PnL 更接近 production transferable
+
+**这是 Option α 设计上的正确权衡**:牺牲一点 OOS R² 数字,换取 train→live
+distribution match,提高 PnL 可信度。
+
+#### D. nyx 端 manifest 建议加的诊断字段
+
+为了 v10 ship 之后 echo backtest 能 attribute 表现差异,建议 nyx v10 manifest
+里 explicit 报:
+
+| field | 含义 |
+|---|---|
+| `train_y_sample_mean` | 不加 Option α 的 y mean |
+| `train_y_time_mean` | 加 Option α 后(time-weighted)y mean |
+| `train_y_median` | sample median(看 fat-tail asymmetry) |
+| `train_y_pos_fraction` | y > 0 比例 |
+| `oos_y_sample_mean` | 跟 train_y_sample_mean 对比看 regime shift |
+| `oos_y_pos_fraction` | 跟 train_y_pos_fraction 对比 |
+| `oos_r2_unweighted` | unweighted MSE based R² |
+| `oos_r2_time_weighted` | weighted MSE based R²(更接近 production-relevant) |
+
+narci 不强制(nyx 自己 manifest field 决定权),但建议有这些数字才能在 echo
+backtest 之后做 sensible attribution(把"模型预测错"vs"模型预测对但 distribution
+shift 导致 PnL 不好"分开)。
+
+#### E. 给 nyx 的 explicit ack ask
+
+| # | 内容 |
+|---|---|
+| **A** | Ack §A(y fat-tail asymmetric / 52.6% positive but mean negative)— 不需要 narci 端做什么,只是 nuance 提醒 |
+| **B** | Ack §B(TRAIN/OOS 自身 regime shift)— 决定要不要 split OOS 到 mid-train walk-forward + tail OOS 验 regime stability |
+| **C** | Ack §C(Option α 不修 §A §B)— 跟 OOS R² 解释方式相关,避免误判 v10 ship 价值 |
+| **D** | 是否同意 manifest 加 §D 列出的 8 个诊断字段?(narci 推荐;成本是 nyx train 完 dump dict,无 narci 端代价) |
+
+下次 sync trigger:nyx 第一轮 v10 OOS R² 出来(含 §D 字段)OR echo Δ3.19 BJ
+backtest 数字。
+
+---
+
 ### 2026-05-24 (深夜):v10 CC BTC cache **READY** + **🚨 Gap-2 (frequency selection bias) diagnostic + Option α recipe**
 
 两件事一起 ship:(A) CC BTC v10 cache 完成,nyx P3 if-CC-first 路线立刻可启动;
@@ -2171,6 +2293,13 @@ production 实际**),narci 可立刻跑一个 CC BTC 5/22 smoke(只改 `cc_venue
 
 ## Changelog
 
+- **2026-05-24** (深夜²) — Supplementary to Gap-2 entry。3 个 nuance 补:
+  (A) y 分布 fat-tail asymmetric,52.6% sample 正但 mean 负(adverse selection
+  指纹,mean ≠ median);(B) **TRAIN/OOS 自身有 distribution shift**(sample-mean
+  -0.20 → +0.22,y>0 fraction 52.6% → 63.1%),独立于 Gap-2;(C) Option α
+  只 close Gap-2,**不**修 fat-tail bias 和 train/OOS shift。建议 nyx
+  manifest 加 8 个诊断字段(train/oos y mean/median/pos_frac + r2_unweighted/
+  time_weighted)做 attribution 防误判。
 - **2026-05-24** (深夜) — v10 CC BTC fill-PnL cache READY(n_train=416,711 / 67 MB,
   n_oos=159,647 / 28 MB)+ **Gap-2 frequency-bias diagnostic** ship。诊断量化
   train sample-frequency vs live wall-time exposure mismatch:**BJ Δ=0.61 bps,
