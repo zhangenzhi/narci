@@ -10,7 +10,7 @@ import re
 
 import pandas as pd
 
-from data._io import load_parquet
+from core.io import load_parquet
 
 
 class DataValidator:

@@ -38,7 +38,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from backtest.symbol_spec import SymbolSpec
+from core.symbol_spec import SymbolSpec
 from calibration.alpha_models import AlphaModel, load_alpha_model
 from calibration.priors import get_priors
 from features import FeatureBuilder

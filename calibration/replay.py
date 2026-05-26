@@ -33,10 +33,10 @@ from .schema import SCHEMA_VERSION
 # both echo and narci-internal callers import this module without
 # environment hacks.
 try:
-    from narci.backtest.symbol_spec import SymbolSpec  # noqa: F401
+    from narci.core.symbol_spec import SymbolSpec  # noqa: F401
     _NARCI_PREFIX = True
 except ImportError:
-    from backtest.symbol_spec import SymbolSpec        # noqa: F401
+    from core.symbol_spec import SymbolSpec        # noqa: F401
     _NARCI_PREFIX = False
 
 log = logging.getLogger("narci.calibration.replay")
@@ -439,9 +439,9 @@ def calibrate_session(
         params = get_priors(exchange, symbol)
     if symbol_spec is None:
         if _NARCI_PREFIX:
-            from narci.backtest.symbol_spec import SymbolSpec
+            from narci.core.symbol_spec import SymbolSpec
         else:
-            from backtest.symbol_spec import SymbolSpec
+            from core.symbol_spec import SymbolSpec
         symbol_spec = SymbolSpec(symbol=symbol, tick_size=1.0, lot_size=1e-8,
                                  min_notional=0.0)
 

@@ -23,7 +23,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from data.historical import HistoricalSource
-from data._io import save_parquet, load_parquet
+from core.io import save_parquet, load_parquet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("DailyCompactor")

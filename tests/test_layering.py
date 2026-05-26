@@ -26,10 +26,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ---- 层成员清单(相对仓库根的路径 / 目录前缀)---------------------------- #
 
 CORE_FILES = {
-    "data/_io.py", "data/_config.py",
-    "calibration/schema.py",
-    "backtest/symbol_spec.py",   # 纯 dataclass spec,被 analytics 复用
+    "core/io.py", "core/config.py", "core/symbol_spec.py",
+    "calibration/schema.py",     # echo 事件契约(仍物理在 calibration/,逻辑归 core)
 }
+CORE_DIR_PREFIXES = ("core/",)
 RECORDER_FILES = {
     "data/l2_recorder.py", "data/wal.py", "data/cloud_sync.py",
     "data/live_publisher.py", "data/download.py", "data/daily_compactor.py",
@@ -50,9 +50,7 @@ def _rel(path: str) -> str:
 
 
 def file_layer(rel: str) -> str | None:
-    if rel in CORE_FILES:
-        return "core"
-    if rel == "calibration/schema.py":
+    if rel in CORE_FILES or rel.startswith(CORE_DIR_PREFIXES):
         return "core"
     if rel in RECORDER_FILES or rel.startswith(RECORDER_DIR_PREFIXES):
         return "recorder"
@@ -66,10 +64,10 @@ def module_layer(mod: str) -> str | None:
     if mod == "calibration.schema" or mod.startswith("calibration.schema."):
         return "core"
     top = mod.split(".")[0]
+    if top == "core":
+        return "core"
     if top in ("features", "simulation", "calibration", "research", "gui"):
         return "analytics"
-    if top == "backtest":
-        return "core"  # 仅剩 symbol_spec
     if top == "data":
         return file_layer("/".join(mod.split(".")) + ".py") or (
             "recorder" if mod.startswith("data.historical") or mod.startswith("data.exchange") else None

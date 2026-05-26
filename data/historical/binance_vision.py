@@ -18,7 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .base import HistoricalSource
-from data._io import save_parquet
+from core.io import save_parquet
 
 logger = logging.getLogger(__name__)
 

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from data.l2_reconstruct import L2Reconstructor
-from backtest.symbol_spec import SymbolSpec
+from core.symbol_spec import SymbolSpec
 from calibration.priors import CalibrationParams
 
 

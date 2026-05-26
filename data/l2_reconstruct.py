@@ -4,7 +4,7 @@ import operator
 import pandas as pd
 import numpy as np
 
-from data._io import load_parquet
+from core.io import load_parquet
 from data.sampling import FixedGridSampler
 
 _ITEMGETTER_0 = operator.itemgetter(0)

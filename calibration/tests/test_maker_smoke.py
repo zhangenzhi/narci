@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from backtest.symbol_spec import SymbolSpec
+from core.symbol_spec import SymbolSpec
 from calibration import priors as P
 from simulation import MakerSimBroker
 

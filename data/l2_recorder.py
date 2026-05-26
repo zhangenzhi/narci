@@ -29,8 +29,8 @@ import pandas as pd
 
 from data.exchange import get_adapter, ExchangeAdapter
 from data.wal import SegmentWAL, recover_orphans, write_parquet_atomic
-from data._config import load_config_section
-from data._io import load_parquet
+from core.config import load_config_section
+from core.io import load_parquet
 
 
 class _WalBuffer:

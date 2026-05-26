@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 
-from backtest.symbol_spec import SymbolSpec
+from core.symbol_spec import SymbolSpec
 from calibration import priors as P
 from simulation import MakerSimBroker
 

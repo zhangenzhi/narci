@@ -17,7 +17,7 @@ import pandas as pd
 import requests
 
 from .base import HistoricalSource
-from data._io import save_parquet
+from core.io import save_parquet
 
 
 class TardisSource(HistoricalSource):

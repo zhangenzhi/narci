@@ -333,7 +333,12 @@ class FixedGridSampler(Sampler):
 
 > 这三个动机(清晰/降爆炸半径/依赖隔离)至此**已全部兑现**,无需物理移动。
 
-**(b) 物理移动到 `narci/core|recorder|analytics` — 可选,默认不做**:
+> P5 housekeeping(2026-05-26):顶级目录评估后,`core/` 已落为**真目录**
+> —— `symbol_spec`(原 backtest/,P4 后仅剩它)+ `io`/`config`(原 data/_io、
+> data/_config)迁入 `core/`,空壳 `backtest/` 删除;`reco/` 子项目从仓库根
+> 迁入 `deploy/reco/`。recorder/analytics 仍按 §8.2 逻辑分层(未物理移动)。
+
+**(b) 物理移动 recorder/analytics 到 `narci/` 子包 — 可选,默认不做**:
 把目录搬进 `narci/` 子包、重写全仓 import,只换来"import 路径上肉眼可见分层"的
 观感,却要付:几百处 import 重写 + 动 `deploy/entrypoint.sh`/`supervisord.conf`/
 docker/`server-aliases.sh`(**碰生产路径**)。对单人仓,逻辑边界已够;物理移动
@@ -384,7 +389,7 @@ recorder 因 P1 已稳定先迁:`conftest.py` + `pytest.ini` 地基就位;
 | 录制 + 丢数据路径 | `data/l2_recorder.py`、`data/exchange/{base,binance,coincheck}.py` |
 | L2 重建 + 采样 | `data/l2_reconstruct.py`、`data/sampling.py`(P3)、`features/realtime.py` |
 | 参考撮合器(主线) | `simulation/maker_broker.py`、`simulation/backtest_alpha.py` |
-| SymbolSpec(backtest/ 唯一幸存) | `backtest/symbol_spec.py` |
+| core 层(P5 housekeeping 落为真目录) | `core/{symbol_spec,io,config}.py`(`backtest/` 已整体删除) |
 | 契约 | `calibration/{schema,alpha_models,priors,writers}.py` |
 | 校准对账门禁 | `calibration/replay.py` |
 | 在线特征(唯一,v6 契约) | `features/realtime.py`(`data/feature_builder.py` 已 P4 删除) |

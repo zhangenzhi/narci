@@ -36,7 +36,7 @@ import pandas as pd
 
 # 原子写统一在 data/_io;此处 re-export 以不改既有 import
 # (l2_recorder 从 data.wal 导入 write_parquet_atomic)。
-from data._io import write_parquet_atomic, load_parquet
+from core.io import write_parquet_atomic, load_parquet
 
 DEFAULT_COLUMNS = ["timestamp", "side", "price", "quantity"]
 SEGMENT_SUFFIX = ".segwal"

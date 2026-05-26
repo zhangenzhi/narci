@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from data._io import save_parquet
+from core.io import save_parquet
 
 logger = logging.getLogger(__name__)
 

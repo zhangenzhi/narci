@@ -49,6 +49,18 @@ docker compose up -d
 
 `main.py` — CLI dispatcher with subcommands: `gui`, `record`, `compact`, `cloud-sync`, `download`, `tardis`, `merge`.
 
+### Core Layer (`core/`)
+
+Cross-layer shared primitives with no business dependencies (the bottom of the
+`core < recorder < analytics` layering enforced by `tests/test_layering.py`):
+
+- `io.py` — single source for parquet read/write: `save_parquet`/`load_parquet` + crash-safe `write_parquet_atomic` (`.tmp`→fsync→`os.replace`→dir-fsync).
+- `config.py` — `load_config`/`load_config_section` (YAML section loading with graceful fallback).
+- `symbol_spec.py` — `SymbolSpec` tick/lot/notional spec, shared by simulation/calibration.
+
+(`calibration/schema.py` + the `SAMPLING_MODES`/`FEATURE_NAMES` constants are also
+core-layer logically but still live in their packages.)
+
 ### Exchange Adapter Layer (`data/exchange/`)
 
 Abstracts exchange-specific details so the recorder, downloader, and validator are exchange-neutral.
@@ -75,7 +87,7 @@ Unified interface for offline historical data downloading.
 - `cloud_sync.py` — Independent `CloudSyncDaemon` for rclone-based Google Drive push.
 - `download.py` — `HistoricalDownloader`. Delegates to any registered `HistoricalSource`.
 - `validator.py` — `DataValidator`. Exchange-neutral DataFrame business-rule checks.
-- `_io.py` / `_config.py` — shared data-module utilities (single source for parquet read/write incl. atomic write, and YAML section loading).
+- (Shared parquet-IO / config loaders moved to `core/` — see Core Layer above.)
 - The online feature builder is `features/realtime.py` (`FeatureBuilder`, `FEATURES_VERSION`-pinned, 38-feature v6) — consumed by simulation/calibration/research.
 - `tardis_downloader.py` / `format_converter.py` — Tardis.dev + Binance Vision merging pipeline for historical L2 reconstruction.
 
@@ -89,11 +101,10 @@ an `AlphaModel` over cold-tier days through it; `calibration/replay.py`
 reconciles its output against echo's real fills. Behaviour is locked by
 `tests/simulation/` (see its README).
 
-`backtest/` is reduced to `symbol_spec.py` (`SymbolSpec` tick/lot/notional,
-shared by simulation/calibration). The legacy `BacktestEngine`/`JitBacktestEngine`/
-`EventBacktestEngine` + naive `broker.py` + `orderbook.py`/`venue_registry.py`/
-`strategy.py` and the `build-cache` CLI were removed in P4 (see
-`docs/REFACTOR_DESIGN.md`).
+`SymbolSpec` now lives in `core/symbol_spec.py`; the entire `backtest/` package
+was removed in P4 (legacy `BacktestEngine`/`JitBacktestEngine`/`EventBacktestEngine`
++ naive `broker.py` + `orderbook.py`/`venue_registry.py`/`strategy.py`, plus the
+`build-cache` CLI and `data/feature_builder.py`). See `docs/REFACTOR_DESIGN.md`.
 
 ### GUI (`gui/`)
 
@@ -108,6 +119,7 @@ backtest panel was removed in P4; backtesting now runs via simulation/calibratio
 - `supervisord.conf` — Runs recorder + healthcheck.
 - `healthcheck.py` — HTTP `/health` on port 8079.
 - `server-aliases.sh` — SSH aliases: `nstart`, `nstop`, `nlog{cc,spot,umfut}`, `nrestart{cc,spot,umfut}`, `nhealth{cc,spot,umfut}`, `npull`, `nsynclog`, etc.
+- `reco/` — the narci-reco ops sub-project (AWS deploy, donor interface, topology/incident docs); moved here from repo root in P5 housekeeping.
 
 ### Docker Topology
 

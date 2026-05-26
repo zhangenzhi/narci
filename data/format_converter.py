@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from data._io import save_parquet
+from core.io import save_parquet
 
 logger = logging.getLogger(__name__)
 
