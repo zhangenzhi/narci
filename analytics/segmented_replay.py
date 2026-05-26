@@ -14,8 +14,8 @@ correct because narci recorder injects a snapshot every save_interval
 
 Master gathers all worker outputs, sorts by ts, builds OLS-ready X / y.
 
-Used by `research.ols_um_cc_e2e` when --workers > N (snapshot path) and
-when SEGMENT_SEC > 0.
+Consumed by the cache builders / diagnostics in top-level `research/`
+(e.g. `build_v10_*_btc_cache.py`).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ COLD = Path("/lustre1/work/c30636/narci/replay_buffer/cold")
 # Per-CC-symbol venue tables (added 2026-05-19 per nyx INTERFACE_NYX_NARCI.md
 # §2026-05-19 ask #1). The legacy module-level `VENUE_SOURCES` is preserved
 # below as an alias for backward compat with callers that import it
-# directly (research/ols_um_cc_e2e.py etc.).
+# directly (the research/ cache builders etc.).
 VENUE_SOURCES_BY_SYMBOL: dict[str, list[tuple[str, str, str, str]]] = {
     "BTC_JPY": [
         # (exchange,    market,       symbol,    venue)

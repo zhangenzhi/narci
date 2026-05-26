@@ -55,9 +55,9 @@ enforced by `tests/test_layering.py`; `contracts` is a bottom layer alongside `c
 | core | `core/` | shared utils: `io` (parquet, atomic write), `config` (YAML), `symbol_spec` | none |
 | contracts | `contracts/` | **published API to echo/nyx**: `schema` (event DTOs), `manifest` (nyx model contract), `features` (FEATURE_NAMES/version) | none |
 | recorder | `recorder/` | live capture + historical ingest + curation: `l2_recorder`, `wal`, `exchange/`, `historical/`, `download`, `daily_compactor`, `validator`, `cloud_sync`, … | pandas/pyarrow/websockets |
-| analytics | `analytics/` | `l2_reconstruct`, `sampling`, `features/`, `simulation/`, `calibration/`, `research/`, `gui/` | +lightgbm/torch/streamlit |
+| analytics | `analytics/` | `l2_reconstruct`, `sampling`, `segmented_replay`, `features/`, `simulation/`, `calibration/`, `gui/` | +lightgbm/torch/streamlit |
 
-Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `tools/`, `scripts/`, `main.py`.
+Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `tools/`, `scripts/`, `research/` (analyst scratch + nyx cache-build tooling, non-package), `main.py`.
 echo/nyx import `narci.contracts.*` / `narci.analytics.*` / `narci.recorder.*` — see `docs/MIGRATION_P5_IMPORTS.md`.
 
 ### Entry Point
