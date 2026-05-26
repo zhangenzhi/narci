@@ -155,26 +155,41 @@ class BinanceVisionSource(HistoricalSource):
     # 校验
     # ------------------------------------------------------------------ #
 
+    # 按期望摘要的十六进制长度选哈希算法。Binance Vision 的 .CHECKSUM 早年是
+    # MD5(32 hex),2024 起改为 SHA-256(64 hex)—— 用长度自适应兼容两者。
+    _DIGEST_ALGO_BY_LEN = {32: "md5", 64: "sha256"}
+
     @staticmethod
-    def _md5(path: str) -> str:
-        h = hashlib.md5()
+    def _file_digest(path: str, algo: str) -> str:
+        h = hashlib.new(algo)
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
                 h.update(chunk)
         return h.hexdigest()
 
+    @classmethod
+    def _md5(cls, path: str) -> str:  # 向后兼容保留
+        return cls._file_digest(path, "md5")
+
     def verify(self, local_path: str, symbol: str, date_str: str,
                data_type: str, market_type: str) -> tuple[bool, str]:
-        """比对 Binance 官方 .CHECKSUM 文件。注意：校验目标是 ZIP 而非解压后 parquet。"""
+        """比对 Binance 官方 .CHECKSUM 文件。注意:校验目标是 ZIP 而非解压后 parquet。
+
+        .CHECKSUM 的摘要算法随时间变化(MD5→SHA-256),按其十六进制长度自适应
+        选算法,而非写死 MD5(否则与 64 位 SHA-256 永远 mismatch)。
+        """
         url = self._checksum_url(symbol, date_str, data_type, market_type)
         try:
             resp = self.session.get(url, timeout=10)
             if resp.status_code != 200:
                 return False, f"checksum fetch failed: HTTP {resp.status_code}"
-            expected = resp.text.split()[0].strip()
-            actual = self._md5(local_path)
+            expected = resp.text.split()[0].strip().lower()
+            algo = self._DIGEST_ALGO_BY_LEN.get(len(expected))
+            if algo is None:
+                return False, f"unrecognized checksum length {len(expected)}: {expected!r}"
+            actual = self._file_digest(local_path, algo)
             if expected == actual:
-                return True, "MD5 ok"
-            return False, f"MD5 mismatch: expected {expected}, got {actual}"
+                return True, f"{algo} ok"
+            return False, f"{algo} mismatch: expected {expected}, got {actual}"
         except Exception as e:
             return False, f"verify error: {e}"

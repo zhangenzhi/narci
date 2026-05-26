@@ -90,7 +90,7 @@ Abstracts exchange-specific details so the recorder, downloader, and validator a
 Unified interface for offline historical data downloading.
 
 - `base.py` — `HistoricalSource` ABC: `download_day()`, `verify()`, `supports()`.
-- `binance_vision.py` — `BinanceVisionSource`. Downloads ZIP from `data.binance.vision`, converts to parquet, validates via official `.CHECKSUM` (MD5).
+- `binance_vision.py` — `BinanceVisionSource`. Downloads ZIP from `data.binance.vision`, converts to parquet, validates via official `.CHECKSUM` (length-adaptive MD5/SHA-256 — Binance switched to SHA-256 in 2024).
 - `tardis.py` — `TardisSource`. Supports L2 depth (snapshot + diff) and aggTrades; works for both Binance and Coincheck. Direct output in Narci 4-column format.
 
 ### Data Pipeline (`recorder/`)

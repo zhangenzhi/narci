@@ -76,27 +76,43 @@ def test_bv_md5(tmp_path):
     assert BinanceVisionSource._md5(str(p)) == hashlib.md5(b"hello narci").hexdigest()
 
 
-def test_bv_verify_md5_match_and_mismatch(tmp_path, monkeypatch):
+class _Resp:
+    def __init__(self, status, text):
+        self.status_code = status; self.text = text
+
+
+def test_bv_verify_length_adaptive_md5_and_sha256(tmp_path, monkeypatch):
+    """.CHECKSUM 算法随时间变化(MD5→SHA-256);verify 按摘要长度自适应选算法。"""
     s = _bv()
     p = tmp_path / "f.zip"
     p.write_bytes(b"payload")
-    good_md5 = hashlib.md5(b"payload").hexdigest()
+    md5 = hashlib.md5(b"payload").hexdigest()        # 32 hex
+    sha = hashlib.sha256(b"payload").hexdigest()     # 64 hex
 
-    class _Resp:
-        def __init__(self, status, text):
-            self.status_code = status; self.text = text
+    def verify(text):
+        monkeypatch.setattr(s.session, "get", lambda *a, **k: _Resp(200, text))
+        return s.verify(str(p), "ETHUSDT", "2026-05-17", "aggTrades", "spot")
 
-    # 校验和匹配 → ok
-    monkeypatch.setattr(s.session, "get", lambda *a, **k: _Resp(200, f"{good_md5}  f.zip"))
-    ok, msg = s.verify(str(p), "ETHUSDT", "2026-05-17", "aggTrades", "spot")
-    assert ok is True and "ok" in msg.lower()
+    # MD5(32)匹配
+    ok, msg = verify(f"{md5}  f.zip")
+    assert ok is True and "md5 ok" in msg.lower()
 
-    # 不匹配 → False
-    monkeypatch.setattr(s.session, "get", lambda *a, **k: _Resp(200, "deadbeef  f.zip"))
-    ok, msg = s.verify(str(p), "ETHUSDT", "2026-05-17", "aggTrades", "spot")
+    # SHA-256(64)匹配 —— 这是修复点:旧实现写死 _md5,与 64 位 sha256 永远 mismatch
+    ok, msg = verify(f"{sha}  f.zip")
+    assert ok is True and "sha256 ok" in msg.lower()
+
+    # 同长度但不匹配 → mismatch(用合法 32 位但全 0)
+    ok, msg = verify("0" * 32 + "  f.zip")
     assert ok is False and "mismatch" in msg.lower()
 
-    # checksum 拉取失败(非 200)→ False
+    # 无法识别的摘要长度 → 明确报错(不静默当作 mismatch)
+    ok, msg = verify("deadbeef  f.zip")
+    assert ok is False and "length" in msg.lower()
+
+
+def test_bv_verify_checksum_fetch_failure(tmp_path, monkeypatch):
+    s = _bv()
+    p = tmp_path / "f.zip"; p.write_bytes(b"x")
     monkeypatch.setattr(s.session, "get", lambda *a, **k: _Resp(404, ""))
     ok, _ = s.verify(str(p), "ETHUSDT", "2026-05-17", "aggTrades", "spot")
     assert ok is False

@@ -55,8 +55,7 @@ def test_net_binance_vision_url_and_checksum_live():
     digest = r.text.split()[0].strip().lower()
     # Binance Vision 的 .CHECKSUM 现为 SHA-256(64 hex);早年是 MD5(32 hex)。
     # 本测试只验"端点活 + URL 对 + 返回合法 hex 摘要",不锁算法。
-    # ⚠️ 注:recorder/historical/binance_vision.py verify() 仍用 _md5 比对 →
-    #    与 64 位 SHA256 永远 mismatch(已知 bug,见集成测试报告)。
+    # verify() 已按摘要长度自适应选 md5/sha256(本集成测试当初发现的 bug 已修)。
     assert len(digest) in (32, 64) and all(c in "0123456789abcdef" for c in digest), \
         f"非法摘要: {digest!r}"
     # zip 确实存在(URL 构造正确)
