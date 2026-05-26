@@ -259,6 +259,7 @@ class FixedGridSampler(Sampler):
 | ~~P2 FeatureBuilder 合并~~ | 核实非重复,改为随 P4 删 backtest/ 退役 `data/feature_builder.py`(见 §4 痛点4A) | 4(A) | → P4 | — |
 | **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 撮合内核唯一化;**删** GUI 回测面板 + naive broker + 三遗留引擎;venue→撮合矩阵落地 | 2(+4A) | P3 | 校准对账 verdict 不退化;backtest/ 仅剩 orderbook/symbol_spec/venue_registry |
+| **P4.5 测试提升** | 测试从 `calibration/tests/` 提升为顶层 `tests/<module>/`,按模块组织,作为"读懂模块+稳健性"入口(见 §9)。recorder 先行(P1 已稳定);其余随 P4/P5 迁 | 测试体系 | recorder 部分**已起步** | 根 `conftest.py`+`pytest.ini`;`tests/recorder/`(39 测试+README)绿;bare `pytest` 干净 |
 | **P5 包边界化** | 同仓内重组为 `core/recorder/analytics` 三层包 + 依赖 extras + import-lint(见 §8) | 模块拆分 | **P4** | recorder 不 import analytics(lint 红线);`pip install .[recorder]` 瘦装可跑录制 |
 
 > 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
@@ -322,6 +323,37 @@ class FixedGridSampler(Sampler):
 ### 8.4 前置
 
 必须在 **P4 之后**:`backtest/` 删除、`feature_builder`/`build-cache` 定性后,recorder↔analytics 边界才无模糊地带,搬运才机械、低风险。
+
+---
+
+## 9. P4.5 — 测试提升为模块入口
+
+**动机**:测试目前埋在 `calibration/tests/`(一个本与测试无关的业务包下),既不直观也不利于"按模块理解代码"。把测试**提升为顶层 `tests/`、按模块分目录**,让它成为**读懂某模块的行为与稳健性保证的入口** —— 读测试比读实现更快看清"保证什么、什么故障下不丢数据"。与 P5 的 `core/recorder/analytics` 分层同构。
+
+### 9.1 目标结构
+
+```
+tests/
+  recorder/    # data/l2_recorder · wal · exchange · healthcheck —— 录制+落盘稳健性
+  analytics/   # l2_reconstruct · sampling · features · simulation · calibration(随 P4/P5 迁)
+  core/        # 契约快照 · _io/_config/_cache(随 P5 迁)
+conftest.py    # 锚定仓库根到 sys.path,使顶层 tests/ 的绝对导入可用
+pytest.ini     # testpaths = tests + calibration/tests;排除 tools/research 的探针脚本
+```
+
+### 9.2 已起步(recorder 先行)
+
+recorder 因 P1 已稳定先迁:`conftest.py` + `pytest.ini` 地基就位;
+`tests/recorder/` 含 5 个测试(WAL/落盘止血/REST 重拉/对齐熔断/健康检查,39 用例)
++ `README.md`(逐测试列出保证项,作模块入口)。bare `pytest` 现干净
+(testpaths 排除了 `tools/test_um_aggtrade_ws.py` 这类 live-WS 探针)。
+
+### 9.3 后续
+
+其余测试随 P4/P5 按模块从 `calibration/tests/` 迁入 `tests/analytics/`、`tests/core/`;
+迁移是机械 `git mv`(绝对导入靠 root `conftest.py` 不受位置影响)。每个
+`tests/<module>/` 配一份 README 作该模块入口。`calibration/tests/` 清空后移除其
+`__init__.py` 包链。
 
 ---
 
