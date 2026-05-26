@@ -17,9 +17,9 @@ docs/INTERFACE_NARCI_NYX.md / INTERFACE_NARCI_ECHO.md 通知下游。
 """
 from __future__ import annotations
 
-from features import FEATURE_NAMES, FEATURES_VERSION
-from calibration import alpha_models as am
-from calibration import schema as S
+from contracts.features import FEATURE_NAMES, FEATURES_VERSION
+from contracts import manifest as am
+from contracts import schema as S
 
 
 # ------------------------------------------------------------------ #

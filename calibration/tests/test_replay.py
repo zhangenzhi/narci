@@ -23,7 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from calibration import EchoLogWriter
-from calibration import schema as S
+from contracts import schema as S
 from calibration.replay import calibrate_session, report_to_json
 
 

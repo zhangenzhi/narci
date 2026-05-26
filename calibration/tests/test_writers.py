@@ -15,7 +15,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from calibration import EchoLogWriter
-from calibration import schema as S
+from contracts import schema as S
 from calibration.tests.test_schema import (
     _build_decision, _build_fill, _build_cancel,
 )

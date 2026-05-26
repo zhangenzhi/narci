@@ -27,9 +27,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CORE_FILES = {
     "core/io.py", "core/config.py", "core/symbol_spec.py",
-    "calibration/schema.py",     # echo 事件契约(仍物理在 calibration/,逻辑归 core)
 }
-CORE_DIR_PREFIXES = ("core/",)
+# contracts/ 是对外契约层(schema/manifest/features),与 core 同为底层(无业务依赖)
+CORE_DIR_PREFIXES = ("core/", "contracts/")
 RECORDER_FILES = {
     "data/l2_recorder.py", "data/wal.py", "data/cloud_sync.py",
     "data/live_publisher.py", "data/download.py", "data/daily_compactor.py",
@@ -61,10 +61,8 @@ def file_layer(rel: str) -> str | None:
 
 def module_layer(mod: str) -> str | None:
     """把 import 目标模块名映射到层。"""
-    if mod == "calibration.schema" or mod.startswith("calibration.schema."):
-        return "core"
     top = mod.split(".")[0]
-    if top == "core":
+    if top in ("core", "contracts"):
         return "core"
     if top in ("features", "simulation", "calibration", "research", "gui"):
         return "analytics"

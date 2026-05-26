@@ -51,16 +51,16 @@ from typing import TypeVar
 
 import pyarrow.parquet as pq
 
-from .schema import (
-    SCHEMA_FOR,
-    SCHEMA_VERSION,
-    CancelEvent,
-    DecisionEvent,
-    FillEvent,
-    SessionMeta,
-    to_arrow_table,
-    validate_event,
-)
+try:
+    from contracts.schema import (
+        SCHEMA_FOR, SCHEMA_VERSION, CancelEvent, DecisionEvent,
+        FillEvent, SessionMeta, to_arrow_table, validate_event,
+    )
+except ImportError:  # vendored as narci.*
+    from narci.contracts.schema import (
+        SCHEMA_FOR, SCHEMA_VERSION, CancelEvent, DecisionEvent,
+        FillEvent, SessionMeta, to_arrow_table, validate_event,
+    )
 
 log = logging.getLogger("narci.calibration.writers")
 

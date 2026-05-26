@@ -11,7 +11,7 @@ Drives a (paper) maker strategy through a stream of L2 events, modeling:
     uses constant; v2 will use distribution)
 
 Output: three lists of dict events compatible with
-`narci.calibration.schema.{DecisionEvent, FillEvent, CancelEvent}`. The
+`narci.contracts.schema.{DecisionEvent, FillEvent, CancelEvent}`. The
 replay tool consumes these alongside echo's real logs.
 
 What v1 does NOT do (Step 2+):

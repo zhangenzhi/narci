@@ -19,7 +19,7 @@ import time
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from calibration import schema as S
+from contracts import schema as S
 
 
 def _build_decision() -> S.DecisionEvent:

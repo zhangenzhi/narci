@@ -26,7 +26,10 @@ from typing import Optional
 import pyarrow.parquet as pq
 
 from .priors import CalibrationParams, get_priors
-from .schema import SCHEMA_VERSION
+try:
+    from contracts.schema import SCHEMA_VERSION
+except ImportError:  # vendored as narci.*
+    from narci.contracts.schema import SCHEMA_VERSION
 
 # Imports below try `narci.X` first (PYTHONPATH=/lustre1/work/c30636/) and
 # fall back to bare `X` (PYTHONPATH=/lustre1/work/c30636/narci/). This lets
