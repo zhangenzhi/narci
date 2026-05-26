@@ -54,6 +54,6 @@ pytest tests/simulation        # 撮合引擎
 pytest                          # 全套
 ```
 
-> 注:`calibration/tests/test_maker_smoke.py` 是基于真实 cold-tier 的**手动**
-> 全天 smoke 脚本(`__main__` 运行,非单测),暂留原处,后续随分析层测试迁移再归位。
-> 见 `docs/REFACTOR_DESIGN.md §9`(P4.5 测试提升)。
+> 注:本目录的 `test_maker_smoke.py` 是基于真实 cold-tier 的**手动**全天 smoke
+> 脚本(`__main__` 运行,非单测);`test_backtest_alpha_symbol_param.py` 测
+> `analytics.simulation.backtest_alpha` 的 venue 路由(数据缺失时 skip)。

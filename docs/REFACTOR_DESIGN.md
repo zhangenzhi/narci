@@ -263,7 +263,7 @@ class FixedGridSampler(Sampler):
 | ~~P2 FeatureBuilder 合并~~ | 核实非重复,改为随 P4 删 backtest/ 退役 `data/feature_builder.py`(见 §4 痛点4A) | 4(A) | → P4 | — |
 | **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 删 GUI 回测面板+三引擎+naive broker+orderbook+venue_registry+strategy+example+build-cache+feature_builder+_cache;撮合内核唯一=MakerSimBroker(零代码改动,纯删除) | 2(+4A) | P3 | 238 passed/0 failed;11 模块 import OK;backtest/ 仅剩 symbol_spec ✅ 已完成 |
-| **P4.5 测试提升** | 测试从 `calibration/tests/` 提升为顶层 `tests/<module>/`,按模块组织,作为"读懂模块+稳健性"入口(见 §9)。recorder 先行(P1 已稳定);其余随 P4/P5 迁 | 测试体系 | recorder 部分**已起步** | 根 `conftest.py`+`pytest.ini`;`tests/recorder/`(39 测试+README)绿;bare `pytest` 干净 |
+| **P4.5 测试提升** | 测试全部从 `*/tests/` 提升为顶层 `tests/<module>/`(contracts/calibration/features/research/analytics/simulation/recorder 七个,各配 README 作模块入口)。`calibration/tests` 大杂烩拆解归位 | 测试体系 | **已完成** | 根 `conftest.py`+`pytest.ini(testpaths=tests)`;240 passed;bare `pytest` 干净 |
 | **P5 包边界化** | **全量物理分层**:顶级目录重组为 `core/ contracts/ recorder/ analytics/` 四层(契约 schema/manifest/features 全拆入 contracts);import-lint + 依赖隔离。跨仓 import 路径变更见 `docs/MIGRATION_P5_IMPORTS.md` | 模块拆分 | P4 | 240 passed/0 failed;layering 零违规;echo/nyx 迁移清单 + INTERFACE 文档已出 ✅ 已完成(待 echo/nyx 同步 import) |
 
 > 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
@@ -377,12 +377,13 @@ recorder 因 P1 已稳定先迁:`conftest.py` + `pytest.ini` 地基就位;
 + `README.md`(逐测试列出保证项,作模块入口)。bare `pytest` 现干净
 (testpaths 排除了 `tools/test_um_aggtrade_ws.py` 这类 live-WS 探针)。
 
-### 9.3 后续
+### 9.3 收尾(已完成 2026-05-26)
 
-其余测试随 P4/P5 按模块从 `calibration/tests/` 迁入 `tests/analytics/`、`tests/core/`;
-迁移是机械 `git mv`(绝对导入靠 root `conftest.py` 不受位置影响)。每个
-`tests/<module>/` 配一份 README 作该模块入口。`calibration/tests/` 清空后移除其
-`__init__.py` 包链。
+P5 物理分层后,把 `analytics/calibration/tests/`(原 `calibration/tests/`,实为横跨
+contracts/features/calibration/research/recorder 的大杂烩)按被测模块拆解 `git mv` 到
+顶层 `tests/{contracts,calibration,features,research,analytics,simulation,recorder}/`,
+各配 README 作模块入口;删 `__init__.py` 包链;`pytest.ini` testpaths 收回到只剩 `tests`。
+跨测试 helper(test_writers ← test_schema)同目录化解决。240 passed,bare `pytest` 干净。
 
 ---
 

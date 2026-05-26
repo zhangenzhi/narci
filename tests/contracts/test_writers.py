@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 
 from analytics.calibration import EchoLogWriter
 from contracts import schema as S
-from analytics.calibration.tests.test_schema import (
+from test_schema import (
     _build_decision, _build_fill, _build_cancel,
 )
 
