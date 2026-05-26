@@ -74,12 +74,11 @@ def test_v4_um_flow_signs_match_taker_direction():
     assert feats["um_flow_500ms"] == 0.0, feats["um_flow_500ms"]
 
 
-def test_v5_feature_count():
-    """v3 had 31 features; v4 added 4 um_flow → 35; v5 adds basis_um_bps
-    (strict, NaN when no BS depth) + basis_um_bps_trade_proxy (uses BS
-    last_trade_price as a lossy fallback for Vision-backfilled trade-
-    only days) → 37."""
-    assert len(FEATURE_NAMES) == 37
+def test_feature_count():
+    """v3=31; v4 +4 um_flow → 35; v5 +basis_um_bps +basis_um_bps_trade_proxy
+    → 37; v6 +trade_intensity_burst_50ms → 38。完整列表的逐项冻结见
+    test_contract_snapshots.py(契约护栏)。"""
+    assert len(FEATURE_NAMES) == 38
 
 
 def test_get_features_returns_dict_after_seeding():
