@@ -32,9 +32,9 @@ class CoincheckAdapter(ExchangeAdapter):
     REST_ORDERBOOK = "https://coincheck.com/api/order_books"
 
     def __init__(self):
-        # Coincheck 单个 WS 连接需订阅多个 channel，消息流混合
-        # 订阅命令在连接后由 recorder 发送（见 record_stream）
-        self._seen_snapshot: set[str] = set()
+        # Coincheck 单个 WS 连接需订阅多个 channel，消息流混合;
+        # 订阅命令在连接后由 recorder 发送（见 record_stream）。无实例状态。
+        pass
 
     # ------------------------------------------------------------------ #
     # WebSocket（Coincheck 需要连接后主动 subscribe，URL 本身无 stream 参数）

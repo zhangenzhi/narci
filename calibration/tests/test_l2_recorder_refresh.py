@@ -46,6 +46,9 @@ class _StubAdapter:
     def subscribe_messages(self, symbols):
         return []
 
+    def uses_custom_stream(self):
+        return False
+
     async def fetch_snapshot(self, symbol):
         self.fetch_count += 1
         if self.fetch_delay_sec > 0:

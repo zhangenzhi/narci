@@ -29,6 +29,27 @@ import pandas as pd
 import yaml
 
 from data.exchange import get_adapter, ExchangeAdapter
+from data.wal import SegmentWAL, recover_orphans, write_parquet_atomic
+
+
+class _WalBuffer:
+    """兼容垫片:把旧契约 ``recorder.buffers[sym].extend(...)/.append(...)``
+    转发进该 symbol 的 :class:`SegmentWAL` micro-buffer。
+
+    保留以不破坏 bitbank / gmo 等 custom_stream adapter 的既有写法
+    (见 ``ExchangeAdapter.custom_stream`` 契约 data/exchange/base.py)。
+    """
+
+    __slots__ = ("_wal",)
+
+    def __init__(self, wal: "SegmentWAL"):
+        self._wal = wal
+
+    def extend(self, records) -> None:
+        self._wal.append(records)
+
+    def append(self, record) -> None:
+        self._wal.append([record])
 
 
 class L2Recorder:
@@ -63,6 +84,13 @@ class L2Recorder:
         self.save_interval = self.config.get("save_interval_sec", 60)
         self.retry_wait = self.config.get("retry", {}).get("wait_seconds", 5)
         self.retain_days = self.config.get("retain_days", 0)
+        # P1 WAL (2026-05-26): micro-flush 周期。事件先入内存 micro-buffer,
+        # 每 wal_flush_interval_sec 原子写成一个 .segwal 段;save_loop 每
+        # save_interval 把段合并成规范 RAW。崩溃最多丢一个 micro-buffer
+        # (~秒级)而非一个 save_interval(线上 600s)。见 data/wal.py。
+        self.wal_flush_interval = int(self.config.get("wal_flush_interval_sec", 2))
+        # fsync 每个段(+ 目录)以抗掉电;测试/低端盘可关。
+        self.wal_fsync = bool(self.config.get("wal_fsync", True))
         # P1-A fix 2026-05-08: opt-in REST snapshot refresh in save_loop.
         # When True, save_loop fetches a fresh REST snapshot before
         # writing each periodic snapshot batch, evicting accumulated dust
@@ -94,10 +122,23 @@ class L2Recorder:
             base_dir, self.adapter.name, self.adapter.market_type, "l2"
         )
         os.makedirs(self.save_dir, exist_ok=True)
+        # WAL 段目录:与 realtime/ 平级的 wal/ 树,且段用 .segwal 扩展名 ——
+        # 双重保证扫 *.parquet / *_RAW_* 的消费方(GUI os.walk、compactor
+        # glob、main 正则)绝对看不到临时段。
+        wal_root = os.path.join(os.path.dirname(os.path.normpath(base_dir)), "wal")
+        self.wal_dir = os.path.join(
+            wal_root, self.adapter.name, self.adapter.market_type, "l2"
+        )
 
         # 5. 初始化状态机
         self.orderbooks = {s: {"bids": {}, "asks": {}} for s in self.symbols}
-        self.buffers = {s: [] for s in self.symbols}
+        # 每 symbol 一个段式 WAL;其内部 micro-buffer 即原来的 self.buffers。
+        self.wals = {
+            s: SegmentWAL(self.wal_dir, s, fsync=self.wal_fsync)
+            for s in self.symbols
+        }
+        # 兼容垫片:旧契约 recorder.buffers[sym] 仍可用,转发进 WAL。
+        self.buffers = {s: _WalBuffer(self.wals[s]) for s in self.symbols}
         self.pre_align_buffer = {s: [] for s in self.symbols}
         self.last_update_ids = {s: 0 for s in self.symbols}
         self.is_initialized = {s: False for s in self.symbols}
@@ -166,7 +207,7 @@ class L2Recorder:
             for p, q in data.get("asks", []):
                 self.orderbooks[sym]["asks"][float(p)] = float(q)
 
-            self.buffers[sym].extend(records)
+            self.wals[sym].append(records)
             self.last_update_ids[sym] = last_id
             self.is_initialized[sym] = True
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 📸 {sym.upper()} 初始快照已就绪, ID: {last_id}")
@@ -214,6 +255,15 @@ class L2Recorder:
             flush=True,
         )
         if action == "exit":
+            # P1: flush pending micro-buffers to WAL segments before the hard
+            # exit so the in-flight data survives — recover_orphans() merges
+            # them into RAW on the next start. Old behavior lost them.
+            for s in self.symbols:
+                try:
+                    self.wals[s].flush()
+                except Exception as e:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {s.upper()} "
+                          f"熔断前 WAL flush 失败: {e}", flush=True)
             # Hard exit; bypass asyncio cleanup so supervisord/docker
             # restart cycle is immediate + visible. Exit code 2 distinguishes
             # this from normal exit (0) and uncaught exception (typically 1).
@@ -234,7 +284,7 @@ class L2Recorder:
             self.last_update_ids[sym] = u
 
         records = self.adapter.standardize_event("depth", data)
-        self.buffers[sym].extend(records)
+        self.wals[sym].append(records)
 
         # 更新内存状态机（0=bid, 1=ask）
         for rec in records:
@@ -336,7 +386,10 @@ class L2Recorder:
                         elif event_type == "trade":
                             last_trade_msg_t = now
                             records = self.adapter.standardize_event("trade", data)
-                            self.buffers[sym].extend(records)
+                            # trade 无条件入 WAL —— 即便 depth 尚未对齐,trade
+                            # 也会被 save_loop 落盘(修复未对齐 symbol 的 trade
+                            # 在内存无限堆积且永不落盘的旧 bug)。
+                            self.wals[sym].append(records)
 
                     if forced_reconnect_reason:
                         print(f"[{datetime.now().strftime('%H:%M:%S')}] "
@@ -357,9 +410,12 @@ class L2Recorder:
         # 需要对齐的交易所（如 Binance）走 U/u 对齐
         if self.adapter.needs_alignment() and not self.stream_aligned[sym]:
             combined = self.pre_align_buffer[sym] + [data]
-            for d in combined:
+            for i, d in enumerate(combined):
                 if self.adapter.try_align(self.last_update_ids[sym], d):
-                    self._process_depth_event(sym, d)
+                    # 从对齐点起处理 d 及其后的全部事件,而非只处理对齐事件
+                    # 就 return —— 旧逻辑会丢弃对齐事件之后已到达的有效事件。
+                    for ev in combined[i:]:
+                        self._process_depth_event(sym, ev)
                     self.stream_aligned[sym] = True
                     self.pre_align_buffer[sym] = []
                     # Reset circuit-breaker counters on success.
@@ -406,69 +462,111 @@ class L2Recorder:
     # 落盘
     # ------------------------------------------------------------------ #
 
+    async def wal_loop(self):
+        """Micro-flush 循环:每 wal_flush_interval 把各 symbol 的内存
+        micro-buffer 原子写成一个 .segwal 段。段很小(数秒数据),flush 同步
+        在事件循环内执行即可(亚毫秒~毫秒级),不丢线程。崩溃最多丢最后一个
+        未 flush 的 micro-buffer。
+        """
+        while self.running:
+            await asyncio.sleep(self.wal_flush_interval)
+            for sym in self.symbols:
+                try:
+                    self.wals[sym].flush()
+                except Exception as e:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} "
+                          f"WAL micro-flush 失败: {e}")
+
+    def _merge_segments_to_raw(self, paths: list[str], raw_path: str) -> int:
+        """[thread] 读取段列表 → 按序 concat → 原子写出 RAW。返回行数。
+
+        纯文件 IO,不触碰任何被事件循环线程修改的状态(段已由 flush 写定;
+        _buffer/_seq 只在循环线程里被 flush 改),故可安全丢进 to_thread。
+        """
+        frames = [pd.read_parquet(p) for p in paths]
+        df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+        write_parquet_atomic(df, raw_path, fsync=self.wal_fsync)
+        return len(df)
+
     async def save_loop(self):
-        """Periodic disk flush + (optional) REST snapshot refresh.
+        """周期性把 WAL 段合并成规范 RAW + (可选)REST 刷新盘口。
 
-        Each save_interval:
-          1. Drain the in-flight diff buffer for each symbol.
-          2. If snapshot_refresh_on_save=True: REST-fetch a fresh order
-             book and atomically install it as the new in-memory book.
-             Discards dust accumulated when WS delete events were missed.
-             Re-aligns the WS stream the same way a reconnect would —
-             setting is_initialized=False during the await means concurrent
-             depth events buffer in pre_align_buffer instead of mutating
-             the about-to-be-replaced book.
-          3. Inject a side=3/4 snapshot batch (from the now-fresh book) at
-             the head of the next cycle's buffer so each parquet file is
-             self-contained.
-          4. Write the drained buffer to disk.
+        每 save_interval,对每个 symbol:
+          1. flush 收尾内存 micro-buffer → 段。
+          2. harvest 本 symbol 全部段 → 合并原子写出一个
+             {SYMBOL}_RAW_*.parquet,成功后删段。RAW 文件名/格式/节奏与旧
+             实现完全一致(消费方无感)。
+          3. (可选)REST 重拉盘口,驱逐累计 dust(协议同 _refresh_book_via_rest)。
+          4. 注入 side=3/4 全量快照进 micro-buffer,作为下一 interval 首段,
+             使每个 RAW 文件自包含。
 
-        REST refresh failure is non-fatal: log + fall through to dump the
-        in-memory book (legacy behavior). One operator-facing failure mode
-        is rate limiting; with 600s interval × ~6 symbols × ~50ms per call,
-        Binance UM 2400/min limit has 4 orders of magnitude headroom.
+        相对旧实现的关键改进:
+          - 原子写(.tmp→os.replace),崩溃不再留损坏 shard。
+          - 不再以 stream_aligned 为前提:未对齐 symbol 的 trade 段照样落盘
+            (修复内存堆积 + 全丢的旧 bug)。
+          - 合并写失败时段不删,下轮 / 重启恢复时重试,不丢数据。
         """
         while self.running:
             await asyncio.sleep(self.save_interval)
             saved = []
-
             for sym in self.symbols:
-                if not self.buffers[sym] or not self.stream_aligned[sym]:
-                    continue
-
-                # Step 1: atomic buffer drain
-                data = self.buffers[sym]
-                self.buffers[sym] = []
-
-                # Step 2: optional REST refresh of the in-memory book.
-                if self.snapshot_refresh_on_save:
-                    await self._refresh_book_via_rest(sym)
-
-                # Step 3: inject side=3/4 snapshot batch from current book.
-                now_ms = int(time.time() * 1000)
-                snapshot_records = []
-                for p, q in self.orderbooks[sym]["bids"].items():
-                    snapshot_records.append([now_ms, 3, float(p), float(q)])
-                for p, q in self.orderbooks[sym]["asks"].items():
-                    snapshot_records.append([now_ms, 4, float(p), float(q)])
-                self.buffers[sym].extend(snapshot_records)
-
-                try:
-                    df = pd.DataFrame(data, columns=["timestamp", "side", "price", "quantity"])
-                    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    fname = f"{sym.upper()}_RAW_{ts_str}.parquet"
-                    path = os.path.join(self.save_dir, fname)
-                    await asyncio.to_thread(
-                        df.to_parquet, path, engine="pyarrow",
-                        compression="snappy", index=False,
-                    )
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 {sym.upper()} 原始数据固化 ({len(df)} 行)")
-                    saved.append(path)
-                except Exception as e:
-                    print(f"❌ {sym.upper()} 写盘失败: {e}")
-
+                raw_path = await self._compact_symbol(sym)
+                if raw_path:
+                    saved.append(raw_path)
             if saved and self.retain_days > 0:
                 await asyncio.to_thread(self._cleanup_old_files)
+
+    async def _compact_symbol(self, sym: str) -> str | None:
+        """把单个 symbol 的 WAL 段合并成一个 RAW,并为下一 interval 注入快照。
+
+        返回写出的 RAW 路径(无段则 None)。从 save_loop 抽出以便单测。
+        注意:**不以 stream_aligned 为前提** —— 未对齐 symbol 的 trade 段
+        照样落盘;只有 side=3/4 快照注入需要对齐且 book 非空。
+        """
+        wal = self.wals[sym]
+        # 1. 收尾 micro-buffer(同步;紧接 segment_paths 间无 await,
+        #    wal_loop 无法插入)。
+        try:
+            wal.flush()
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {sym.upper()} "
+                  f"WAL flush 失败: {e}")
+        paths = wal.segment_paths()
+
+        # 2. 合并段 → RAW(读+concat+原子写在线程内,避免阻塞循环)。
+        raw_path = None
+        if paths:
+            ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            candidate = os.path.join(
+                self.save_dir, f"{sym.upper()}_RAW_{ts_str}.parquet"
+            )
+            try:
+                n = await asyncio.to_thread(
+                    self._merge_segments_to_raw, paths, candidate
+                )
+                wal.discard(paths)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📥 {sym.upper()} "
+                      f"原始数据固化 ({n} 行, {len(paths)} 段)")
+                raw_path = candidate
+            except Exception as e:
+                print(f"❌ {sym.upper()} 段合并写盘失败: {e}（段保留,下轮/重启重试）")
+
+        # 3. 可选 REST 刷新内存盘口。
+        if self.snapshot_refresh_on_save:
+            await self._refresh_book_via_rest(sym)
+
+        # 4. 注入下一 interval 首段的全量快照 —— 仅在已对齐且 book 非空时,
+        #    避免写出空/陈旧快照。
+        book = self.orderbooks[sym]
+        if self.stream_aligned[sym] and (book["bids"] or book["asks"]):
+            now_ms = int(time.time() * 1000)
+            snapshot_records = []
+            for p, q in book["bids"].items():
+                snapshot_records.append([now_ms, 3, float(p), float(q)])
+            for p, q in book["asks"].items():
+                snapshot_records.append([now_ms, 4, float(p), float(q)])
+            wal.append(snapshot_records)
+        return raw_path
 
     async def _refresh_book_via_rest(self, sym: str) -> None:
         """REST-refresh a single symbol's in-memory book.
@@ -535,20 +633,26 @@ class L2Recorder:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 文件清理失败: {e}")
 
     async def _flush_all_buffers(self):
+        """关停时:flush 各 symbol 的 micro-buffer 收尾,再把全部段合并成
+        RAW 并删段。即使这里失败/被打断,段仍在盘上,下次启动 recover_orphans
+        会兜底恢复 —— 不丢数据。"""
         for sym in self.symbols:
-            if not self.buffers[sym]:
-                continue
-            data = self.buffers[sym]
-            self.buffers[sym] = []
+            wal = self.wals[sym]
             try:
-                df = pd.DataFrame(data, columns=["timestamp", "side", "price", "quantity"])
-                ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                fname = f"{sym.upper()}_RAW_{ts_str}.parquet"
-                path = os.path.join(self.save_dir, fname)
-                df.to_parquet(path, engine="pyarrow", compression="snappy", index=False)
-                print(f"[SHUTDOWN] 📥 {sym.upper()} 最终落盘完成 ({len(df)} 行)")
+                wal.flush()
             except Exception as e:
-                print(f"[SHUTDOWN] ❌ {sym.upper()} 最终落盘失败: {e}")
+                print(f"[SHUTDOWN] ⚠️ {sym.upper()} WAL flush 失败: {e}")
+            paths = wal.segment_paths()
+            if not paths:
+                continue
+            try:
+                ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                raw_path = os.path.join(self.save_dir, f"{sym.upper()}_RAW_{ts_str}.parquet")
+                n = self._merge_segments_to_raw(paths, raw_path)
+                wal.discard(paths)
+                print(f"[SHUTDOWN] 📥 {sym.upper()} 最终落盘完成 ({n} 行, {len(paths)} 段)")
+            except Exception as e:
+                print(f"[SHUTDOWN] ❌ {sym.upper()} 最终落盘失败: {e}（段保留,重启恢复）")
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -556,6 +660,11 @@ class L2Recorder:
 
     async def start(self):
         print(f"🚀 Narci Recorder 启动 | {self.adapter.name}/{self.adapter.market_type}")
+        # 崩溃恢复:把上次进程残留的 WAL 段合并成 RAW 交还,零数据丢失。
+        try:
+            recover_orphans(self.wal_dir, self.save_dir, fsync=self.wal_fsync)
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ WAL 启动恢复失败: {e}")
         loop = asyncio.get_running_loop()
         self._shutdown_event = asyncio.Event()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -575,12 +684,14 @@ class L2Recorder:
                 for url in self.ws_urls
             ]
         save_task = asyncio.create_task(self.save_loop())
+        wal_task = asyncio.create_task(self.wal_loop())
 
         await self._shutdown_event.wait()
         for t in record_tasks:
             t.cancel()
         save_task.cancel()
-        for t in record_tasks + [save_task]:
+        wal_task.cancel()
+        for t in record_tasks + [save_task, wal_task]:
             try:
                 await t
             except (asyncio.CancelledError, Exception):
