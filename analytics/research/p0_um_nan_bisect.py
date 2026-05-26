@@ -33,7 +33,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from analytics.features import FeatureBuilder, FEATURE_NAMES
-from analytics.research.segmented_replay import (build_segment_worker, COLD,
+from analytics.segmented_replay import (build_segment_worker, COLD,
                                         VENUE_SOURCES)
 
 

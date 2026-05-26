@@ -76,7 +76,7 @@ class TestSegmentedReplaySortStability(unittest.TestCase):
         """Critical regression: cache emits CC trades in parquet row
         order, not sorted by price."""
         # Point COLD at our temp root for both module-level constants
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         with mock.patch.object(sr, "COLD", self.root), \
              mock.patch.object(sr, "VENUE_SOURCES",
                                 [("coincheck", "spot", "BTC_JPY", "cc")]):
@@ -112,7 +112,7 @@ class TestSegmentedReplaySymbolParam(unittest.TestCase):
     `symbol` get BTC_JPY (default), preserving backward compat."""
 
     def test_venue_sources_map_keys(self):
-        from analytics.research.segmented_replay import VENUE_SOURCES_BY_SYMBOL
+        from analytics.segmented_replay import VENUE_SOURCES_BY_SYMBOL
         self.assertIn("BTC_JPY", VENUE_SOURCES_BY_SYMBOL)
         self.assertIn("ETH_JPY", VENUE_SOURCES_BY_SYMBOL)
         # ETH table's CC entry must point at ETH_JPY symbol
@@ -127,13 +127,13 @@ class TestSegmentedReplaySymbolParam(unittest.TestCase):
     def test_legacy_venue_sources_is_btc(self):
         """Backward compat: existing imports of `VENUE_SOURCES` still
         receive the BTC layout (some research scripts depend on this)."""
-        from analytics.research.segmented_replay import (
+        from analytics.segmented_replay import (
             VENUE_SOURCES, VENUE_SOURCES_BY_SYMBOL,
         )
         self.assertEqual(VENUE_SOURCES, VENUE_SOURCES_BY_SYMBOL["BTC_JPY"])
 
     def test_unknown_symbol_raises(self):
-        from analytics.research.segmented_replay import replay_days_parallel
+        from analytics.segmented_replay import replay_days_parallel
         with self.assertRaises(ValueError) as cm:
             replay_days_parallel(["20260517"], symbol="DOES_NOT_EXIST")
         self.assertIn("DOES_NOT_EXIST", str(cm.exception))

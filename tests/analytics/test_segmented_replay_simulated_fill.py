@@ -78,7 +78,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run_single_segment(self, sampling_mode: str) -> dict:
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         with mock.patch.object(sr, "COLD", self.root), \
              mock.patch.object(sr, "VENUE_SOURCES",
                                 [("coincheck", "spot", "BTC_JPY", "cc")]):
@@ -91,7 +91,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
 
     def test_emit_count_and_quote_side_encoding(self):
         """Tests #1 + #2: 4 trades, 4 emits, alternating BUY/SELL."""
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         results = self._run_single_segment(
             sr.SAMPLING_MODE_EVENT_AT_SIMULATED_MAKER_FILL)
 
@@ -108,7 +108,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
 
     def test_extended_schema_present_and_legacy_absent(self):
         """Test #3: required keys present, `price` absent."""
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         results = self._run_single_segment(
             sr.SAMPLING_MODE_EVENT_AT_SIMULATED_MAKER_FILL)
 
@@ -126,7 +126,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
 
     def test_book_values_consistent(self):
         """Test #4: best_bid/ask/spread/mid values match snapshot."""
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         results = self._run_single_segment(
             sr.SAMPLING_MODE_EVENT_AT_SIMULATED_MAKER_FILL)
 
@@ -146,7 +146,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
 
     def test_skip_when_book_not_ready(self):
         """Test #5: trades before any snapshot don't emit."""
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
 
         # Build a fixture where a trade precedes the snapshot
         with tempfile.TemporaryDirectory() as tmp:
@@ -182,7 +182,7 @@ class TestSimulatedMakerFillEmission(unittest.TestCase):
 
     def test_legacy_mode_schema_unchanged(self):
         """Test #6: default sampling_mode still returns ts/price/X."""
-        from analytics.research import segmented_replay as sr
+        from analytics import segmented_replay as sr
         results = self._run_single_segment(
             sr.SAMPLING_MODE_EVENT_AT_CC_TRADE)
         first = next(r for r in results if r["n_samples"] > 0)
@@ -196,7 +196,7 @@ class TestSimulatedMakerFillEnums(unittest.TestCase):
 
     def test_sampling_mode_in_alpha_models(self):
         from analytics.calibration.alpha_models import SAMPLING_MODES
-        from analytics.research.segmented_replay import (
+        from analytics.segmented_replay import (
             SAMPLING_MODE_EVENT_AT_CC_TRADE,
             SAMPLING_MODE_EVENT_AT_SIMULATED_MAKER_FILL,
         )

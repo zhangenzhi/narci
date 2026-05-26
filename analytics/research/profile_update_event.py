@@ -32,7 +32,7 @@ import pyarrow.parquet as pq
 
 sys.path.insert(0, "/lustre1/work/c30636/narci")
 from analytics.features import FeatureBuilder
-from analytics.research.segmented_replay import COLD
+from analytics.segmented_replay import COLD
 
 
 VENUE_SOURCES = [

@@ -29,7 +29,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from analytics.research.segmented_replay import (
+from analytics.segmented_replay import (
     replay_days_parallel,
     SAMPLING_MODE_EVENT_AT_SIMULATED_MAKER_FILL,
     QUOTE_SIDE_BUY,

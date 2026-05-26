@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-from analytics.research.segmented_replay import (
+from analytics.segmented_replay import (
     COLD, replay_days_parallel, discover_day_ts_range
 )
 
