@@ -11,7 +11,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from data.backfill_vision_bookticker import bookticker_to_narci
+from recorder.backfill_vision_bookticker import bookticker_to_narci
 
 
 def _write_vision_parquet(rows: list[dict]) -> Path:

@@ -30,15 +30,8 @@ CORE_FILES = {
 }
 # contracts/ 是对外契约层(schema/manifest/features),与 core 同为底层(无业务依赖)
 CORE_DIR_PREFIXES = ("core/", "contracts/")
-RECORDER_FILES = {
-    "data/l2_recorder.py", "data/wal.py", "data/cloud_sync.py",
-    "data/live_publisher.py", "data/download.py", "data/daily_compactor.py",
-    "data/validator.py", "data/sanity_gate.py", "data/tardis_downloader.py",
-    "data/format_converter.py", "data/third_party.py", "data/event_publisher.py",
-    "data/backfill_vision_trades.py", "data/backfill_vision_bookticker.py",
-    "data/health_report.py", "deploy/healthcheck.py",
-}
-RECORDER_DIR_PREFIXES = ("data/exchange/", "data/historical/")
+RECORDER_FILES = {"deploy/healthcheck.py"}
+RECORDER_DIR_PREFIXES = ("recorder/",)
 ANALYTICS_FILES = set()
 ANALYTICS_DIR_PREFIXES = ("analytics/",)
 
@@ -66,7 +59,7 @@ def module_layer(mod: str) -> str | None:
         return "core"
     if top == "analytics":
         return "analytics"
-    if top == "data":  # 暂留 data/(Stage3 迁 recorder/);视为 recorder 层
+    if top == "recorder":
         return "recorder"
     return None  # 三方库 / stdlib —— 不约束
 
@@ -83,13 +76,15 @@ def _iter_layered_py():
 
 
 def test_data_files_all_classified():
-    """每个 data/*.py(除 __init__)都必须归层,逼新文件做分层决策。"""
+    """每个分层目录(core/contracts/recorder/analytics)下的 *.py 都必须归层,
+    逼新文件做分层决策。"""
     unclassified = []
     for rel, _ in _iter_layered_py():
-        if rel.startswith("data/") and file_layer(rel) is None:
+        top = rel.split("/")[0]
+        if top in ("core", "contracts", "recorder", "analytics") and file_layer(rel) is None:
             unclassified.append(rel)
     assert not unclassified, (
-        "这些 data/ 文件未在 tests/test_layering.py 归层,请把它们加入 "
+        "这些文件未在 tests/test_layering.py 归层,请把它们加入 "
         f"CORE/RECORDER/ANALYTICS 之一:\n  " + "\n  ".join(unclassified)
     )
 

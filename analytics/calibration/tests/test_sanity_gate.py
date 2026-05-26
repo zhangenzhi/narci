@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from data.sanity_gate import (
+from recorder.sanity_gate import (
     BLACKLIST_VERSION,
     all_entries,
     filter_days,

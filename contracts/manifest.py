@@ -169,7 +169,7 @@ class Manifest:
             raise ValueError(
                 f"manifest.target_kind {target_kind!r} not in canonical set "
                 f"{sorted(TARGET_KINDS)}; use one of those or extend "
-                f"narci.calibration.alpha_models.TARGET_KINDS")
+                f"narci.contracts.manifest.TARGET_KINDS")
         sampling_mode = d.get("sampling_mode", "1s_grid")
         if sampling_mode not in SAMPLING_MODES:
             raise ValueError(

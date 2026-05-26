@@ -22,7 +22,7 @@ import pandas as pd
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-from data.historical import HistoricalSource
+from recorder.historical import HistoricalSource
 from core.io import save_parquet, load_parquet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")

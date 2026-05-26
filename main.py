@@ -20,7 +20,7 @@ def cmd_gui():
 
 def cmd_record(config_path, symbol):
     """启动 WebSocket L2 高频录制器"""
-    from data.l2_recorder import L2Recorder
+    from recorder.l2_recorder import L2Recorder
     recorder = L2Recorder(config_path=config_path, symbol=symbol)
     try:
         asyncio.run(recorder.start())
@@ -35,7 +35,7 @@ def cmd_compact(symbol, target_date=None):
     支持 --symbol ALL 自动发现所有交易对。
     """
     try:
-        from data.daily_compactor import DailyCompactor
+        from recorder.daily_compactor import DailyCompactor
     except ImportError:
         print("❌ 无法导入 DailyCompactor。请确保 data/daily_compactor.py 文件存在。")
         return
@@ -131,7 +131,7 @@ def cmd_compact(symbol, target_date=None):
 
 def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retain_days):
     """Compact one (symbol, raw_dir) combination across all dates with fragments."""
-    from data.daily_compactor import DailyCompactor
+    from recorder.daily_compactor import DailyCompactor
     symbol = symbol.upper()
 
     # 扫描指定交易对的 1min RAW 文件
@@ -222,7 +222,7 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
         source = None
         if exchange in (None, "binance"):
             try:
-                from data.historical import get_source
+                from recorder.historical import get_source
                 source = get_source("binance_vision")
             except Exception:
                 source = None
@@ -298,18 +298,18 @@ def main():
     elif args.command == "compact":
         cmd_compact(args.symbol, args.date)
     elif args.command == "cloud-sync":
-        from data.cloud_sync import CloudSyncDaemon
+        from recorder.cloud_sync import CloudSyncDaemon
         if not args.remote:
             print("❌ 未指定远端路径。请设置 --remote 或 NARCI_RCLONE_REMOTE 环境变量。")
             return
         daemon = CloudSyncDaemon(local_dir=args.local_dir, remote=args.remote, interval=args.interval)
         daemon.run()
     elif args.command == "download":
-        from data.download import HistoricalDownloader
+        from recorder.download import HistoricalDownloader
         downloader = HistoricalDownloader(config_path=args.config)
         downloader.run()
     elif args.command == "tardis":
-        from data.tardis_downloader import TardisDownloader
+        from recorder.tardis_downloader import TardisDownloader
         import logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
         dl = TardisDownloader(output_dir=args.output_dir)
@@ -317,7 +317,7 @@ def main():
         print(f"\n{'='*50}")
         print(f"Tardis download complete: {len(files)} files saved")
     elif args.command == "merge":
-        from data.format_converter import FormatConverter
+        from recorder.format_converter import FormatConverter
         import logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
         converter = FormatConverter(

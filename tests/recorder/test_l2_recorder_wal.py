@@ -17,8 +17,8 @@ import tempfile
 
 import pytest
 
-from data.l2_recorder import L2Recorder, _WalBuffer
-from data.wal import SegmentWAL, SEGMENT_SUFFIX
+from recorder.l2_recorder import L2Recorder, _WalBuffer
+from recorder.wal import SegmentWAL, SEGMENT_SUFFIX
 import pandas as pd
 
 

@@ -15,8 +15,8 @@ import tempfile
 import pandas as pd
 import pytest
 
-from data import wal as walmod
-from data.wal import SegmentWAL, recover_orphans, write_parquet_atomic, SEGMENT_SUFFIX
+from recorder import wal as walmod
+from recorder.wal import SegmentWAL, recover_orphans, write_parquet_atomic, SEGMENT_SUFFIX
 
 
 def _rows(n, base_ts=1000):

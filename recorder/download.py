@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
 
-from data.historical import get_source, HistoricalSource
+from recorder.historical import get_source, HistoricalSource
 
 
 class HistoricalDownloader:

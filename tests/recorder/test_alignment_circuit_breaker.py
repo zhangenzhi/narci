@@ -40,7 +40,7 @@ class _StubRecorder:
         self.alignment_retry_count = {s: 0 for s in self.symbols}
         self.last_alignment_ok_ts = {s: t0 for s in self.symbols}
         # Borrow the real method
-        from data.l2_recorder import L2Recorder
+        from recorder.l2_recorder import L2Recorder
         self._maybe_trip_alignment_breaker = (
             L2Recorder._maybe_trip_alignment_breaker.__get__(self, _StubRecorder))
 
@@ -49,8 +49,8 @@ class TestAlignmentCircuitBreaker(unittest.TestCase):
 
     def setUp(self):
         # Stop os._exit from actually killing pytest. Patch at the
-        # module path where the symbol is *looked up* (data.l2_recorder.os).
-        self.exit_patcher = mock.patch("data.l2_recorder.os._exit")
+        # module path where the symbol is *looked up* (recorder.l2_recorder.os).
+        self.exit_patcher = mock.patch("recorder.l2_recorder.os._exit")
         self.mock_exit = self.exit_patcher.start()
 
     def tearDown(self):
@@ -128,7 +128,7 @@ class TestL2RecorderInitWiresBreakerState(unittest.TestCase):
         # We can't easily build L2Recorder without a config file + adapter,
         # but we can read the source to confirm the relevant attribute names
         # are referenced. Lightweight smoke test.
-        import data.l2_recorder as lr
+        import recorder.l2_recorder as lr
         src = open(lr.__file__).read()
         for name in (
             "alignment_max_retries",

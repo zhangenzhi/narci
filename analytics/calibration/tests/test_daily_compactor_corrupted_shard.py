@@ -36,7 +36,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from data.daily_compactor import DailyCompactor
+from recorder.daily_compactor import DailyCompactor
 
 
 def _build_compactor(tmpdir: Path, exchange: str = "gmo",

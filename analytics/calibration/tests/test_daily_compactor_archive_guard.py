@@ -24,7 +24,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from data.daily_compactor import DailyCompactor
+from recorder.daily_compactor import DailyCompactor
 
 
 def _build_compactor_with_fake_daily(tmpdir: Path, target: date) -> DailyCompactor:

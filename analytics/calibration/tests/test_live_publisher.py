@@ -20,7 +20,7 @@ import asyncio
 import json
 import unittest
 
-from data.live_publisher import LivePublisher, PROTOCOL_VERSION
+from recorder.live_publisher import LivePublisher, PROTOCOL_VERSION
 
 
 def _async(coro):

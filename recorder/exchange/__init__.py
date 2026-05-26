@@ -2,7 +2,7 @@
 交易所适配器工厂。
 
 用法：
-    from data.exchange import get_adapter
+    from recorder.exchange import get_adapter
     adapter = get_adapter("binance", market_type="um_futures")
 """
 

@@ -4,7 +4,7 @@ When recorder bugs / venue outages produced corrupt or missing data, the
 days are recorded here so nyx training pipelines can drop them
 automatically. Public API:
 
-    from narci.data.sanity_gate import is_blacklisted, filter_days
+    from narci.recorder.sanity_gate import is_blacklisted, filter_days
 
 Each entry is a (date_str_yyyymmdd, exchange, symbol) tuple. Use "*" for
 exchange or symbol to match any.

@@ -22,7 +22,7 @@ import tempfile
 
 import pytest
 
-from data.l2_recorder import L2Recorder
+from recorder.l2_recorder import L2Recorder
 
 
 class _StubAdapter:
