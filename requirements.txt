@@ -1,3 +1,7 @@
+# recorder / ingest 运行时依赖(P5 依赖隔离):录制容器(main.py record)+
+# 历史摄取 + 数据策展所需。**不含** analytics 的重依赖(lightgbm/torch/
+# streamlit)—— 那些在 requirements-research.txt,只在研究/回测机上装。
+# 见 docs/REFACTOR_DESIGN.md §8(三层边界)。
 pandas>=2.0
 pyarrow>=14.0
 numpy>=1.24

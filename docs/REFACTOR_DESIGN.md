@@ -264,7 +264,7 @@ class FixedGridSampler(Sampler):
 | **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 删 GUI 回测面板+三引擎+naive broker+orderbook+venue_registry+strategy+example+build-cache+feature_builder+_cache;撮合内核唯一=MakerSimBroker(零代码改动,纯删除) | 2(+4A) | P3 | 238 passed/0 failed;11 模块 import OK;backtest/ 仅剩 symbol_spec ✅ 已完成 |
 | **P4.5 测试提升** | 测试从 `calibration/tests/` 提升为顶层 `tests/<module>/`,按模块组织,作为"读懂模块+稳健性"入口(见 §9)。recorder 先行(P1 已稳定);其余随 P4/P5 迁 | 测试体系 | recorder 部分**已起步** | 根 `conftest.py`+`pytest.ini`;`tests/recorder/`(39 测试+README)绿;bare `pytest` 干净 |
-| **P5 包边界化** | 同仓内重组为 `core/recorder/analytics` 三层包 + 依赖 extras + import-lint(见 §8) | 模块拆分 | **P4** | recorder 不 import analytics(lint 红线);`pip install .[recorder]` 瘦装可跑录制 |
+| **P5 包边界化** | 逻辑边界(已做):`tests/test_layering.py` import-lint + `requirements{,-research}.txt` 依赖隔离。物理移动到 `narci/` 子包**可选、默认不做**(见 §8.3) | 模块拆分 | P4 | 分层零违规;recorder 运行时不背 analytics 重依赖 ✅ 逻辑边界已完成 |
 
 > 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
 
@@ -318,11 +318,27 @@ class FixedGridSampler(Sampler):
 
 **模糊地带裁定**:`l2_reconstruct` 归 analytics(录制器只抓 raw、不重建);契约常量(schema/采样模式/特征名)归 core;数据策展(compactor/validator/sanity_gate/backfill)归 recorder。
 
-### 8.3 机制
+### 8.3 机制 —— 实施落地(2026-05-26)
 
-- **import-lint**:一个 pytest 用例扫 AST,断言 `narci/recorder` 与 `narci/core` 不出现对 `narci/analytics` 的 import(红线)。零新依赖。
-- **依赖 extras**:`pyproject` 提供 `[recorder]`(瘦)与 `[research]`(全),`pip install .[recorder]` 即可只装录制依赖。
-- **校准测试里 import `L2Recorder`/`wal` 的是测试**(非生产分析代码)——可移到 recorder 包的测试或用 core 暴露的接口,P5 时清理。
+**P5 拆成两半:逻辑边界(已做,零风险)+ 物理移动(可选,待定)。**
+
+**(a) 逻辑边界 — 已落地 ✅**:核实当前代码**分层成立(零向上跨层 import)**,
+故直接把边界钉成测试 + 拆依赖,不动目录:
+- **import-lint**:`tests/test_layering.py` 扫 AST,断言 `core`/`recorder` 模块
+  不 import `analytics`(规则 `core<recorder<analytics`,严禁向上)。并要求每个
+  `data/*.py` 必须归层(新文件强制做分层决策)。层成员清单即活文档。
+- **依赖隔离**:`requirements.txt`(recorder/ingest 运行时,无 lightgbm/torch/
+  streamlit)+ `requirements-research.txt`(analytics 重依赖,`-r requirements.txt`
+  叠加)。录制容器装前者,研究机装后者。
+
+> 这三个动机(清晰/降爆炸半径/依赖隔离)至此**已全部兑现**,无需物理移动。
+
+**(b) 物理移动到 `narci/core|recorder|analytics` — 可选,默认不做**:
+把目录搬进 `narci/` 子包、重写全仓 import,只换来"import 路径上肉眼可见分层"的
+观感,却要付:几百处 import 重写 + 动 `deploy/entrypoint.sh`/`supervisord.conf`/
+docker/`server-aliases.sh`(**碰生产路径**)。对单人仓,逻辑边界已够;物理移动
+留作以后真要拆仓时再机械执行。**§8.2 的目标三层表此时降级为 import-lint 的
+层成员定义,而非物理目录。**
 
 ### 8.4 前置
 
