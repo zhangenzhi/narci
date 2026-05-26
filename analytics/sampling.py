@@ -125,6 +125,6 @@ def make_sampler(mode: str) -> Sampler:
     if mode == "event_at_simulated_maker_fill":
         raise NotImplementedError(
             "event_at_simulated_maker_fill 需要 maker 模拟,不在 data.sampling;"
-            "见 simulation/ 与 docs/REFACTOR_DESIGN.md §4 痛点1。"
+            "见 simulation/ 与 docs/design/REFACTOR_DESIGN.md §4 痛点1。"
         )
     raise ValueError(f"未知采样模式: {mode!r}")

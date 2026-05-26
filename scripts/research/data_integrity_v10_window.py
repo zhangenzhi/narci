@@ -1,7 +1,7 @@
 """Per-venue per-day data integrity scan for the v10 24-day window.
 
 Output: csv-style table + per-venue summary printed to stdout. Used by
-docs/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md.
+docs/archive/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md.
 
 Venues scanned (v10 BJ BTC pipeline):
   binance_jp/spot BTCJPY        — emit-venue (sampling triggers here)

@@ -264,7 +264,7 @@ class FixedGridSampler(Sampler):
 | **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 删 GUI 回测面板+三引擎+naive broker+orderbook+venue_registry+strategy+example+build-cache+feature_builder+_cache;撮合内核唯一=MakerSimBroker(零代码改动,纯删除) | 2(+4A) | P3 | 238 passed/0 failed;11 模块 import OK;backtest/ 仅剩 symbol_spec ✅ 已完成 |
 | **P4.5 测试提升** | 测试全部从 `*/tests/` 提升为顶层 `tests/<module>/`(contracts/calibration/features/research/analytics/simulation/recorder 七个,各配 README 作模块入口)。`calibration/tests` 大杂烩拆解归位 | 测试体系 | **已完成** | 根 `conftest.py`+`pytest.ini(testpaths=tests)`;240 passed;bare `pytest` 干净 |
-| **P5 包边界化** | **全量物理分层**:顶级目录重组为 `core/ contracts/ recorder/ analytics/` 四层(契约 schema/manifest/features 全拆入 contracts);import-lint + 依赖隔离。跨仓 import 路径变更见 `docs/MIGRATION_P5_IMPORTS.md` | 模块拆分 | P4 | 240 passed/0 failed;layering 零违规;echo/nyx 迁移清单 + INTERFACE 文档已出 ✅ 已完成(待 echo/nyx 同步 import) |
+| **P5 包边界化** | **全量物理分层**:顶级目录重组为 `core/ contracts/ recorder/ analytics/` 四层(契约 schema/manifest/features 全拆入 contracts);import-lint + 依赖隔离。跨仓 import 路径变更见 `docs/design/MIGRATION_P5_IMPORTS.md` | 模块拆分 | P4 | 240 passed/0 failed;layering 零违规;echo/nyx 迁移清单 + INTERFACE 文档已出 ✅ 已完成(待 echo/nyx 同步 import) |
 
 > 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
 
@@ -345,7 +345,7 @@ l2_reconstruct/sampling)。分四个 commit(Stage1 contracts → 2 analytics →
 3 recorder → 4 docs),每阶段独立绿。被 echo/nyx vendored import 的文件用
 `narci.` 双路径;契约符号经 contracts 重定位。**这是跨仓 breaking change**:
 echo/nyx 的 `narci.{calibration,features,simulation,data}.*` import 路径需按
-`docs/MIGRATION_P5_IMPORTS.md` 同步替换(narci 侧已全绿,无法验证 echo/nyx)。
+`docs/design/MIGRATION_P5_IMPORTS.md` 同步替换(narci 侧已全绿,无法验证 echo/nyx)。
 注:目录在仓库根而非 `narci/` 子包下,vendored 时父目录即 `narci`,
 `narci.core/contracts/recorder/analytics` 自然解析。
 

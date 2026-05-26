@@ -7,14 +7,18 @@ Narci 的数据录制系统负责从 Binance 实时采集 L2 订单簿深度与 
 ## 架构概览
 
 ```
-数据录制系统
-├── l2_recorder.py      # WebSocket 实时高频录制引擎 (核心)
-├── cloud_sync.py       # 独立云同步守护进程 (rclone)
-├── l2_reconstruct.py   # L2 盘口状态重构引擎 (Reconstructor)
-├── download.py         # 离线历史数据批量下载器
-├── daily_compactor.py  # 日级归档聚合与官方交叉验证
-├── validator.py        # 数据质量校验工具
-└── third_party.py      # 第三方数据源管道 (CryptoChassis)
+recorder/                  # 录制/采集层(P5)
+├── l2_recorder.py         # WebSocket 实时高频录制引擎 (核心)
+├── wal.py                 # 段式 WAL —— 崩溃安全落盘底座(P1)
+├── exchange/              # 交易所 adapter(binance/coincheck/...)
+├── historical/            # 历史源(binance_vision/tardis)
+├── cloud_sync.py          # 独立云同步守护进程 (rclone)
+├── download.py            # 离线历史数据批量下载器
+├── daily_compactor.py     # 日级归档聚合与官方交叉验证
+├── validator.py           # 数据质量校验工具
+└── third_party.py         # 第三方数据源管道 (CryptoChassis)
+
+analytics/l2_reconstruct.py  # L2 盘口状态重构(消费 RAW,属分析层,非录制层)
 ```
 
 ---
@@ -66,21 +70,27 @@ WebSocket 深度增量流必须与 REST 快照的 `lastUpdateId` 对齐后才能
 
 #### 内存盘口状态机 (In-memory Orderbook)
 
-录制器在内存中维护每个交易对的最新盘口状态 (`self.orderbooks`)，作用是：
+录制器在内存中维护每个交易对的最新盘口状态 (`self.orderbooks`),用于在每个
+`save_interval` 合并时,把最新 orderbook 打包成 side=3/4 全量快照注入下一段开头,
+使每个 RAW 文件**自包含**(以全量快照开头,可独立重建)。
 
-- 每次落盘时（每 60 秒），先原子提取当前 buffer 数据
-- 立即将内存中最新的 orderbook 打包为 side=3/4 的快照事件
-- 注入到下一个周期的 buffer 开头
+#### 落盘策略:段式 WAL(P1,2026-05-26)
 
-这保证了每个 1min parquet 文件都是**自包含的** (Self-contained)——任何单个文件都以全量快照开头，可以独立重建完整盘口。
+旧实现是"每 `save_interval_sec`(600s)把内存 buffer 一次性写 parquet",硬崩溃
+会丢每 symbol 最多 10 分钟。现改为 **WAL(write-ahead log)+ 定时合并**
+(`recorder/wal.py`),崩溃窗口降到 ~秒级:
 
-#### 落盘策略
-
-- 每 `save_interval_sec` (默认 600 秒 = 10 分钟) 执行一次异步写盘
-- 文件命名格式：`{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet`
-- 存储路径：`{save_dir}/{market_type}/l2/`
-- 使用 PyArrow + Snappy 压缩
-- 每日产生 144 个文件 (vs 原 1440 个)，每个文件是独立的并行重建单元
+- **micro-flush**:`wal_loop` 每 `wal_flush_interval_sec`(默认 2s)把内存
+  micro-buffer **原子写**(`.tmp`→fsync→`os.replace`→目录 fsync)成一个完整小
+  parquet 段 `{SYMBOL}_{seq}.segwal`。
+- **定时合并**:`save_loop` 每 `save_interval_sec`(默认 600s)把该 symbol 全部段
+  按序 concat → 原子写出规范 `{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet` → 删段。
+  **RAW 文件名/格式/产出节奏对消费方完全不变**。
+- **隐形**:WAL 段在与 `realtime/` 平级的 `replay_buffer/wal/` 树、用 `.segwal`
+  扩展名 —— 所有扫 `*.parquet`/`*_RAW_*` 的消费方(GUI/compactor/main)看不到。
+- **崩溃恢复**:`start()` 启动时 `recover_orphans()` 把残留段合并成 RAW,零丢失。
+- 熔断 `os._exit` 前先 flush;未对齐 symbol 的 trade 段照样落盘。
+- 存储路径:`{save_dir}/{exchange}/{market_type}/l2/`,PyArrow + Snappy。
 
 #### 本地文件自动清理
 

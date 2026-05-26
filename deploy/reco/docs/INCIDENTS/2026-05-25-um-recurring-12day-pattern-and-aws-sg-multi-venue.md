@@ -6,7 +6,7 @@
 - **Resolution status**:
   - 5/23 28h alignment death:已 resolved(narci-reco hot-restart 5/24 12:15 UTC,见 2026-05-23 incident doc)
   - 5/24 multi-venue 2.5h outage:**未单独 RCA**(本 doc 首次记录)
-  - 5/14 multi-venue ~10h outage:**未单独 RCA**(详见 narci `docs/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md` §2)
+  - 5/14 multi-venue ~10h outage:**未单独 RCA**(详见 narci `docs/archive/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md` §2)
 
 ## 1. 实测 12-day UM 时间线(`narci/replay_buffer/cold/binance/um_futures/`)
 
@@ -39,7 +39,7 @@ BS /BTCUSDT 5/24 internal gap:  14:59:28 UTC → 17:40:15 UTC   (160.8 min)
 UM 跟 BS 几乎完全同步(开始差 7 秒,结束差 3 秒)。
 
 **这是第 3 次 AWS-SG multi-venue 同步 outage**:
-- 5/14 ~10h: UM/BS/CC/BJ 全挂(narci `docs/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md` §2)
+- 5/14 ~10h: UM/BS/CC/BJ 全挂(narci `docs/archive/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md` §2)
 - 5/23: UM 单独 alignment death(已 incident)
 - **5/24 ~2.5h: UM+BS 同步**(本 doc)
 
@@ -158,7 +158,7 @@ narci 这边 #85 + #105 已完成上限工作:
 - 2026-05-23 incident: `2026-05-23-um-alignment-loop-28h-silent-death.md`
 - 2026-05-21 incident: `2026-05-21-um-and-gmo-recorder-outage.md`
 - 2026-05-21 cloud-sync: `2026-05-21-aws-jp-cloud-sync-stuck.md`
-- narci 综合数据完整度报告: `narci/docs/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md`
+- narci 综合数据完整度报告: `narci/docs/archive/DATA_INTEGRITY_v10_BJ_WINDOW_2026-05-24.md`
 - narci 域 fix commits:
   - `35fe08d` healthcheck per-symbol
   - `c72b245` alignment circuit-breaker

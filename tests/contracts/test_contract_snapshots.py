@@ -4,7 +4,7 @@
 逐字冻结 nyx↔narci↔echo 之间的跨仓库契约 —— 任何改动都会让本文件变红,
 逼出一次**有意识**的版本 bump + 下游协调,而不是无声漂移。
 
-冻结对象(见 docs/REFACTOR_DESIGN.md §3 护栏):
+冻结对象(见 docs/design/REFACTOR_DESIGN.md §3 护栏):
   - features.FEATURE_NAMES(完整有序列表)+ FEATURES_VERSION
   - calibration.alpha_models 的 SAMPLING_MODES / TARGET_KINDS /
     MODEL_OUTPUT_UNITS / MANIFEST_SCHEMA_VERSION

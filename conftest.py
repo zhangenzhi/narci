@@ -6,6 +6,6 @@
 narci 未作为包安装,此前靠 `calibration/tests/__init__.py` 的包链才把根带上
 sys.path;有了本文件,测试可以脱离那条包链、提升为顶层 `tests/` 树。
 
-测试组织目标(见 docs/REFACTOR_DESIGN.md §9 P4.5):按模块分目录
+测试组织目标(见 docs/design/REFACTOR_DESIGN.md §9 P4.5):按模块分目录
 (`tests/recorder/` 已建),作为"读懂该模块行为与稳健性保证"的入口。
 """

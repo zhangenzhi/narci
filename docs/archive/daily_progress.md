@@ -1,4 +1,7 @@
-# Daily Progress
+# Daily Progress(已归档)
+
+> ⚠️ 归档:这是早期(止于 2026-04-16)的开发流水账,**不再维护**。
+> 近期进展见 git log 与 `docs/design/REFACTOR_DESIGN.md`。保留作历史参考。
 
 Narci 项目每日开发进度记录。
 

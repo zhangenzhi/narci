@@ -58,7 +58,7 @@ enforced by `tests/test_layering.py`; `contracts` is a bottom layer alongside `c
 | analytics | `analytics/` | `l2_reconstruct`, `sampling`, `segmented_replay`, `features/`, `simulation/`, `calibration/`, `gui/` | +lightgbm/torch/streamlit |
 
 Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `main.py`, and `scripts/` — the single non-package script area: `scripts/ops/` (recorder/ops probes + diagnostics), `scripts/research/` (analyst scratch + nyx cache-build tooling), `scripts/submit/` (HPC job files). Not collected by pytest, not layer-checked.
-echo/nyx import `narci.contracts.*` / `narci.analytics.*` / `narci.recorder.*` — see `docs/MIGRATION_P5_IMPORTS.md`.
+echo/nyx import `narci.contracts.*` / `narci.analytics.*` / `narci.recorder.*` — see `docs/design/MIGRATION_P5_IMPORTS.md`.
 
 ### Entry Point
 
@@ -122,7 +122,7 @@ reconciles its output against echo's real fills. Behaviour is locked by
 `SymbolSpec` now lives in `core/symbol_spec.py`; the entire `backtest/` package
 was removed in P4 (legacy `BacktestEngine`/`JitBacktestEngine`/`EventBacktestEngine`
 + naive `broker.py` + `orderbook.py`/`venue_registry.py`/`strategy.py`, plus the
-`build-cache` CLI and `data/feature_builder.py`). See `docs/REFACTOR_DESIGN.md`.
+`build-cache` CLI and `data/feature_builder.py`). See `docs/design/REFACTOR_DESIGN.md`.
 
 ### GUI (`analytics/gui/`)
 

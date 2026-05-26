@@ -21,9 +21,9 @@
 
 ```bash
 pytest tests/recorder              # 只跑录制器
-pytest                              # 全套(testpaths = tests + calibration/tests)
+pytest                              # 全套(testpaths = tests)
 ```
 
-> P4.5 进行中:测试正从历史的 `calibration/tests/` 按模块提升到顶层 `tests/`。
-> recorder 因 P1 已稳定先行;analytics/core 测试随 P4/P5 迁移。新写的录制器测试
-> 放这里。见 `docs/REFACTOR_DESIGN.md §9`。
+> 测试按模块组织在顶层 `tests/<module>/`(contracts/calibration/features/research/
+> analytics/simulation/recorder),各带 README 作模块入口。见
+> `docs/design/REFACTOR_DESIGN.md §9`。

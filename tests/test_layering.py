@@ -9,7 +9,7 @@
 这给到"降爆炸半径"(研究/回测的改动无法悄悄拖进 24/7 录制器)与"职责清晰"
 (下面的 LAYER_* 清单就是分层文档),无需真正搬目录。
 
-层成员(按 docs/REFACTOR_DESIGN.md §8.2):
+层成员(按 docs/design/REFACTOR_DESIGN.md §8.2):
   - core      : 跨层共享的格式/契约/工具(无业务依赖)
   - recorder  : 实时采集 + 历史摄取 + 数据策展(pandas/pyarrow/websockets/requests)
   - analytics : 重建/采样/特征/模拟/校准/研究/GUI(+ numpy/lightgbm/torch/streamlit)

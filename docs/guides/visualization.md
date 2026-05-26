@@ -1,27 +1,29 @@
 # 可视化系统
 
-Narci 内置基于 Streamlit + Plotly (WebGL 加速) 的交互式可视化控制台，提供 L1 行情预览、L2 盘口微观分析、回测实验室、冷数据仓库与系统设置五大面板。
+Narci 内置基于 Streamlit + Plotly (WebGL 加速) 的交互式可视化控制台，提供 L1 行情预览、L2 盘口微观分析、冷数据仓库与系统设置四大面板。
 
 ---
 
 ## 架构概览
 
 ```
-可视化系统 (gui/)
+可视化系统 (analytics/gui/)          # P5 后位于 analytics 层
 ├── dashboard.py        # 看板主入口与 Tab 路由
 ├── panel_history.py    # L1 历史行情预览面板
 ├── panel_l2_insight.py # L2 盘口微观结构洞察面板
-├── panel_backtest.py   # 回测实验室面板
 ├── panel_cold_db.py    # 冷数据仓库面板
 ├── panel_settings.py   # 系统设置面板
 └── utils.py            # 公共工具函数
 ```
 
+> 回测面板 `panel_backtest.py` 已在 P4 删除(GUI 不再做回测;回测见
+> `docs/guides/backtesting.md`)。
+
 启动方式：
 
 ```bash
 python main.py gui
-# 等价于: streamlit run gui/dashboard.py
+# 等价于: streamlit run analytics/gui/dashboard.py
 ```
 
 ---
@@ -32,14 +34,13 @@ python main.py gui
 
 控制台主类，负责：
 - 初始化 L1 / L2 数据目录路径（含自动路径纠偏）
-- 创建五个 Tab 并路由到各面板的 `render()` 函数
+- 创建四个 Tab 并路由到各面板的 `render()` 函数
 
 **Tab 布局**：
 | Tab | 面板 | 功能 |
 |-----|------|------|
 | 📊 L1 行情预览 | `panel_history` | 历史 aggTrades K 线 |
 | 🔬 L2 盘口洞察 | `panel_l2_insight` | 盘口重构与微观分析 |
-| 🧪 强化版回测室 | `panel_backtest` | L2 高频回测 |
 | 🗄️ 冷数据仓库 | `panel_cold_db` | 全局数据资产管理 |
 | 🔧 系统设置 | `panel_settings` | 路径配置 |
 
@@ -121,79 +122,13 @@ python main.py gui
 
 ---
 
-## 4. 回测实验室 (`panel_backtest.py`)
+## 4. 冷数据仓库 (`panel_cold_db.py`)
 
 ### 4.1 功能概览
 
-集成 `JitBacktestEngine` 的图形化回测面板，支持参数配置、一键执行与绩效可视化。
-
-### 4.2 配置读取
-
-所有参数从 `configs/backtest.yaml` 统一读取：
-
-```yaml
-backtest:
-  data:
-    realtime_dir: replay_buffer/realtime
-    history_dir: replay_buffer/official_validation
-  system:
-    default_market: um_futures
-    depth_limit: 10
-  broker:
-    initial_cash: 10000.0
-    leverage: 10.0
-    maker_fee: 0.0000
-    taker_fee: 0.0000
-  features:
-    ema_span: 10
-    vol_window: 20
-  strategy:
-    default_imbalance_threshold: 0.3
-    default_trade_qty: 1.0
-```
-
-### 4.3 操作流程
-
-1. **选择市场与交易对**
-2. **管理特征缓存**：查看/清空已缓存的重构文件
-3. **选择数据片段**：多选 RAW 文件或已处理的 Parquet
-4. **配置策略参数**：
-   - 策略选择 (当前内置 L2_Imbalance)
-   - Imbalance 触发阈值
-   - 单次执行数量
-5. **一键启动回测**
-
-### 4.4 绩效报告可视化
-
-回测完成后展示以下内容：
-
-**统计卡片**：
-- 初始资金 / 最终权益 / 总收益率
-- 最大回撤 (Max Drawdown)
-- 总交易次数 / 累计手续费
-
-**三层联合图表** (Plotly WebGL)：
-| 子图 | 内容 |
-|------|------|
-| Row 1 | 账户总权益曲线 (Equity) |
-| Row 2 | 动态回撤面积图 (Drawdown %) |
-| Row 3 | 交易买卖离散点分布 (Buy/Sell) |
-
-**单笔盈亏分布**：已实现 PnL 的直方图 (盈利/亏损分色)
-
-**详细交易流水**：展开 `signal_info` 中的策略信号字段，完整展示每笔交易的角色 (MAKER/TAKER)、价格、手续费、已实现盈亏等。
-
-**引擎性能日志**：底层撮合引擎的 Profiler 耗时分析。
-
----
-
-## 5. 冷数据仓库 (`panel_cold_db.py`)
-
-### 5.1 功能概览
-
 统一盘点系统中所有落盘数据资产，包括 L1 历史、L2 录制碎片、DAILY 聚合文件与官方交叉校验数据。
 
-### 5.2 数据扫描
+### 4.2 数据扫描
 
 自动扫描以下目录（60 秒缓存）：
 - `replay_buffer/` (L1 历史行情)
@@ -201,7 +136,7 @@ backtest:
 - `replay_buffer/realtime/l2/` (L2 录制备选路径)
 - `replay_buffer/official_validation/` (官方校验数据)
 
-### 5.3 数据分类
+### 4.3 数据分类
 
 | 类型标签 | 识别规则 |
 |----------|----------|
@@ -210,7 +145,7 @@ backtest:
 | 官方交叉校验 (L1 CSV) | 路径含 `official_validation`，后缀 `.csv` |
 | L1 历史行情 (Parquet) | 其他 `.parquet` 文件 |
 
-### 5.4 交互功能
+### 4.4 交互功能
 
 - **三维过滤器**：按交易对 / 数据类型 / 日期筛选
 - **统计卡片**：文件总数、冷数据总占用、交易对数量
@@ -222,7 +157,7 @@ backtest:
 
 ---
 
-## 6. 系统设置 (`panel_settings.py`)
+## 5. 系统设置 (`panel_settings.py`)
 
 展示当前系统的目录配置：
 - 项目根目录
@@ -231,7 +166,7 @@ backtest:
 
 ---
 
-## 7. 公共工具 (`utils.py`)
+## 6. 公共工具 (`utils.py`)
 
 ### `get_all_parquet_files(directory)`
 
@@ -243,7 +178,7 @@ backtest:
 
 ---
 
-## 8. 可视化技术要点
+## 7. 可视化技术要点
 
 - **WebGL 加速**：所有大数据量图表使用 `Scattergl` 替代 `Scatter`，支持百万点级流畅交互
 - **Streamlit 缓存**：数据处理函数使用 `@st.cache_data` 装饰器，避免重复计算
