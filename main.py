@@ -7,8 +7,6 @@ import subprocess
 import time
 from datetime import datetime
 
-from data._cache import compute_cache_hash
-
 # 确保能正确引入内部模块
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
@@ -246,73 +244,6 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
         
     print("\n✅ 所有批次数据聚合与交叉验证完毕！请前往 GUI [冷数据仓库] 查看全盘资产。")
 
-def cmd_build_cache(market_type, symbol, base_dir):
-    """
-    离线特征缓存构建管线 (Feature Cache)
-    调用 FeatureBuilder 一键生成并固化高级盘口特征
-    """
-    print("🏗️ 启动离线特征缓存 (Feature Cache) 构建管线...")
-    
-    # 延迟导入重型数据处理库
-    try:
-        from data.feature_builder import FeatureBuilder
-        from gui.utils import get_all_parquet_files
-    except ImportError as e:
-        print(f"❌ 导入依赖失败: {e}。请确保依赖项已安装，并在项目根目录下运行。")
-        return
-
-    symbol = symbol.upper()
-    market_dir = os.path.join(base_dir, market_type, "l2")
-    cache_dir = os.path.join(market_dir, "backtest_cache")
-    
-    if not os.path.exists(market_dir):
-        print(f"❌ 错误: 数据目录 {market_dir} 不存在。")
-        return
-
-    all_files = get_all_parquet_files(market_dir)
-    raw_files = [f for f in all_files if f.endswith(".parquet") and "backtest_cache" not in f and "RAW" in f.upper()]
-    
-    if symbol != "ALL":
-        raw_files = [f for f in raw_files if os.path.basename(f).upper().startswith(symbol)]
-        
-    raw_files = sorted(raw_files)
-    if not raw_files:
-        print(f"⚠️ 没有找到 {market_type} 市场下 {symbol} 的 RAW 数据文件。请先运行 record 收集数据。")
-        return
-
-    # 哈希计算对齐 UI 保证命中率(逻辑统一在 data._cache)
-    hash_str = compute_cache_hash(raw_files)
-    symbol_prefix = symbol if symbol != "ALL" else "MIXED"
-    cache_filename = f"{symbol_prefix}_100ms_merged_{hash_str}.parquet"
-    cache_file_path = os.path.join(cache_dir, cache_filename)
-
-    if os.path.exists(cache_file_path):
-        print(f"⚡ 命中已有缓存！该批次文件此前已处理完毕，无需重复构建。\n📍 路径: {cache_file_path}")
-        return
-        
-    print(f"⏳ 开始并发读取 {len(raw_files)} 个 {symbol} 的 RAW 碎片文件...")
-    t_start = time.time()
-    
-    try:
-        # 使用 FeatureBuilder 封装好的高级流水线处理文件
-        fb = FeatureBuilder()
-        reconstructed_df = fb.build_from_raw_files(raw_files)
-        
-        # 落盘
-        if not reconstructed_df.empty:
-            os.makedirs(cache_dir, exist_ok=True)
-            reconstructed_df.to_parquet(cache_file_path, engine='pyarrow', compression='snappy')
-            
-            elapsed = time.time() - t_start
-            print(f"✅ 特征缓存构建成功！总耗时: {elapsed:.2f} 秒")
-            print(f"💾 缓存已固化至: {cache_file_path}")
-            print(f"💡 现在您可以运行 `python main.py gui` 打开面板，点击【全选并导入全部】，回测将在 1 秒内瞬间启动！")
-        else:
-            print("❌ 构建失败，重构后数据切片为空。")
-            
-    except Exception as e:
-        print(f"❌ 构建过程中发生致命错误: {e}")
-
 def main():
     parser = argparse.ArgumentParser(description="Narci 量化系统核心调度引擎")
     subparsers = parser.add_subparsers(dest="command", help="可用命令列表")
@@ -340,13 +271,7 @@ def main():
     parser_download = subparsers.add_parser("download", help="从 Binance Vision 批量下载历史数据 (spot + futures)")
     parser_download.add_argument("--config", type=str, default="configs/downloader.yaml", help="下载器配置文件路径")
 
-    # 6. Build-Cache 命令
-    parser_cache = subparsers.add_parser("build-cache", help="离线聚合 RAW 数据并调用 FeatureBuilder 构建特征缓存")
-    parser_cache.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
-    parser_cache.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对 (默认: ETHUSDT，输入 ALL 处理所有)")
-    parser_cache.add_argument("--dir", type=str, default=os.path.join(current_dir, "replay_buffer", "realtime"), help="基础数据目录")
-
-    # 7. Tardis Download 命令
+    # 6. Tardis Download 命令
     parser_tardis = subparsers.add_parser("tardis", help="从 Tardis.dev 下载 L2 depth 数据")
     parser_tardis.add_argument("--symbol", type=str, required=True, help="交易对 (如 ETHUSDT)")
     parser_tardis.add_argument("--start", type=str, required=True, help="起始日期 (如 2025-09-01)")
@@ -383,8 +308,6 @@ def main():
         from data.download import HistoricalDownloader
         downloader = HistoricalDownloader(config_path=args.config)
         downloader.run()
-    elif args.command == "build-cache":
-        cmd_build_cache(args.market, args.symbol, args.dir)
     elif args.command == "tardis":
         from data.tardis_downloader import TardisDownloader
         import logging

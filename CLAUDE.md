@@ -39,9 +39,6 @@ python main.py merge --symbol ETHUSDT --start 2025-09-01 --end 2026-03-01
 python main.py compact --symbol ETHUSDT
 python main.py compact --symbol ALL
 
-# Offline feature cache
-python main.py build-cache --market um_futures --symbol ETHUSDT
-
 # Docker (runs all 3 recorders + rclone sidecar)
 docker compose up -d
 ```
@@ -50,7 +47,7 @@ docker compose up -d
 
 ### Entry Point
 
-`main.py` — CLI dispatcher with subcommands: `gui`, `record`, `compact`, `cloud-sync`, `download`, `tardis`, `merge`, `build-cache`.
+`main.py` — CLI dispatcher with subcommands: `gui`, `record`, `compact`, `cloud-sync`, `download`, `tardis`, `merge`.
 
 ### Exchange Adapter Layer (`data/exchange/`)
 
@@ -75,25 +72,35 @@ Unified interface for offline historical data downloading.
 - `l2_reconstruct.py` — `L2Reconstructor`. Rebuilds L2 orderbook from raw parquet files. The sampling decision ("when to emit a feature row") is delegated to a `Sampler` (see `sampling.py`); `process_dataframe(sample_interval_ms=…)` stays back-compatible.
 - `sampling.py` — `Sampler` ABC + `FixedGridSampler` (global-aligned time grid; `1000ms`≡`1s_grid`) + `EventSampler` (event_at_* modes) + `make_sampler()`. The reproducibility-critical global grid; distinct from `features/realtime`'s relative perf-throttle (`metric_sample_interval_ms`), which is left as-is.
 - `daily_compactor.py` — `DailyCompactor`. Exchange-neutral: accepts an optional `HistoricalSource` for cross-validation. Coincheck / exchanges without official archives skip validation gracefully.
-- `feature_builder.py` — `FeatureBuilder`. Offline + online alpha feature modes.
 - `cloud_sync.py` — Independent `CloudSyncDaemon` for rclone-based Google Drive push.
 - `download.py` — `HistoricalDownloader`. Delegates to any registered `HistoricalSource`.
 - `validator.py` — `DataValidator`. Exchange-neutral DataFrame business-rule checks.
-- `_io.py` / `_config.py` / `_cache.py` — shared data-module utilities (single source for parquet read/write incl. atomic write, YAML section loading, derived-cache hashing).
+- `_io.py` / `_config.py` — shared data-module utilities (single source for parquet read/write incl. atomic write, and YAML section loading).
+- The online feature builder is `features/realtime.py` (`FeatureBuilder`, `FEATURES_VERSION`-pinned, 38-feature v6) — consumed by simulation/calibration/research.
 - `tardis_downloader.py` / `format_converter.py` — Tardis.dev + Binance Vision merging pipeline for historical L2 reconstruction.
 
-### Backtesting (`backtest/`)
+### Backtesting / Matching (`simulation/` + `calibration/`)
 
-- `backtest.py` — `BacktestEngine` and `JitBacktestEngine`. JIT variant performs on-the-fly L2 reconstruction from raw files with MD5-based caching.
-- `broker.py` — Three-level class hierarchy:
-  - `BaseBroker` — shared L1/L2 update, limit-order maker matching, market sweep, record/history queries.
-  - `SpotBroker` — no leverage, no short selling, holds positive base-asset position; default fee 0 (Coincheck JPY zero-fee).
-  - `SimulatedBroker` — bidirectional U-margined futures with leverage, margin-aware order sizing, realized PnL on offsetting fills.
-- `strategy.py` — `BaseStrategy`: inherit and implement `on_tick(tick)` and `on_finish()`.
+The single matching engine is `simulation/maker_broker.py` `MakerSimBroker` — a
+maker-order simulator (FIFO queue-ahead, price-penetration fills, post-only,
+spot inventory reservation, cancel latency) that doubles as the reference
+implementation for the echo live broker. `simulation/backtest_alpha.py` replays
+an `AlphaModel` over cold-tier days through it; `calibration/replay.py`
+reconciles its output against echo's real fills. Behaviour is locked by
+`tests/simulation/` (see its README).
+
+`backtest/` is reduced to `symbol_spec.py` (`SymbolSpec` tick/lot/notional,
+shared by simulation/calibration). The legacy `BacktestEngine`/`JitBacktestEngine`/
+`EventBacktestEngine` + naive `broker.py` + `orderbook.py`/`venue_registry.py`/
+`strategy.py` and the `build-cache` CLI were removed in P4 (see
+`docs/REFACTOR_DESIGN.md`).
 
 ### GUI (`gui/`)
 
-Streamlit dashboard. Panels auto-discover `realtime/{exchange}/{market}/l2/` directories (falls back to legacy `realtime/{market}/l2/`). Entry point: `gui/dashboard.py`.
+Streamlit dashboard with 4 tabs (L1 行情 / L2 盘口洞察 / 冷数据仓库 / 系统设置).
+Panels auto-discover `realtime/{exchange}/{market}/l2/` directories (falls back to
+legacy `realtime/{market}/l2/`). Entry point: `gui/dashboard.py`. (The legacy
+backtest panel was removed in P4; backtesting now runs via simulation/calibration.)
 
 ### Deployment (`deploy/`)
 

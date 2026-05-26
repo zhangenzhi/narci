@@ -17,11 +17,9 @@ class L2Reconstructor:
     past incrementals are wiped. This makes it correct for both
     incremental-L2 venues (Binance UM/spot) and full-snapshot venues
     (CC / bitbank / GMO / bitFlyer) which don't emit explicit deletes
-    for disappeared levels.
-
-    Counterpart: `narci.backtest.orderbook.Orderbook` is incremental-L2
-    only — see its module docstring. Anything reading live CC/BJ/etc.
-    WS should consume via L2Reconstructor, not Orderbook.
+    for disappeared levels. This is the single L2 reconstruction path
+    (the legacy incremental-only `backtest.orderbook.Orderbook` was
+    removed in P4).
     """
 
     def __init__(self, depth_limit=20, book_staleness_seconds: float = 0.0,

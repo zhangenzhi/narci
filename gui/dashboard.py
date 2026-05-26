@@ -11,7 +11,6 @@ if root_dir not in sys.path:
 # 从拆分的文件中导入各自的渲染函数
 from gui.panel_history import render as render_history
 from gui.panel_l2_insight import render as render_l2_insight
-from gui.panel_backtest import render as render_backtest
 from gui.panel_settings import render as render_settings
 from gui.panel_cold_db import render as render_cold_db  # 新增导入冷数据库面板
 
@@ -36,18 +35,16 @@ class NarciDashboard:
 
     def run(self):
         # 加入了全新的【🗄️ 冷数据仓库】Tab
-        tabs = st.tabs(["📊 L1 行情预览", "🔬 L2 盘口洞察", "🧪 强化版回测室", "🗄️ 冷数据仓库", "🔧 系统设置"])
-        
-        with tabs[0]: 
+        tabs = st.tabs(["📊 L1 行情预览", "🔬 L2 盘口洞察", "🗄️ 冷数据仓库", "🔧 系统设置"])
+
+        with tabs[0]:
             render_history(self.base_path, self.history_dir)
         with tabs[1]:
             render_l2_insight(self.base_path, self.realtime_dir)
-        with tabs[2]: 
-            render_backtest(self.base_path, self.history_dir, self.realtime_dir)
-        with tabs[3]:
+        with tabs[2]:
             # 渲染全新的冷数据库面板，传入项目根路径让其自行递归扫描
             render_cold_db(self.base_path)
-        with tabs[4]:
+        with tabs[3]:
             render_settings(self.base_path, self.history_dir, self.realtime_dir)
 
 if __name__ == "__main__":
