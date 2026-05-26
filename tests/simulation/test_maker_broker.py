@@ -9,8 +9,8 @@ from __future__ import annotations
 import sys
 
 from core.symbol_spec import SymbolSpec
-from calibration import priors as P
-from simulation import MakerSimBroker
+from analytics.calibration import priors as P
+from analytics.simulation import MakerSimBroker
 
 
 def _make_broker(*, post_only=True, top1_size=0.02):

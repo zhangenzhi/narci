@@ -15,7 +15,7 @@ if current_dir not in sys.path:
 def cmd_gui():
     """启动 Streamlit 交互式控制台"""
     print("🚀 正在启动 Narci Quant Terminal (GUI)...")
-    gui_path = os.path.join(current_dir, "gui", "dashboard.py")
+    gui_path = os.path.join(current_dir, "analytics", "gui", "dashboard.py")
     subprocess.run(["streamlit", "run", gui_path])
 
 def cmd_record(config_path, symbol):

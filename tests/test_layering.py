@@ -39,8 +39,8 @@ RECORDER_FILES = {
     "data/health_report.py", "deploy/healthcheck.py",
 }
 RECORDER_DIR_PREFIXES = ("data/exchange/", "data/historical/")
-ANALYTICS_FILES = {"data/l2_reconstruct.py", "data/sampling.py"}
-ANALYTICS_DIR_PREFIXES = ("features/", "simulation/", "calibration/", "research/", "gui/")
+ANALYTICS_FILES = set()
+ANALYTICS_DIR_PREFIXES = ("analytics/",)
 
 ORDER = {"core": 0, "recorder": 1, "analytics": 2}
 
@@ -64,12 +64,10 @@ def module_layer(mod: str) -> str | None:
     top = mod.split(".")[0]
     if top in ("core", "contracts"):
         return "core"
-    if top in ("features", "simulation", "calibration", "research", "gui"):
+    if top == "analytics":
         return "analytics"
-    if top == "data":
-        return file_layer("/".join(mod.split(".")) + ".py") or (
-            "recorder" if mod.startswith("data.historical") or mod.startswith("data.exchange") else None
-        )
+    if top == "data":  # 暂留 data/(Stage3 迁 recorder/);视为 recorder 层
+        return "recorder"
     return None  # 三方库 / stdlib —— 不约束
 
 

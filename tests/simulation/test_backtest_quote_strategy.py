@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from simulation.backtest_alpha import (
+from analytics.simulation.backtest_alpha import (
     QUOTE_STRATEGIES,
     _compute_quote_price,
     backtest_alpha_model,
