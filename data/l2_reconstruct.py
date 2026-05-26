@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 
 from data._io import load_parquet
+from data.sampling import FixedGridSampler
 
 _ITEMGETTER_0 = operator.itemgetter(0)
 
@@ -79,13 +80,20 @@ class L2Reconstructor:
         sorted_asks = sorted(self.asks.items(), key=lambda x: x[0], reverse=False)[:self.depth_limit]
         return sorted_bids, sorted_asks
 
-    def process_dataframe(self, df, sample_interval_ms=None):
+    def process_dataframe(self, df, sample_interval_ms=None, sampler=None):
         """
         核心性能优化方法：直接处理传入的 DataFrame，避免反复读盘。
+
+        采样:显式传入 ``sampler`` 优先;否则由 ``sample_interval_ms`` 构造
+        固定网格 :class:`FixedGridSampler`(向后兼容)。两者都为 None 时走
+        逐笔成交对齐输出(L3)。
         """
         results = []
-        next_sample_ts = 0
-        
+        if sampler is None and sample_interval_ms is not None:
+            sampler = FixedGridSampler(sample_interval_ms)
+        if sampler is not None:
+            sampler.reset()
+
         # 重置状态
         self.bids, self.asks = {}, {}
         self.is_ready = False
@@ -129,8 +137,8 @@ class L2Reconstructor:
                     self.period_taker_sell_vol += abs(qty)
 
             # 采样逻辑
-            if sample_interval_ms is not None:
-                if self.is_ready and ts >= next_sample_ts:
+            if sampler is not None:
+                if self.is_ready and sampler.should_emit(ts, side):
                     bids_top = sorted(self.bids.items(), key=lambda x: x[0], reverse=True)[:self.depth_limit]
                     asks_top = sorted(self.asks.items(), key=lambda x: x[0], reverse=False)[:self.depth_limit]
                     
@@ -164,10 +172,9 @@ class L2Reconstructor:
                         self.period_taker_buy_vol = 0.0
                         self.period_taker_sell_vol = 0.0
                         
-                        # 【核心优化 3】: 时间漂移修复与全局绝对对齐
-                        # 确保无论文件何时开始，Tick 切片永远在全球对齐的 100ms 边界上 (如 ...000, ...100, ...200)
-                        # 下游 DatasetBuilder 做 GRU resample 时就不会出现坑洞
-                        next_sample_ts = (ts // sample_interval_ms + 1) * sample_interval_ms
+                        # 时间网格推进(全局绝对对齐,防 resample 坑洞)已封装进
+                        # sampler.notify_emitted —— 仅在实际 emit 后推进。
+                        sampler.notify_emitted(ts)
             
             # L3 逐笔成交对齐逻辑
             else:

@@ -174,6 +174,22 @@ class FixedGridSampler(Sampler):
 
 **收益**:消灭两处重复网格逻辑;为 nyx 的多采样模式提供干净挂载点;缓存与 manifest 对齐可验证。
 
+> **P3 实施落地(2026-05-26,`data/sampling.py`)与两处对设计的诚实修正:**
+> 1. **"两处网格"不是同一套,不统一。** `process_dataframe` 是**全局对齐**网格
+>    `(ts//interval+1)*interval`(跨文件/venue 可复现);`features/realtime` 的
+>    `metric_sample_interval_ms` 是**相对"距上次≥N ms"的在线性能节流**,且在
+>    `FEATURES_VERSION` 契约路径上、带 P2 修复历史。强行合并会改变契约路径的在线
+>    特征时序,得不偿失。故 P3 只把**全局网格**抽成 `FixedGridSampler`,realtime
+>    节流原样保留。
+> 2. **`mode_tag` 写缓存元数据本轮不做。** 缓存名/hash 由 `main.py build-cache`
+>    与(P4 将删的)`backtest`/`feature_builder` 决定,改它会使既有缓存失效;
+>    待 P4 收口后再做。`mode_tag` 已就绪(`1000ms`→`1s_grid`),供后续接入。
+>
+> 已交付:`Sampler` ABC + `FixedGridSampler`(行为保持,`process_dataframe` 接入,
+> 旧 `sample_interval_ms` 关键字兼容)+ `EventSampler`(简单 `event_at_*` 可用)
+> + `make_sampler` 工厂(`event_at_simulated_maker_fill` 抛 NotImplementedError 预留)。
+> 10 个测试含 `sample_interval_ms=100` 与显式 `FixedGridSampler(100)` 的逐行等价。
+
 ---
 
 ### 痛点 2:回测撮合一致性(P2)
@@ -241,7 +257,7 @@ class FixedGridSampler(Sampler):
 | **P1 录制稳健** | 段式 WAL + 定时合并(崩溃窗口→秒级);原子写;熔断前 flush;修未对齐落盘;不丢对齐后续事件;启动恢复残留段 | 3(+4C) | P0 | 回归测试(见痛点3);线上灰度单 symbol 后全量 | 
 | **P2 冗余底座** | 抽 `data/_io`(含原子写)`/_config/_cache` 并迁移 data/ 调用点;删 3 个别名 + 死 `apply_diff` | 4(B/D) | P1 | 228 passed/0 failed;14 模块 import OK;cache hash 逐字节等价 ✅ 已完成 |
 | ~~P2 FeatureBuilder 合并~~ | 核实非重复,改为随 P4 删 backtest/ 退役 `data/feature_builder.py`(见 §4 痛点4A) | 4(A) | → P4 | — |
-| **P3 采样抽象** | `Sampler` 抽象 + `FixedGridSampler`;两处网格逻辑收敛;mode_tag 写缓存元数据;对齐 `SAMPLING_MODES` | 1 | P2 | 缓存与 manifest sampling_mode 可校验;事件型采样接口预留 |
+| **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 撮合内核唯一化;**删** GUI 回测面板 + naive broker + 三遗留引擎;venue→撮合矩阵落地 | 2(+4A) | P3 | 校准对账 verdict 不退化;backtest/ 仅剩 orderbook/symbol_spec/venue_registry |
 | **P5 包边界化** | 同仓内重组为 `core/recorder/analytics` 三层包 + 依赖 extras + import-lint(见 §8) | 模块拆分 | **P4** | recorder 不 import analytics(lint 红线);`pip install .[recorder]` 瘦装可跑录制 |
 
@@ -314,7 +330,7 @@ class FixedGridSampler(Sampler):
 | 关注点 | 文件 |
 |--------|------|
 | 录制 + 丢数据路径 | `data/l2_recorder.py`、`data/exchange/{base,binance,coincheck}.py` |
-| L2 重建 + 采样 | `data/l2_reconstruct.py`、`features/realtime.py` |
+| L2 重建 + 采样 | `data/l2_reconstruct.py`、`data/sampling.py`(P3)、`features/realtime.py` |
 | 参考撮合器(主线) | `simulation/maker_broker.py`、`simulation/backtest_alpha.py` |
 | 撮合 numba 内核(保留) | `backtest/orderbook.py`、`backtest/symbol_spec.py` |
 | naive 撮合(待删) | `backtest/broker.py`、`backtest/backtest.py` |
