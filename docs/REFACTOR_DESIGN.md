@@ -375,7 +375,7 @@ pytest.ini     # testpaths = tests + calibration/tests;排除 tools/research 的
 recorder 因 P1 已稳定先迁:`conftest.py` + `pytest.ini` 地基就位;
 `tests/recorder/` 含 5 个测试(WAL/落盘止血/REST 重拉/对齐熔断/健康检查,39 用例)
 + `README.md`(逐测试列出保证项,作模块入口)。bare `pytest` 现干净
-(testpaths 排除了 `tools/test_um_aggtrade_ws.py` 这类 live-WS 探针)。
+(testpaths 排除了 `scripts/ops/test_um_aggtrade_ws.py` 这类 live-WS 探针)。
 
 ### 9.3 收尾(已完成 2026-05-26)
 

@@ -57,7 +57,7 @@ enforced by `tests/test_layering.py`; `contracts` is a bottom layer alongside `c
 | recorder | `recorder/` | live capture + historical ingest + curation: `l2_recorder`, `wal`, `exchange/`, `historical/`, `download`, `daily_compactor`, `validator`, `cloud_sync`, … | pandas/pyarrow/websockets |
 | analytics | `analytics/` | `l2_reconstruct`, `sampling`, `segmented_replay`, `features/`, `simulation/`, `calibration/`, `gui/` | +lightgbm/torch/streamlit |
 
-Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `tools/`, `scripts/`, `research/` (analyst scratch + nyx cache-build tooling, non-package), `main.py`.
+Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `main.py`, and `scripts/` — the single non-package script area: `scripts/ops/` (recorder/ops probes + diagnostics), `scripts/research/` (analyst scratch + nyx cache-build tooling), `scripts/submit/` (HPC job files). Not collected by pytest, not layer-checked.
 echo/nyx import `narci.contracts.*` / `narci.analytics.*` / `narci.recorder.*` — see `docs/MIGRATION_P5_IMPORTS.md`.
 
 ### Entry Point

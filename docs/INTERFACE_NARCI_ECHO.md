@@ -946,7 +946,7 @@ commit 修正**。
 narci 仓库代码里 4 处独立引用 `AWS-SG` 才是 source of truth:
 
 - `features/realtime.py:334` — "BS recorder lives on AWS-SG, recording since..."
-- `tools/probe_um_endpoints.py:3,10` — "Run from AWS-SG host" / "AWS-SG egress blocked"
+- `scripts/ops/probe_um_endpoints.py:3,10` — "Run from AWS-SG host" / "AWS-SG egress blocked"
 - `calibration/tests/test_l2_recorder_refresh.py:202` — "out of recording 5h+ on AWS-SG 2026-05-09"
 - (narci-side memory `project_aws_sg_oom`,基于 0507 journalctl 实证)
 
