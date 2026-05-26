@@ -936,7 +936,7 @@ style realized y,所以**不需要**按 target_kind 切。ŷ 在 backtest 里只
   (见下 #4)
 
 **narci 可选 utility**(等 nyx 要时再做):
-- `narci.calibration.compute_reference_y(target_kind, cold_tier_handle, ts) -> float`
+- `narci.analytics.calibration.compute_reference_y(target_kind, cold_tier_handle, ts) -> float`
   集中实现 5 种 target_kind 的 reference y,nyx audit 脚本可复用,免得每个 audit
   脚本各自 reimplement
 - 不紧急。nyx 现在 audit 脚本已自给自足
@@ -981,7 +981,7 @@ narci 自己的 backtest 不读这个 sign(strategy 层的事),不受影响。
 
 #### narci 端工具提议(未来 RV3 binding ship)
 
-nyx §E 提议:`narci.simulation.MakerSimBroker.label_hypothetical_fill(sample_ts, side) -> float`
+nyx §E 提议:`narci.analytics.simulation.MakerSimBroker.label_hypothetical_fill(sample_ts, side) -> float`
 作为 RV3-style binding 的 official label generator。narci ack:**unhand**,等 nyx
 prototype 验证后再 spec。设计草稿:
 

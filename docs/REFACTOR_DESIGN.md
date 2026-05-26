@@ -264,7 +264,7 @@ class FixedGridSampler(Sampler):
 | **P3 采样抽象** | `data/sampling.py`:`Sampler`+`FixedGridSampler`(抽全局网格,行为保持)+`EventSampler`+`make_sampler`;`process_dataframe` 接入。realtime 节流不统一、mode_tag 写缓存延后(见 §4 痛点1 修正) | 1 | P2 | 238 passed/0 failed;interval=100 与显式 sampler 逐行等价 ✅ 已完成 |
 | **P4 撮合收敛** | 删 GUI 回测面板+三引擎+naive broker+orderbook+venue_registry+strategy+example+build-cache+feature_builder+_cache;撮合内核唯一=MakerSimBroker(零代码改动,纯删除) | 2(+4A) | P3 | 238 passed/0 failed;11 模块 import OK;backtest/ 仅剩 symbol_spec ✅ 已完成 |
 | **P4.5 测试提升** | 测试从 `calibration/tests/` 提升为顶层 `tests/<module>/`,按模块组织,作为"读懂模块+稳健性"入口(见 §9)。recorder 先行(P1 已稳定);其余随 P4/P5 迁 | 测试体系 | recorder 部分**已起步** | 根 `conftest.py`+`pytest.ini`;`tests/recorder/`(39 测试+README)绿;bare `pytest` 干净 |
-| **P5 包边界化** | 逻辑边界(已做):`tests/test_layering.py` import-lint + `requirements{,-research}.txt` 依赖隔离。物理移动到 `narci/` 子包**可选、默认不做**(见 §8.3) | 模块拆分 | P4 | 分层零违规;recorder 运行时不背 analytics 重依赖 ✅ 逻辑边界已完成 |
+| **P5 包边界化** | **全量物理分层**:顶级目录重组为 `core/ contracts/ recorder/ analytics/` 四层(契约 schema/manifest/features 全拆入 contracts);import-lint + 依赖隔离。跨仓 import 路径变更见 `docs/MIGRATION_P5_IMPORTS.md` | 模块拆分 | P4 | 240 passed/0 failed;layering 零违规;echo/nyx 迁移清单 + INTERFACE 文档已出 ✅ 已完成(待 echo/nyx 同步 import) |
 
 > 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
 
@@ -338,12 +338,16 @@ class FixedGridSampler(Sampler):
 > data/_config)迁入 `core/`,空壳 `backtest/` 删除;`reco/` 子项目从仓库根
 > 迁入 `deploy/reco/`。recorder/analytics 仍按 §8.2 逻辑分层(未物理移动)。
 
-**(b) 物理移动 recorder/analytics 到 `narci/` 子包 — 可选,默认不做**:
-把目录搬进 `narci/` 子包、重写全仓 import,只换来"import 路径上肉眼可见分层"的
-观感,却要付:几百处 import 重写 + 动 `deploy/entrypoint.sh`/`supervisord.conf`/
-docker/`server-aliases.sh`(**碰生产路径**)。对单人仓,逻辑边界已够;物理移动
-留作以后真要拆仓时再机械执行。**§8.2 的目标三层表此时降级为 import-lint 的
-层成员定义,而非物理目录。**
+**(b) 全量物理分层 — 已执行(2026-05-26,用户拍板"路径可改、一次到位")**:
+顶级目录重组为四层真目录 `core/ contracts/ recorder/ analytics/`(契约 schema/
+manifest/features **全拆**入 contracts;data/ 整体拆为 recorder/ + analytics 的
+l2_reconstruct/sampling)。分四个 commit(Stage1 contracts → 2 analytics →
+3 recorder → 4 docs),每阶段独立绿。被 echo/nyx vendored import 的文件用
+`narci.` 双路径;契约符号经 contracts 重定位。**这是跨仓 breaking change**:
+echo/nyx 的 `narci.{calibration,features,simulation,data}.*` import 路径需按
+`docs/MIGRATION_P5_IMPORTS.md` 同步替换(narci 侧已全绿,无法验证 echo/nyx)。
+注:目录在仓库根而非 `narci/` 子包下,vendored 时父目录即 `narci`,
+`narci.core/contracts/recorder/analytics` 自然解析。
 
 ### 8.4 前置
 

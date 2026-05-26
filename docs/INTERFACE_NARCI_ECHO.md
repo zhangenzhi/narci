@@ -1376,7 +1376,7 @@ hour 时做即可。
 narci ship 后,echo 跑:
 
 ```python
-from narci.simulation.backtest_alpha import backtest_alpha_model
+from narci.analytics.simulation.backtest_alpha import backtest_alpha_model
 r = backtest_alpha_model(
     model_path="<v9_eth_midy_36 path>",
     days=["20260517"],
@@ -1417,7 +1417,7 @@ prune)。
 - ✗ **CC / bitbank / GMO / bitFlyer** 不 OK(它们发 full top-N
   snapshot,disappeared level 没显式 delete)
 
-`narci.data.l2_reconstruct.L2Reconstructor.apply_event` (line 257-258)
+`narci.analytics.l2_reconstruct.L2Reconstructor.apply_event` (line 257-258)
 做了 *"atomically replace bid book"* on new snapshot ts —— 正确。
 
 echo `engine.book` (`echo/execution/live_engine.py:67`) 用 Orderbook,
@@ -1576,7 +1576,7 @@ nyx 在 ship 新 binding 家族(v10 family、新 venue、新 target...)时,canon
 narci ship 后,echo 跑:
 
 ```python
-from narci.calibration.alpha_models import load_alpha_model
+from narci.analytics.calibration.alpha_models import load_alpha_model
 m = load_alpha_model(".../v9_bj_midy_36",
                      allow_features_version_mismatch=True)
 # 期望: no ValueError on target_kind or sampling_mode

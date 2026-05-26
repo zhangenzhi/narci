@@ -45,6 +45,21 @@ docker compose up -d
 
 ## Architecture
 
+### Top-level layout (4-layer, P5)
+
+The codebase is organized into four physical layers (`core < recorder < analytics`,
+enforced by `tests/test_layering.py`; `contracts` is a bottom layer alongside `core`):
+
+| Layer | Dir | Role | Heavy deps |
+|---|---|---|---|
+| core | `core/` | shared utils: `io` (parquet, atomic write), `config` (YAML), `symbol_spec` | none |
+| contracts | `contracts/` | **published API to echo/nyx**: `schema` (event DTOs), `manifest` (nyx model contract), `features` (FEATURE_NAMES/version) | none |
+| recorder | `recorder/` | live capture + historical ingest + curation: `l2_recorder`, `wal`, `exchange/`, `historical/`, `download`, `daily_compactor`, `validator`, `cloud_sync`, … | pandas/pyarrow/websockets |
+| analytics | `analytics/` | `l2_reconstruct`, `sampling`, `features/`, `simulation/`, `calibration/`, `research/`, `gui/` | +lightgbm/torch/streamlit |
+
+Also: `configs/`, `deploy/` (incl. `reco/`), `docs/`, `tests/`, `tools/`, `scripts/`, `main.py`.
+echo/nyx import `narci.contracts.*` / `narci.analytics.*` / `narci.recorder.*` — see `docs/MIGRATION_P5_IMPORTS.md`.
+
 ### Entry Point
 
 `main.py` — CLI dispatcher with subcommands: `gui`, `record`, `compact`, `cloud-sync`, `download`, `tardis`, `merge`.
@@ -61,7 +76,7 @@ Cross-layer shared primitives with no business dependencies (the bottom of the
 (`calibration/schema.py` + the `SAMPLING_MODES`/`FEATURE_NAMES` constants are also
 core-layer logically but still live in their packages.)
 
-### Exchange Adapter Layer (`data/exchange/`)
+### Exchange Adapter Layer (`recorder/exchange/`)
 
 Abstracts exchange-specific details so the recorder, downloader, and validator are exchange-neutral.
 
@@ -70,7 +85,7 @@ Abstracts exchange-specific details so the recorder, downloader, and validator a
 - `coincheck.py` — `CoincheckAdapter`. Spot only. No update-id alignment; uses REST `/api/order_books` for initial snapshot then consumes diff via WS channels `{pair}-orderbook` and `{pair}-trades`. **Trade messages are list-of-lists** (`[[ts_s, id, pair, rate, amount, type, ...], ...]`) — a single WS frame can carry multiple trades.
 - `__init__.py` — `get_adapter(name, market_type=..., **kwargs)` factory.
 
-### Historical Source Layer (`data/historical/`)
+### Historical Source Layer (`recorder/historical/`)
 
 Unified interface for offline historical data downloading.
 
@@ -78,20 +93,23 @@ Unified interface for offline historical data downloading.
 - `binance_vision.py` — `BinanceVisionSource`. Downloads ZIP from `data.binance.vision`, converts to parquet, validates via official `.CHECKSUM` (MD5).
 - `tardis.py` — `TardisSource`. Supports L2 depth (snapshot + diff) and aggTrades; works for both Binance and Coincheck. Direct output in Narci 4-column format.
 
-### Data Pipeline (`data/`)
+### Data Pipeline (`recorder/`)
 
-- `l2_recorder.py` — `L2Recorder`. Exchange-neutral; delegates all exchange specifics to its `ExchangeAdapter`. **Crash-safe via segment WAL (`data/wal.py`)**: events stream into a per-symbol in-memory micro-buffer that `wal_loop` atomically flushes (`.tmp`→`os.replace`) to small `.segwal` segments every `wal_flush_interval_sec` (default 2s); `save_loop` every `save_interval_sec` merges a symbol's segments into one self-contained `{SYMBOL}_RAW_*.parquet` (with an injected side=3/4 snapshot) and deletes the segments. Hard-crash loss window is thus ~seconds, not one save interval; `recover_orphans()` on startup merges any leftover segments. WAL lives in a sibling `replay_buffer/wal/` tree with a `.segwal` extension so it's invisible to all `*.parquet`/`*_RAW_*` scanners (GUI, compactor, main). Circuit-breaker flushes the WAL before `os._exit`. Graceful shutdown via `asyncio.Event`.
-- `l2_reconstruct.py` — `L2Reconstructor`. Rebuilds L2 orderbook from raw parquet files. The sampling decision ("when to emit a feature row") is delegated to a `Sampler` (see `sampling.py`); `process_dataframe(sample_interval_ms=…)` stays back-compatible.
-- `sampling.py` — `Sampler` ABC + `FixedGridSampler` (global-aligned time grid; `1000ms`≡`1s_grid`) + `EventSampler` (event_at_* modes) + `make_sampler()`. The reproducibility-critical global grid; distinct from `features/realtime`'s relative perf-throttle (`metric_sample_interval_ms`), which is left as-is.
+- `l2_recorder.py` — `L2Recorder`. Exchange-neutral; delegates all exchange specifics to its `ExchangeAdapter`. **Crash-safe via segment WAL (`recorder/wal.py`)**: events stream into a per-symbol in-memory micro-buffer that `wal_loop` atomically flushes (`.tmp`→`os.replace`) to small `.segwal` segments every `wal_flush_interval_sec` (default 2s); `save_loop` every `save_interval_sec` merges a symbol's segments into one self-contained `{SYMBOL}_RAW_*.parquet` (with an injected side=3/4 snapshot) and deletes the segments. Hard-crash loss window is thus ~seconds, not one save interval; `recover_orphans()` on startup merges any leftover segments. WAL lives in a sibling `replay_buffer/wal/` tree with a `.segwal` extension so it's invisible to all `*.parquet`/`*_RAW_*` scanners (GUI, compactor, main). Circuit-breaker flushes the WAL before `os._exit`. Graceful shutdown via `asyncio.Event`.
 - `daily_compactor.py` — `DailyCompactor`. Exchange-neutral: accepts an optional `HistoricalSource` for cross-validation. Coincheck / exchanges without official archives skip validation gracefully.
 - `cloud_sync.py` — Independent `CloudSyncDaemon` for rclone-based Google Drive push.
 - `download.py` — `HistoricalDownloader`. Delegates to any registered `HistoricalSource`.
 - `validator.py` — `DataValidator`. Exchange-neutral DataFrame business-rule checks.
-- (Shared parquet-IO / config loaders moved to `core/` — see Core Layer above.)
-- The online feature builder is `features/realtime.py` (`FeatureBuilder`, `FEATURES_VERSION`-pinned, 38-feature v6) — consumed by simulation/calibration/research.
+- (Shared parquet-IO / config loaders are in `core/`; see Core Layer above.)
+
+### Analytics Layer (`analytics/`)
+
+- `l2_reconstruct.py` — `L2Reconstructor`. Rebuilds L2 orderbook from raw parquet files. The sampling decision ("when to emit a feature row") is delegated to a `Sampler` (see `sampling.py`); `process_dataframe(sample_interval_ms=…)` stays back-compatible.
+- `sampling.py` — `Sampler` ABC + `FixedGridSampler` (global-aligned time grid; `1000ms`≡`1s_grid`) + `EventSampler` + `make_sampler()`. Distinct from `analytics/features/realtime`'s relative perf-throttle (`metric_sample_interval_ms`), left as-is.
+- `features/realtime.py` — `FeatureBuilder` (online, `FEATURES_VERSION`-pinned, 38-feature v6). `FEATURE_NAMES`/`FEATURES_VERSION` live in `contracts/features.py` (re-exported here). Consumed by simulation/calibration/research + nyx/echo.
 - `tardis_downloader.py` / `format_converter.py` — Tardis.dev + Binance Vision merging pipeline for historical L2 reconstruction.
 
-### Backtesting / Matching (`simulation/` + `calibration/`)
+### Backtesting / Matching (`analytics/simulation/` + `analytics/calibration/`)
 
 The single matching engine is `simulation/maker_broker.py` `MakerSimBroker` — a
 maker-order simulator (FIFO queue-ahead, price-penetration fills, post-only,
@@ -106,7 +124,7 @@ was removed in P4 (legacy `BacktestEngine`/`JitBacktestEngine`/`EventBacktestEng
 + naive `broker.py` + `orderbook.py`/`venue_registry.py`/`strategy.py`, plus the
 `build-cache` CLI and `data/feature_builder.py`). See `docs/REFACTOR_DESIGN.md`.
 
-### GUI (`gui/`)
+### GUI (`analytics/gui/`)
 
 Streamlit dashboard with 4 tabs (L1 行情 / L2 盘口洞察 / 冷数据仓库 / 系统设置).
 Panels auto-discover `realtime/{exchange}/{market}/l2/` directories (falls back to
