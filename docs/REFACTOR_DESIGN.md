@@ -243,8 +243,9 @@ class FixedGridSampler(Sampler):
 | ~~P2 FeatureBuilder 合并~~ | 核实非重复,改为随 P4 删 backtest/ 退役 `data/feature_builder.py`(见 §4 痛点4A) | 4(A) | → P4 | — |
 | **P3 采样抽象** | `Sampler` 抽象 + `FixedGridSampler`;两处网格逻辑收敛;mode_tag 写缓存元数据;对齐 `SAMPLING_MODES` | 1 | P2 | 缓存与 manifest sampling_mode 可校验;事件型采样接口预留 |
 | **P4 撮合收敛** | 撮合内核唯一化;**删** GUI 回测面板 + naive broker + 三遗留引擎;venue→撮合矩阵落地 | 2(+4A) | P3 | 校准对账 verdict 不退化;backtest/ 仅剩 orderbook/symbol_spec/venue_registry |
+| **P5 包边界化** | 同仓内重组为 `core/recorder/analytics` 三层包 + 依赖 extras + import-lint(见 §8) | 模块拆分 | **P4** | recorder 不 import analytics(lint 红线);`pip install .[recorder]` 瘦装可跑录制 |
 
-> 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
+> 排序理由:P1 最危险且最独立(数据是一切的根),先做止血;P2 清底座让后续改动安全;P3 是你点名的主方向;P4 依赖 P2/P3 的干净底座与采样抽象;P5 必须在 P4 之后 —— 等 backtest/ 删除、feature_builder 定性后边界才无模糊地带。如需提前主方向,P3 可与 P1 并行(两者不冲突),但 P2 必须在 P4 前。
 
 ---
 
@@ -272,6 +273,42 @@ class FixedGridSampler(Sampler):
 
 ---
 
+## 8. P5 — 模块边界化(录制 vs 分析)
+
+**背景**:是否把 narci 拆成"录制 + 回测"两块。核查结论:
+
+- **依赖已是干净单向**:录制侧(`l2_recorder` + `exchange`)**不 import** 任何 backtest/simulation/calibration/features;反向才有依赖。接缝天然存在。
+- **`requirements.txt` 只有 pandas/pyarrow/websockets**:torch/lightgbm/numba/streamlit 全是惰性 import,**录制容器已经很瘦**——"容器别背重依赖"这个动机已被惰性 import 解决大半。
+- **真正是三层,不是两层**;且第二层叫"backtest"会误导(`backtest/` 目录是 P4 要删的遗留物,真正的分析层是 calibration+simulation+features)。
+
+### 8.1 决策
+
+**同仓内三层包边界 + 依赖 extras + import-lint;不拆两个 git 仓。**
+
+动机是"职责清晰 + 降爆炸半径 + 依赖隔离" —— 这三者**包边界即可全部满足**;只有"独立发版 / 独立 CI / 不同人维护"才需要拆仓,而那不是当前动机。拆仓还会把"改 4 列格式"这类跨层改动变成跨仓协调,对小团队是净负担。**可逆**:边界跑顺后真要拆仓只是机械搬运。
+
+### 8.2 目标三层
+
+| 层 | 依赖画像 | 代表成员 |
+|----|---------|---------|
+| `narci/core` | 极轻(纯常量/dataclass) | 4 列格式常量、adapter side 编码 ABC、`schema.py`(echo 契约)、`SAMPLING_MODES`/`TARGET_KINDS`/`FEATURE_NAMES`(nyx 契约)、`_io`/`_config`/`_cache` |
+| `narci/recorder` | pandas/pyarrow/websockets/requests | `l2_recorder`、`wal`、`exchange/*`、`cloud_sync`、`healthcheck`、`live_publisher`、`historical/*`、`download`、`backfill_*`、`daily_compactor`、`validator`、`sanity_gate` |
+| `narci/analytics` | + numpy/numba/lightgbm/torch/streamlit | `l2_reconstruct`、`features/*`、`simulation/*`、`calibration/*`(除 schema→core)、`research/*`、`gui/*` |
+
+**模糊地带裁定**:`l2_reconstruct` 归 analytics(录制器只抓 raw、不重建);契约常量(schema/采样模式/特征名)归 core;数据策展(compactor/validator/sanity_gate/backfill)归 recorder。
+
+### 8.3 机制
+
+- **import-lint**:一个 pytest 用例扫 AST,断言 `narci/recorder` 与 `narci/core` 不出现对 `narci/analytics` 的 import(红线)。零新依赖。
+- **依赖 extras**:`pyproject` 提供 `[recorder]`(瘦)与 `[research]`(全),`pip install .[recorder]` 即可只装录制依赖。
+- **校准测试里 import `L2Recorder`/`wal` 的是测试**(非生产分析代码)——可移到 recorder 包的测试或用 core 暴露的接口,P5 时清理。
+
+### 8.4 前置
+
+必须在 **P4 之后**:`backtest/` 删除、`feature_builder`/`build-cache` 定性后,recorder↔analytics 边界才无模糊地带,搬运才机械、低风险。
+
+---
+
 ## 附:关键文件索引
 
 | 关注点 | 文件 |
@@ -283,4 +320,4 @@ class FixedGridSampler(Sampler):
 | naive 撮合(待删) | `backtest/broker.py`、`backtest/backtest.py` |
 | 契约 | `calibration/{schema,alpha_models,priors,writers}.py` |
 | 校准对账门禁 | `calibration/replay.py` |
-| 遗留特征(待合并) | `data/feature_builder.py` |
+| 遗留特征(随 P4 退役,非合并) | `data/feature_builder.py` |
