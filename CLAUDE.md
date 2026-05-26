@@ -71,13 +71,14 @@ Unified interface for offline historical data downloading.
 
 ### Data Pipeline (`data/`)
 
-- `l2_recorder.py` — `L2Recorder` (alias `BinanceL2Recorder` kept for back-compat). Exchange-neutral; delegates all exchange specifics to its `ExchangeAdapter`. **Crash-safe via segment WAL (`data/wal.py`)**: events stream into a per-symbol in-memory micro-buffer that `wal_loop` atomically flushes (`.tmp`→`os.replace`) to small `.segwal` segments every `wal_flush_interval_sec` (default 2s); `save_loop` every `save_interval_sec` merges a symbol's segments into one self-contained `{SYMBOL}_RAW_*.parquet` (with an injected side=3/4 snapshot) and deletes the segments. Hard-crash loss window is thus ~seconds, not one save interval; `recover_orphans()` on startup merges any leftover segments. WAL lives in a sibling `replay_buffer/wal/` tree with a `.segwal` extension so it's invisible to all `*.parquet`/`*_RAW_*` scanners (GUI, compactor, main). Circuit-breaker flushes the WAL before `os._exit`. Graceful shutdown via `asyncio.Event`.
+- `l2_recorder.py` — `L2Recorder`. Exchange-neutral; delegates all exchange specifics to its `ExchangeAdapter`. **Crash-safe via segment WAL (`data/wal.py`)**: events stream into a per-symbol in-memory micro-buffer that `wal_loop` atomically flushes (`.tmp`→`os.replace`) to small `.segwal` segments every `wal_flush_interval_sec` (default 2s); `save_loop` every `save_interval_sec` merges a symbol's segments into one self-contained `{SYMBOL}_RAW_*.parquet` (with an injected side=3/4 snapshot) and deletes the segments. Hard-crash loss window is thus ~seconds, not one save interval; `recover_orphans()` on startup merges any leftover segments. WAL lives in a sibling `replay_buffer/wal/` tree with a `.segwal` extension so it's invisible to all `*.parquet`/`*_RAW_*` scanners (GUI, compactor, main). Circuit-breaker flushes the WAL before `os._exit`. Graceful shutdown via `asyncio.Event`.
 - `l2_reconstruct.py` — `L2Reconstructor`. Rebuilds L2 orderbook from raw parquet files.
 - `daily_compactor.py` — `DailyCompactor`. Exchange-neutral: accepts an optional `HistoricalSource` for cross-validation. Coincheck / exchanges without official archives skip validation gracefully.
 - `feature_builder.py` — `FeatureBuilder`. Offline + online alpha feature modes.
 - `cloud_sync.py` — Independent `CloudSyncDaemon` for rclone-based Google Drive push.
-- `download.py` — `HistoricalDownloader` (alias `BinanceDownloader`). Delegates to any registered `HistoricalSource`.
-- `validator.py` — `DataValidator` (alias `BinanceDataValidator`). Exchange-neutral DataFrame business-rule checks.
+- `download.py` — `HistoricalDownloader`. Delegates to any registered `HistoricalSource`.
+- `validator.py` — `DataValidator`. Exchange-neutral DataFrame business-rule checks.
+- `_io.py` / `_config.py` / `_cache.py` — shared data-module utilities (single source for parquet read/write incl. atomic write, YAML section loading, derived-cache hashing).
 - `tardis_downloader.py` / `format_converter.py` — Tardis.dev + Binance Vision merging pipeline for historical L2 reconstruction.
 
 ### Backtesting (`backtest/`)

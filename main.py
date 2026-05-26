@@ -5,8 +5,9 @@ import re
 import asyncio
 import subprocess
 import time
-import hashlib
 from datetime import datetime
+
+from data._cache import compute_cache_hash
 
 # 确保能正确引入内部模块
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,8 +22,8 @@ def cmd_gui():
 
 def cmd_record(config_path, symbol):
     """启动 WebSocket L2 高频录制器"""
-    from data.l2_recorder import BinanceL2Recorder
-    recorder = BinanceL2Recorder(config_path=config_path, symbol=symbol)
+    from data.l2_recorder import L2Recorder
+    recorder = L2Recorder(config_path=config_path, symbol=symbol)
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
@@ -279,9 +280,8 @@ def cmd_build_cache(market_type, symbol, base_dir):
         print(f"⚠️ 没有找到 {market_type} 市场下 {symbol} 的 RAW 数据文件。请先运行 record 收集数据。")
         return
 
-    # 哈希计算对齐 UI 保证命中率
-    file_names = "".join(sorted([os.path.basename(p) for p in raw_files]))
-    hash_str = hashlib.md5(file_names.encode('utf-8')).hexdigest()[:8]
+    # 哈希计算对齐 UI 保证命中率(逻辑统一在 data._cache)
+    hash_str = compute_cache_hash(raw_files)
     symbol_prefix = symbol if symbol != "ALL" else "MIXED"
     cache_filename = f"{symbol_prefix}_100ms_merged_{hash_str}.parquet"
     cache_file_path = os.path.join(cache_dir, cache_filename)
@@ -380,8 +380,8 @@ def main():
         daemon = CloudSyncDaemon(local_dir=args.local_dir, remote=args.remote, interval=args.interval)
         daemon.run()
     elif args.command == "download":
-        from data.download import BinanceDownloader
-        downloader = BinanceDownloader(config_path=args.config)
+        from data.download import HistoricalDownloader
+        downloader = HistoricalDownloader(config_path=args.config)
         downloader.run()
     elif args.command == "build-cache":
         cmd_build_cache(args.market, args.symbol, args.dir)

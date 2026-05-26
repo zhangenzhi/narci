@@ -117,10 +117,6 @@ class HistoricalDownloader:
                     print(f"💥 线程异常: {e}")
 
 
-# 向后兼容别名
-BinanceDownloader = HistoricalDownloader
-
-
 if __name__ == "__main__":
     dl = HistoricalDownloader()
     try:

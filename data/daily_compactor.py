@@ -23,6 +23,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from data.historical import HistoricalSource
+from data._io import save_parquet, load_parquet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("DailyCompactor")
@@ -131,7 +132,7 @@ class DailyCompactor:
         table = ds.dataset(good_files, format="parquet").to_table()
         df = table.to_pandas()
         df = df.sort_values(by=["timestamp", "side"], ascending=[True, False]).reset_index(drop=True)
-        df.to_parquet(self.daily_file_path, index=False)
+        save_parquet(df, self.daily_file_path)
         logger.info(f"✅ 聚合完成: {len(df):,} 行 -> {self.daily_file_path}")
         return True
 
@@ -179,11 +180,11 @@ class DailyCompactor:
 
         logger.info(f"🔍 交叉验证 {self.symbol} {self.date_str_dash}")
 
-        df_l2 = pd.read_parquet(self.daily_file_path)
+        df_l2 = load_parquet(self.daily_file_path)
         df_local = df_l2[df_l2["side"] == 2].copy()
         df_local["quantity"] = df_local["quantity"].abs()
 
-        df_official = pd.read_parquet(official_path)
+        df_official = load_parquet(official_path)
 
         local_count, local_vol = len(df_local), df_local["quantity"].sum()
         official_count, official_vol = len(df_official), df_official["quantity"].sum()

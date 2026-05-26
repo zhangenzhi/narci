@@ -204,7 +204,14 @@ class FixedGridSampler(Sampler):
 
 ### 痛点 4:文件冗余 / 可维护性(贯穿)
 
-**A. 三套栈 → 一套**(见 §2 裁决):删 `backtest/` 三引擎 + naive broker;合并两个 `FeatureBuilder` 到 `features/realtime.py`,删 `data/feature_builder.py`(调用方 main.py build-cache、backtest 改道)。
+**A. 三套栈 → 一套**(见 §2 裁决):删 `backtest/` 三引擎 + naive broker。
+
+> 关于"两个 FeatureBuilder":P2 实施时核实它们**不是重复、无法合并** ——
+> `data/feature_builder.py` 是遗留的 `ema_imbalance/momentum/volatility` 辅助类
+> (无 `FEATURES_VERSION`),只被 `main.py build-cache` 和 `backtest/`(JitBacktestEngine)
+> 引用;`features/realtime.py` 是 v6 的 38 特征生产构建器。二者特征集与消费方都不同。
+> 因此 `data/feature_builder.py` 的归宿是**随 P4 删 backtest/ 栈一起退役**(不是合并),
+> 同时决定 `build-cache` CLI 命令的去留。P2 不动它,以免 break 现有 `build-cache`。
 
 **B. 抽取公共件**(消除复制粘贴):
 - `data/_io.py`:`save_parquet/load_parquet`(统一 pyarrow+snappy+index=False,现散在 10+ 处)。
@@ -232,7 +239,8 @@ class FixedGridSampler(Sampler):
 |------|------|------|------|------|
 | **P0 护栏** | 固定测试基线;冻结 §3 契约为显式测试;录一份 echo 会话作校准金标准;`FEATURE_NAMES`/`SAMPLING_MODES` 快照测试 | — | 无 | 全测试绿;校准 verdict 基线记录 |
 | **P1 录制稳健** | 段式 WAL + 定时合并(崩溃窗口→秒级);原子写;熔断前 flush;修未对齐落盘;不丢对齐后续事件;启动恢复残留段 | 3(+4C) | P0 | 回归测试(见痛点3);线上灰度单 symbol 后全量 | 
-| **P2 冗余底座** | 抽 `_io/_config/_cache`;统一 L2 重建入口;**合并两个 FeatureBuilder**;删别名/死代码 | 4(A/B/D) | P1 | 行数下降;`data/feature_builder.py` 删除;无行为变化(diff 测试) |
+| **P2 冗余底座** | 抽 `data/_io`(含原子写)`/_config/_cache` 并迁移 data/ 调用点;删 3 个别名 + 死 `apply_diff` | 4(B/D) | P1 | 228 passed/0 failed;14 模块 import OK;cache hash 逐字节等价 ✅ 已完成 |
+| ~~P2 FeatureBuilder 合并~~ | 核实非重复,改为随 P4 删 backtest/ 退役 `data/feature_builder.py`(见 §4 痛点4A) | 4(A) | → P4 | — |
 | **P3 采样抽象** | `Sampler` 抽象 + `FixedGridSampler`;两处网格逻辑收敛;mode_tag 写缓存元数据;对齐 `SAMPLING_MODES` | 1 | P2 | 缓存与 manifest sampling_mode 可校验;事件型采样接口预留 |
 | **P4 撮合收敛** | 撮合内核唯一化;**删** GUI 回测面板 + naive broker + 三遗留引擎;venue→撮合矩阵落地 | 2(+4A) | P3 | 校准对账 verdict 不退化;backtest/ 仅剩 orderbook/symbol_spec/venue_registry |
 

@@ -4,6 +4,8 @@ import operator
 import pandas as pd
 import numpy as np
 
+from data._io import load_parquet
+
 _ITEMGETTER_0 = operator.itemgetter(0)
 
 class L2Reconstructor:
@@ -67,17 +69,6 @@ class L2Reconstructor:
         # 用于聚合采样期间内的 L1 逐笔主动买卖成交量
         self.period_taker_buy_vol = 0.0
         self.period_taker_sell_vol = 0.0
-
-    def apply_diff(self, side, price, quantity):
-        """保留外部接口以维持兼容性，但在 process_dataframe 中已被 inline 展开以提升性能"""
-        target_map = self.bids if side in [0, 3] else self.asks
-        if quantity == 0:
-            target_map.pop(price, None)
-        else:
-            target_map[price] = quantity
-            
-        if side in [3, 4]:
-            self.is_ready = True
 
     def get_snapshot(self):
         """获取当前排好序的 Top N 深度视图"""
@@ -196,7 +187,7 @@ class L2Reconstructor:
         return pd.DataFrame(results)
 
     def generate_l2_dataset(self, file_path, sample_interval_ms=1000):
-        df = pd.read_parquet(file_path)
+        df = load_parquet(file_path)
         # 快照注入后确保排序规则不变：时间戳升序，side 降序 (确保 4,3 的快照最先处理)
         df = df.sort_values(by=['timestamp', 'side'], ascending=[True, False])
         return self.process_dataframe(df, sample_interval_ms)

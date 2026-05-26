@@ -18,6 +18,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .base import HistoricalSource
+from data._io import save_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,7 @@ class BinanceVisionSource(HistoricalSource):
                 with z.open(csv_name) as f:
                     df = self._parse_csv(f, data_type)
 
-            df.to_parquet(str(final_path), engine="pyarrow",
-                          compression="snappy", index=False)
+            save_parquet(df, str(final_path))
             return str(final_path)
         except Exception as e:
             if os.path.exists(str(final_path)):

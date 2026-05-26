@@ -26,10 +26,11 @@ import time
 from datetime import datetime
 
 import pandas as pd
-import yaml
 
 from data.exchange import get_adapter, ExchangeAdapter
 from data.wal import SegmentWAL, recover_orphans, write_parquet_atomic
+from data._config import load_config_section
+from data._io import load_parquet
 
 
 class _WalBuffer:
@@ -187,10 +188,7 @@ class L2Recorder:
 
     @staticmethod
     def _load_config(path: str) -> dict:
-        if not os.path.exists(path):
-            return {}
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f).get("recorder", {})
+        return load_config_section(path, "recorder")
 
     # ------------------------------------------------------------------ #
     # 快照初始化
@@ -483,7 +481,7 @@ class L2Recorder:
         纯文件 IO,不触碰任何被事件循环线程修改的状态(段已由 flush 写定;
         _buffer/_seq 只在循环线程里被 flush 改),故可安全丢进 to_thread。
         """
-        frames = [pd.read_parquet(p) for p in paths]
+        frames = [load_parquet(p) for p in paths]
         df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         write_parquet_atomic(df, raw_path, fsync=self.wal_fsync)
         return len(df)
@@ -706,10 +704,6 @@ class L2Recorder:
         print(f"\n🛑 收到信号 {sig.name}，执行安全关闭...")
         self.running = False
         self._shutdown_event.set()
-
-
-# 向后兼容的别名（保留旧名以不破坏外部引用）
-BinanceL2Recorder = L2Recorder
 
 
 if __name__ == "__main__":

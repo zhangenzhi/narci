@@ -25,6 +25,8 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from data._io import save_parquet
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +148,7 @@ class FormatConverter:
         df["price"] = df["price"].astype("float64")
         df["quantity"] = df["quantity"].astype("float64")
 
-        df.to_parquet(str(out_file), engine="pyarrow", compression="snappy", index=False)
+        save_parquet(df, str(out_file))
         logger.info(f"Merged {len(df)} records -> {out_file.name}")
 
         return str(out_file)

@@ -10,6 +10,8 @@ import re
 
 import pandas as pd
 
+from data._io import load_parquet
+
 
 class DataValidator:
     """通用 DataFrame 校验器。"""
@@ -95,7 +97,7 @@ class DataValidator:
             if not m:
                 continue
             try:
-                df = pd.read_parquet(file_path, engine="pyarrow")
+                df = load_parquet(file_path)
                 res = self.validate_dataframe(df, m.group(1))
                 status = "✅" if res["is_valid"] else "❌"
                 print(f"{status} {fname} | Rows: {res['stats']['row_count']}")
@@ -114,10 +116,6 @@ class DataValidator:
         print("=" * 50)
 
 
-# 向后兼容别名（已无 Binance 专属逻辑）
-BinanceDataValidator = DataValidator
-
-
 if __name__ == "__main__":
     import sys
     v = DataValidator()
@@ -128,7 +126,7 @@ if __name__ == "__main__":
         else:
             m = re.search(r"(\d{4}-\d{2}-\d{2})", target)
             if m:
-                df = pd.read_parquet(target)
+                df = load_parquet(target)
                 print(v.validate_dataframe(df, m.group(1)))
     else:
         print(f"路径不存在: {target}")

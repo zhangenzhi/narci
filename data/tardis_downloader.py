@@ -26,6 +26,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from data._io import save_parquet
+
 logger = logging.getLogger(__name__)
 
 
@@ -161,7 +163,7 @@ class TardisDownloader:
         df = pd.DataFrame(records, columns=["timestamp", "side", "price", "quantity"])
         df = df.sort_values("timestamp").reset_index(drop=True)
 
-        df.to_parquet(str(out_file), engine="pyarrow", compression="snappy", index=False)
+        save_parquet(df, str(out_file))
         logger.info(f"Saved {len(df)} records -> {out_file.name}")
 
         return str(out_file)

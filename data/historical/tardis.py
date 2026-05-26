@@ -17,6 +17,7 @@ import pandas as pd
 import requests
 
 from .base import HistoricalSource
+from data._io import save_parquet
 
 
 class TardisSource(HistoricalSource):
@@ -124,5 +125,5 @@ class TardisSource(HistoricalSource):
 
         df = pd.DataFrame(records, columns=["timestamp", "side", "price", "quantity"])
         df = df.sort_values("timestamp").reset_index(drop=True)
-        df.to_parquet(str(out_file), engine="pyarrow", compression="snappy", index=False)
+        save_parquet(df, str(out_file))
         return str(out_file)

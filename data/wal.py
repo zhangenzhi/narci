@@ -34,34 +34,12 @@ from datetime import datetime
 
 import pandas as pd
 
+# 原子写统一在 data/_io;此处 re-export 以不改既有 import
+# (l2_recorder 从 data.wal 导入 write_parquet_atomic)。
+from data._io import write_parquet_atomic, load_parquet
+
 DEFAULT_COLUMNS = ["timestamp", "side", "price", "quantity"]
 SEGMENT_SUFFIX = ".segwal"
-
-
-def write_parquet_atomic(df: pd.DataFrame, path: str, *, fsync: bool = True) -> None:
-    """把 DataFrame 原子地写到 ``path``。
-
-    写到同目录的 ``.tmp`` → fsync 文件 → ``os.replace``(同文件系统 rename
-    原子)→ fsync 目录(让 rename 本身落盘)。崩溃只会留下可丢弃的 ``.tmp``,
-    绝不产生半个有效的目标文件。这是录制器所有落盘(WAL 段、RAW、关停 flush)
-    的唯一写入口。
-    """
-    tmp = f"{path}.tmp"
-    df.to_parquet(tmp, engine="pyarrow", compression="snappy", index=False)
-    if fsync:
-        # 确保 tmp 内容落盘后再 rename,避免 rename 先于数据持久化。
-        fd = os.open(tmp, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    os.replace(tmp, path)
-    if fsync:
-        dir_fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
 
 
 class SegmentWAL:
@@ -123,7 +101,7 @@ class SegmentWAL:
         paths = self.segment_paths()
         if not paths:
             return None, []
-        frames = [pd.read_parquet(p) for p in paths]
+        frames = [load_parquet(p) for p in paths]
         df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         return df, paths
 
@@ -188,7 +166,7 @@ def recover_orphans(wal_dir: str, raw_dir: str, *, fsync: bool = True) -> list[s
         paths = _segment_paths(wal_dir, sym)
         if not paths:
             continue
-        frames = [pd.read_parquet(p) for p in paths]
+        frames = [load_parquet(p) for p in paths]
         df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         raw_path = os.path.join(raw_dir, f"{sym}_RAW_{ts_str}.parquet")
