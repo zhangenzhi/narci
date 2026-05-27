@@ -3,8 +3,10 @@ import os
 import sys
 
 # 动态添加项目根目录到 sys.path，保证可以引入其它模块
+# P5 后 dashboard.py 位于 analytics/gui/ 下，需上溯两级才是 repo root
+# (replay_buffer/ 所在、且 `from analytics.gui...` import 需要它在 path 上)。
 current_dir = os.path.dirname(os.path.abspath(__file__))
-root_dir = os.path.dirname(current_dir)
+root_dir = os.path.dirname(os.path.dirname(current_dir))
 if root_dir not in sys.path:
     sys.path.append(root_dir)
 
