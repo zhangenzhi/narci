@@ -54,6 +54,19 @@
       "Resource": "*"
     },
     {
+      "Sid": "CloudWatchPutDonorMetric",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "Narci/Donor"
+        }
+      }
+    },
+    {
       "Sid": "SecretsManagerRead",
       "Effect": "Allow",
       "Action": [
