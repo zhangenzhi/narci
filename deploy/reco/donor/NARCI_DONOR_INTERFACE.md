@@ -6,9 +6,13 @@ Donor 端 = 可以访问 Binance Vision 的机器,负责把 `data.binance.vision
 > **部署位置(2026-05,并入 reco/aws)**:donor 角色现归 narci-reco 子项目,
 > 预期跑在 **aws-sg(AWS Singapore EC2)** 上 —— 它已能上 Binance 且自带
 > rclone→gdrive(见 `deploy/reco/docs/TOPOLOGY.md`),无需单独的 Mac mini donor。
-> ⚠️ **Mac→Linux 适配**:`donor_loop.sh` 的 tmux 可换 systemd/cron;
-> `check_health.sh` 的 macOS `osascript` 通知在 linux 上是 no-op(已 `|| true`
-> 降级,FAIL 仍写状态文件)——aws-sg 上应改用 CloudWatch/SNS/日志告警。
+> **Mac→Linux 适配状态**:
+> - `check_health.sh` 已改 linux 版:`stat` 可移植(GNU/BSD)、tmux 判活在无 tmux
+>   时自动跳过(靠日志新鲜度)、告警发 **CloudWatch 指标 `Narci/Donor/DonorHealthy`**
+>   (1/0)。运维侧需:① aws-sg 实例 IAM 角色加 `cloudwatch:PutMetricData`;
+>   ② 建 CloudWatch Alarm(`DonorHealthy < 1` 或 missing-data breaching)→ SNS 寻呼。
+>   旧 Mac donor 上仍会额外发桌面通知(仅 Darwin)。
+> - `donor_loop.sh` 的 tmux 仍可按需换 systemd-timer/cron。
 
 ## Topology
 
