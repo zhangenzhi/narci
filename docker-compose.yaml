@@ -246,7 +246,7 @@ services:
     # entrypoint.sh 只识别 record/shell mode,publisher 直接 python -m。
     entrypoint: ["python"]
     command:
-      ["-m", "data.event_publisher", "--config",
+      ["-m", "recorder.event_publisher", "--config",
        "/app/configs/event_publisher.yaml"]
     volumes:
       - ./configs:/app/configs:ro
