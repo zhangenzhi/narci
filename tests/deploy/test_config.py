@@ -9,6 +9,8 @@ import json
 import configparser
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = REPO / "deploy"
 
@@ -97,6 +99,55 @@ def test_iam_secrets_scoped_not_wildcard():
             res_list = res if isinstance(res, list) else [res]
             assert all(r != "*" for r in res_list), "secrets 不应 Resource:*"
             assert any("secret:narci/" in r for r in res_list), "secrets 应限 narci/* 前缀"
+
+
+def test_iam_cloudwatch_put_present_and_namespace_scoped():
+    """donor check_health.sh 发 Narci/Donor/DonorHealthy 需 PutMetricData。
+
+    部署阻塞守卫(2026-05-27,见 docs/INTERFACE_NARCI_RECO.md #3):
+    - **必须存在**:缺了 donor 的 put-metric-data 静默 no-op → Alarm 拿不到数据,
+      donor 挂了没人知道。
+    - **必须 namespace 收窄**:PutMetricData 不支持 resource 级限制,只能用
+      cloudwatch:namespace 条件键限到 Narci/Donor,否则等于全账户随便发指标。
+    """
+    p = _iam()
+    put_stmts = [
+        st for st in p["Statement"]
+        if "cloudwatch:PutMetricData" in (
+            st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+        )
+    ]
+    assert put_stmts, "IAM 缺 cloudwatch:PutMetricData → donor 心跳指标发不出去"
+    for st in put_stmts:
+        cond = st.get("Condition", {})
+        ns = cond.get("StringEquals", {}).get("cloudwatch:namespace")
+        assert ns == "Narci/Donor", \
+            f"PutMetricData 语句 {st.get('Sid')} 未用 namespace 条件收窄到 Narci/Donor"
+
+
+# ===================== cloud-sync(rclone sidecar / WAL 隔离)===================== #
+
+def _cloud_sync_script() -> str:
+    """提取 docker-compose cloud-sync 服务的 sh 脚本(command: [-c, <script>])。"""
+    compose = yaml.safe_load((REPO / "docker-compose.yaml").read_text())
+    cmd = compose["services"]["cloud-sync"]["command"]
+    # 形如 ["-c", "<多行脚本>"];取脚本体
+    return cmd[cmd.index("-c") + 1]
+
+
+def test_cloud_sync_excludes_wal_tree():
+    """rclone copy /data 必须排除 wal/**(段式 WAL 中间态,不该上 gdrive)。
+
+    部署阻塞守卫(2026-05-27,见 docs/INTERFACE_NARCI_RECO.md #1):sidecar copy 的是
+    整个 replay_buffer 根(/data),replay_buffer/wal/*.segwal 是 realtime/ 的平级
+    兄弟。少了 --exclude 'wal/**' 就会把秒级短命段 + .tmp 整盘推上远端 → 浪费传输 +
+    污染 gdrive。段被 save_loop 合并成 RAW_*.parquet 后即删,远端只该有最终 parquet。
+    """
+    script = _cloud_sync_script()
+    assert "rclone copy /data" in script, "cloud-sync 应整盘 copy /data(改了请同步本测试)"
+    copy_idx = script.index("rclone copy /data")
+    tail = script[copy_idx:]
+    assert "--exclude 'wal/**'" in tail, "cloud-sync 缺 --exclude 'wal/**' → WAL 段会被推上远端"
 
 
 # ============================ supervisord ============================ #
