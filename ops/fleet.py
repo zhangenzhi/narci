@@ -249,6 +249,60 @@ def classify_cold(rows: list[dict], today_yyyymmdd: str,
     return sorted(out, key=lambda r: (order.get(r["status"], 9), r["exchange"], r["market"]))
 
 
+_CS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+\[cloud-sync\]\s+(syncing|done \(rc=(-?\d+)\))")
+
+
+def parse_cloudsync(text: str, now: float | None = None) -> dict:
+    """###CLOUDSYNC### 段(cloud-sync 容器日志)→ 推送腿健康摘要。
+
+    日志成对:`<ts> [cloud-sync] syncing...` → `<ts> [cloud-sync] done (rc=N)`。
+    rc=0 成功 / rc=124 超时(2026-05-21 那类卡死)/ 其它=rclone 错。
+    """
+    import datetime as _dt
+    now = time.time() if now is None else now
+    ev = []
+    for line in text.splitlines():
+        m = _CS_RE.match(line.strip())
+        if not m:
+            continue
+        ts = (_dt.datetime.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S")
+              .replace(tzinfo=_dt.timezone.utc).timestamp())
+        ev.append((ts, "done", int(m.group(3))) if m.group(2).startswith("done")
+                  else (ts, "syncing", None))
+    cycles, start = [], None
+    for ts, kind, rc in ev:
+        if kind == "syncing":
+            start = ts
+        elif start is not None:
+            cycles.append({"start": start, "end": ts, "rc": rc, "dur_sec": round(ts - start, 1)})
+            start = None
+    last = cycles[-1] if cycles else None
+    return {
+        "n_cycles": len(cycles),
+        "last_rc": last["rc"] if last else None,
+        "last_done_age": round(now - last["end"], 1) if last else None,
+        "last_dur_sec": last["dur_sec"] if last else None,
+        "recent_rcs": [c["rc"] for c in cycles[-5:]],
+        "in_progress": bool(ev and ev[-1][1] == "syncing"),
+    }
+
+
+def cloudsync_health(summ: dict, stale_sec: int = 3600) -> str:
+    """推送腿健康:ok | bad(超时/错误)| stale(太久没成功)| unknown。"""
+    rc = summ.get("last_rc")
+    age = summ.get("last_done_age")
+    if rc is None and not summ.get("in_progress"):
+        return "unknown"
+    if rc == 124:
+        return "bad"                 # rclone 超时被强杀 → 推送卡住
+    if rc not in (0, None):
+        return "bad"                 # rclone 其它错
+    if age is not None and age > stale_sec and not summ.get("in_progress"):
+        return "stale"               # 上次成功太久前,且现在没在跑
+    return "ok"
+
+
 def cold_overall(classified: list[dict]) -> str:
     """cold 总体:有 stale/missing → RED;有 lag → AMBER;否则 GREEN/EMPTY。"""
     if not classified:

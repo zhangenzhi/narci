@@ -103,22 +103,22 @@ C=$(docker ps --filter name=narci-recorder --format '{{{{.Names}}}}' | head -1)
 [ -n "$C" ] && docker exec -i "$C" python3 - <<'PYEOF' 2>/dev/null
 {_REMOTE_SCANNER}
 PYEOF
+echo '###CLOUDSYNC###'
+docker logs --tail 120 --timestamps narci-cloud-sync 2>&1 | grep -E 'cloud-sync\\] (syncing|done)' | tail -30
 echo '###HEALTH###'
 for p in {ports}; do printf 'port=%s code=%s\\n' "$p" "$(curl -s -o /dev/null -m 3 -w '%{{http_code}}' http://localhost:$p/health 2>/dev/null)"; done
 """
 
 
-def _ssm_batch(cfg: config.FleetConfig, poll_sec: int = 60) -> str:
-    """base64 传脚本 → 一条 SSM send-command → 轮询取 stdout。"""
-    script = _remote_script(cfg)
+def _ssm_exec(cfg: config.FleetConfig, script: str, comment: str, poll_sec: int = 60) -> str:
+    """base64 传脚本 → 一条 SSM send-command(ec2-user)→ 轮询取 stdout。"""
     b64 = base64.b64encode(script.encode()).decode()
     element = f"echo {b64} | base64 --decode | sudo -u ec2-user bash"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump({"commands": [element]}, f)
         params = f.name
     out = _aws(["ssm", "send-command", "--instance-ids", cfg.instance_id,
-                "--document-name", "AWS-RunShellScript",
-                "--comment", "narci ops probe (read-only)",
+                "--document-name", "AWS-RunShellScript", "--comment", comment,
                 "--parameters", f"file://{params}",
                 "--query", "Command.CommandId"], cfg.region)
     cmd_id = json.loads(out)
@@ -132,9 +132,19 @@ def _ssm_batch(cfg: config.FleetConfig, poll_sec: int = 60) -> str:
         status = inv.get("S", "Pending")
         if status in ("Success", "Failed", "TimedOut", "Cancelled"):
             if status != "Success":
-                raise ProbeError(f"SSM 探针 status={status}")
+                raise ProbeError(f"SSM status={status}")
             return inv.get("O", "") or ""
-    raise ProbeError(f"SSM 探针轮询超时（{poll_sec}s，status={status}）")
+    raise ProbeError(f"SSM 轮询超时（{poll_sec}s，status={status}）")
+
+
+def _ssm_batch(cfg: config.FleetConfig) -> str:
+    return _ssm_exec(cfg, _remote_script(cfg), "narci ops probe (read-only)")
+
+
+# 注:gdrive 全量列举(列每个 shard 文件名/时间)实测 >180s 超时——cloud-sync `rclone copy`
+# 只增不删,gdrive 累积海量 shard(还混着旧扁平路径),列举又慢又烧 quota,不可行。
+# 推送腿健康改由 cloud-sync 容器日志(主探针 ###CLOUDSYNC### 段)判,零 gdrive quota。
+# 真要看 gdrive 实际内容用手动:rclone lsf gdrive:/narci_raw/realtime --max-depth 3。
 
 
 def probe_fleet(name: str) -> dict:
@@ -162,6 +172,7 @@ def probe_fleet(name: str) -> dict:
         scan = fleet.parse_scan(sections.get("SCAN", ""))
         res["freshness_raw"] = scan["freshness"]
         res["wal"] = scan["wal"]
+        res["cloudsync"] = fleet.parse_cloudsync(sections.get("CLOUDSYNC", ""))
     except ProbeError as e:
         res["error"] = str(e)
     return res

@@ -179,6 +179,29 @@ def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None
             st.caption("cold 下无 venue 目录")
 
 
+_CS_ICON = {"ok": "✓", "bad": "✕", "stale": "!", "unknown": "?"}
+
+
+def _render_cloudsync_line(res: dict) -> None:
+    """fleet 卡片内的 cloud-sync 推送腿健康行(来自主探针日志,零 gdrive quota)。"""
+    cs = res.get("cloudsync") or {}
+    if not cs.get("n_cycles") and not cs.get("in_progress"):
+        st.caption("☁️ 推送(cloud-sync):无日志(容器刚起/未配?)")
+        return
+    h = fleet.cloudsync_health(cs)
+    rc, age, dur = cs.get("last_rc"), cs.get("last_done_age"), cs.get("last_dur_sec")
+    agem = "—" if age is None else f"{int(age)//60}min 前"
+    durm = "" if not dur else f" · 耗时 {int(dur)//60}min"
+    tail = f" · 进行中" if cs.get("in_progress") else ""
+    msg = f"上次 rc={rc} · {agem}{durm} · 近5轮 rc={cs.get('recent_rcs')}{tail}"
+    if h == "bad":
+        st.error(f"☁️ 推送腿异常:rc={rc}（124=rclone 超时卡住,2026-05-21 那类）· {agem}")
+    elif h == "stale":
+        st.warning(f"☁️ 推送腿:{int(age)//60}min 没成功了,可能卡住 · 近5轮 rc={cs.get('recent_rcs')}")
+    else:
+        st.caption(f"☁️ 推送(cloud-sync){_CS_ICON[h]}:{msg}")
+
+
 # ───────────────────────── 每 fleet 卡片 ───────────────────────── #
 
 def render_fleet(res: dict, stale_sec: int) -> None:
@@ -217,6 +240,9 @@ def render_fleet(res: dict, stale_sec: int) -> None:
             if stale_rows:
                 st.markdown("**陈旧 venue 明细(自动展开)**")
                 _freshness_table(stale_rows)
+
+        # cloud-sync 推送腿(EC2→gdrive)健康——来自容器日志,零 gdrive quota
+        _render_cloudsync_line(res)
 
         # 模块色块按钮板
         cs = res.get("containers", [])
