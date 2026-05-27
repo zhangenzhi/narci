@@ -13,6 +13,7 @@ from analytics.gui.panel_history import render as render_history
 from analytics.gui.panel_l2_insight import render as render_l2_insight
 from analytics.gui.panel_settings import render as render_settings
 from analytics.gui.panel_cold_db import render as render_cold_db  # 新增导入冷数据库面板
+from analytics.gui.panel_recorder_health import render as render_recorder_health  # 录制健康监控
 
 st.set_page_config(page_title="Narci Quant Terminal", layout="wide", page_icon="💹")
 
@@ -34,17 +35,20 @@ class NarciDashboard:
             self.realtime_dir = alt_realtime_dir
 
     def run(self):
-        # 加入了全新的【🗄️ 冷数据仓库】Tab
-        tabs = st.tabs(["📊 L1 行情预览", "🔬 L2 盘口洞察", "🗄️ 冷数据仓库", "🔧 系统设置"])
+        # 首屏即【📡 录制健康】—— narci + reco 共用的录制器运维视图
+        tabs = st.tabs(["📡 录制健康", "📊 L1 行情预览", "🔬 L2 盘口洞察", "🗄️ 冷数据仓库", "🔧 系统设置"])
 
         with tabs[0]:
-            render_history(self.base_path, self.history_dir)
+            # 录制新鲜度 / WAL 落盘积压 / cold-tier gap，自行扫描 replay_buffer
+            render_recorder_health(self.base_path)
         with tabs[1]:
-            render_l2_insight(self.base_path, self.realtime_dir)
+            render_history(self.base_path, self.history_dir)
         with tabs[2]:
+            render_l2_insight(self.base_path, self.realtime_dir)
+        with tabs[3]:
             # 渲染全新的冷数据库面板，传入项目根路径让其自行递归扫描
             render_cold_db(self.base_path)
-        with tabs[3]:
+        with tabs[4]:
             render_settings(self.base_path, self.history_dir, self.realtime_dir)
 
 if __name__ == "__main__":
