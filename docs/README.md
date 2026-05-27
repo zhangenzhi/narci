@@ -10,6 +10,7 @@
 | `INTERFACE_NARCI_NYX.md` | narci↔nyx(训练)接口契约 |
 | `CALIBRATION_PROTOCOL.md` | echo 会话日志 → narci 模拟器校准协议 |
 | `ECHO_RAW_L2_SIDECAR_SPEC.md` | echo 进程内 raw L2 sidecar 落盘规格 |
+| `INTERFACE_NARCI_RECO.md` | narci↔narci-reco 交接(**运维**边界:reco 在 AWS 跑录制器/donor;非 import 契约)+ 录制端重构的 reco 行动项 |
 
 > P5 物理分层后,这些文档里的 `narci.*` import 路径已更新(见
 > `docs/design/MIGRATION_P5_IMPORTS.md`);echo/nyx 仓需按该清单同步。
