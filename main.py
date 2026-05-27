@@ -18,6 +18,12 @@ def cmd_gui():
     gui_path = os.path.join(current_dir, "analytics", "gui", "dashboard.py")
     subprocess.run(["streamlit", "run", gui_path])
 
+def cmd_reco_gui():
+    """启动 reco 运维域只读 fleet 监控控制台(SSM 实时拉 AWS)"""
+    print("🛰️  正在启动 Narci Reco Ops 控制台...")
+    gui_path = os.path.join(current_dir, "ops", "dashboard.py")
+    subprocess.run(["streamlit", "run", gui_path])
+
 def cmd_record(config_path, symbol):
     """启动 WebSocket L2 高频录制器"""
     from recorder.l2_recorder import L2Recorder
@@ -251,6 +257,9 @@ def main():
     # 1. GUI 命令
     parser_gui = subparsers.add_parser("gui", help="启动可视化交互控制台 (Dashboard)")
 
+    # 1b. Reco Ops GUI 命令
+    parser_reco_gui = subparsers.add_parser("reco-gui", help="启动 reco 运维只读 fleet 监控控制台 (SSM)")
+
     # 2. Record 命令
     parser_record = subparsers.add_parser("record", help="启动实时 L2 盘口及逐笔数据录制 (支持多币种流)")
     parser_record.add_argument("--config", type=str, default="configs/um_future_recorder.yaml", help="配置文件路径 (默认: configs/um_future_recorder.yaml)")
@@ -293,6 +302,8 @@ def main():
 
     if args.command == "gui":
         cmd_gui()
+    elif args.command == "reco-gui":
+        cmd_reco_gui()
     elif args.command == "record":
         cmd_record(args.config, args.symbol)
     elif args.command == "compact":
