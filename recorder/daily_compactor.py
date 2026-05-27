@@ -13,6 +13,7 @@
 """
 
 import glob
+import json
 import logging
 import os
 import shutil
@@ -23,6 +24,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from recorder.historical import HistoricalSource
+from recorder import gap_detect
 from core.io import save_parquet, load_parquet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -143,6 +145,38 @@ class DailyCompactor:
         "coincheck", "bitbank", "bitflyer", "gmo",
     })
 
+    def write_gap_report(self, threshold_sec: float = gap_detect.DEFAULT_THRESHOLD_SEC) -> str | None:
+        """对 DAILY 做时间 gap 检测,写 cold-tier sidecar `{SYMBOL}_GAPS_{date}.json`。
+
+        无 U/u 序列号的 venue(Coincheck 等)无法在录制热路径检测"漏了一段增量";
+        cold-tier 离线按真实 WS 事件(side 0/1/2,排除注入快照 3/4)的时间间隔做
+        启发式 gap 检测。best-effort:DAILY 不存在或出错则返回 None,不影响 compact。
+        """
+        if not os.path.exists(self.daily_file_path):
+            return None
+        try:
+            df = load_parquet(self.daily_file_path)
+            rep = gap_detect.build_report(self.symbol, self.date_str_dash, df, threshold_sec)
+            out_dir = self.cold_dir or self.raw_dir
+            os.makedirs(out_dir, exist_ok=True)
+            path = os.path.join(out_dir, f"{self.symbol}_GAPS_{self.date_str}.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rep, f, indent=2)
+            d = rep["streams"]["depth"]["stats"]
+            t = rep["streams"]["trade"]["stats"]
+            if rep["total_gaps"]:
+                logger.warning(
+                    f"[gap] {self.symbol} {self.date_str_dash}: "
+                    f"depth {d['n_gaps']} gaps(max {d['max_gap_sec']}s, cov {d['coverage_pct']}%)、"
+                    f"trade {t['n_gaps']} gaps(max {t['max_gap_sec']}s) → {os.path.basename(path)}"
+                )
+            else:
+                logger.info(f"[gap] {self.symbol} {self.date_str_dash}: 无 >{threshold_sec}s 的 gap")
+            return path
+        except Exception as e:
+            logger.warning(f"[gap] {self.symbol} gap 报告生成失败: {e}")
+            return None
+
     def validate_data(self) -> bool:
         """
         若配置了 HistoricalSource 且其支持 aggTrades，拉取官方 L1 做交叉比对。
@@ -155,6 +189,8 @@ class DailyCompactor:
                     f"date={self.date_str_dash} — no external archive available "
                     f"(option A: self-recorded only); not a bug"
                 )
+                # 无 U/u 序列 + 无官方归档 → 用时间 gap 检测作离线完整度信号
+                self.write_gap_report()
             else:
                 logger.info(
                     f"[skip-validation] venue={self.exchange or '<unset>'} "

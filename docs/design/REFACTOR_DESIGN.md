@@ -136,6 +136,11 @@ venue_registry 全仓零引用** —— 删掉三引擎后它们即死代码,Mak
 - **修未对齐 symbol 落盘**:buffer 永远 flush(trade-only 段合法);snapshot 注入(side 3/4)只在已对齐且 book 非空时做。
 - **不丢对齐后续事件**:对齐成功后处理 `combined` 余下全部,而非首个即 return。
 - **Coincheck gap 标记**:无 U/u 序列,gap 检测放 **cold-tier 离线**(cold-tier 允许改 schema),不在录制热路径阻塞;录制侧靠现有 watchdog(`depth_stale_threshold_sec=180`)+ `snapshot_refresh_on_save`(coincheck 已开)覆盖。删 `coincheck.py` 死字段 `_seen_snapshot`。
+  > **已实现(2026-05-27)**:`recorder/gap_detect.py` —— 时间 gap 检测,只看真实 WS 事件
+  > (side 0/1/2),**排除注入快照 3/4**(否则每 600s 注入会掩盖静默丢失),**depth/trade 分流**
+  > (抓 2026-05-08 "orderbook 死、trade 活")。`daily_compactor` 对无官方归档 venue 写
+  > cold-tier sidecar `{SYMBOL}_GAPS_{date}.json`(gap 区间 + 覆盖率)。tests/recorder/
+  > test_gap_detect.py 10 例覆盖快照排除/分流/阈值/覆盖率/集成。
 
 **验证**:补充回归测试 —— 段原子写崩溃不留半文件、启动恢复残留段、熔断前已 flush、未对齐 symbol 的 trade 能落盘、对齐后续事件不丢。沿用 `calibration/tests/` 现有风格。
 
