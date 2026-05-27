@@ -43,6 +43,10 @@ recorder:
   # 多少秒将内存数据落盘一次 (生成一个自包含全量快照的 parquet 文件)
   # 10 分钟 = 更大的并行重建粒度，减少文件碎片数量 (144 个/天 vs 1440 个/天)
   save_interval_sec: 600
+  # P1 WAL: micro-flush 周期(秒)。事件先入内存,每此间隔原子写成一个
+  # .segwal 段;save_loop 每 save_interval_sec 把段合并成规范 RAW。
+  # 崩溃最多丢一个 micro-flush(~秒级)而非一个 save_interval。默认 2。
+  wal_flush_interval_sec: 2
 
   # P1-A 修法 (2026-05-08)：每次落盘前 REST 重拉 snapshot 替换内存 book，
   # 扔掉 WS 漏 delete 累积的 dust。Binance spot 限流 6000/min/IP，

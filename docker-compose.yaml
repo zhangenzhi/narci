@@ -322,7 +322,15 @@ services:
           # 3h35min 不退出。1200s = 2× SYNC_INTERVAL(600s)上限,卡死时强杀让
           # 下一轮自动接力;正常每轮 ~12-15 min 远低于 1200,无副作用。
           # 退出码:124 = 超时(进下一轮),0 = 成功,其它 = rclone 自己的错。
+          # --exclude 'wal/**' (2026-05-27, P1 段式 WAL):/data 是整个
+          # replay_buffer 根,新增的 replay_buffer/wal/ 是 realtime/ 的平级兄弟,
+          # 装的是录制器未合并的 .segwal 段(秒级原子落盘的中间态)。整盘 copy
+          # 会把这些短命段 + .tmp 一起推上 gdrive → 既浪费传输又污染远端。
+          # 段一旦被 save_loop 合并成 RAW_*.parquet 就删了,远端只该有最终 parquet。
+          # 见 docs/INTERFACE_NARCI_RECO.md #1。
           timeout 1200 rclone copy /data "$${RCLONE_REMOTE}" \
+            --exclude 'wal/**' \
+            --exclude '*.tmp' \
             --transfers 4 \
             --log-level NOTICE \
             --tpslimit 8 \

@@ -17,6 +17,10 @@ recorder:
 
   save_dir: "./replay_buffer/realtime/"
   save_interval_sec: 600
+  # P1 WAL: micro-flush 周期(秒)。事件先入内存,每此间隔原子写成一个
+  # .segwal 段;save_loop 每 save_interval_sec 把段合并成规范 RAW。
+  # 崩溃最多丢一个 micro-flush(~秒级)而非一个 save_interval。默认 2。
+  wal_flush_interval_sec: 2
 
   # GMO orderbooks 每条都是 full snapshot,save_loop 的 snapshot 注入跟 WS
   # 流的 snapshot 会重叠;不强求 REST refresh (snapshot already authoritative)

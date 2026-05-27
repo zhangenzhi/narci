@@ -3,7 +3,7 @@
 > ⚠️ **2026-05-15 修正**:本文档之前把 global recorder 写成 `narci-us / us-west-2 / t4g.micro`,
 > 是早期 plan 没跟实际部署同步。**真实生产环境的 global recorder 在 ap-southeast-1
 > (Singapore) 上,规格 t4g.small (2GB)**。narci 仓库代码里的 `AWS-SG` 引用 (例如
-> `features/realtime.py:334`、`tools/probe_um_endpoints.py`、`calibration/tests/
+> `features/realtime.py:334`、`scripts/ops/probe_um_endpoints.py`、`calibration/tests/
 > test_l2_recorder_refresh.py:202`) 才是 source of truth。echo 团队
 > `docs/INTERFACE_NARCI.md §12.1` 反映了 README 的过时状态 — 修这份的同时也通知 echo。
 

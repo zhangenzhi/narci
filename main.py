@@ -5,7 +5,6 @@ import re
 import asyncio
 import subprocess
 import time
-import hashlib
 from datetime import datetime
 
 # 确保能正确引入内部模块
@@ -16,13 +15,13 @@ if current_dir not in sys.path:
 def cmd_gui():
     """启动 Streamlit 交互式控制台"""
     print("🚀 正在启动 Narci Quant Terminal (GUI)...")
-    gui_path = os.path.join(current_dir, "gui", "dashboard.py")
+    gui_path = os.path.join(current_dir, "analytics", "gui", "dashboard.py")
     subprocess.run(["streamlit", "run", gui_path])
 
 def cmd_record(config_path, symbol):
     """启动 WebSocket L2 高频录制器"""
-    from data.l2_recorder import BinanceL2Recorder
-    recorder = BinanceL2Recorder(config_path=config_path, symbol=symbol)
+    from recorder.l2_recorder import L2Recorder
+    recorder = L2Recorder(config_path=config_path, symbol=symbol)
     try:
         asyncio.run(recorder.start())
     except KeyboardInterrupt:
@@ -36,7 +35,7 @@ def cmd_compact(symbol, target_date=None):
     支持 --symbol ALL 自动发现所有交易对。
     """
     try:
-        from data.daily_compactor import DailyCompactor
+        from recorder.daily_compactor import DailyCompactor
     except ImportError:
         print("❌ 无法导入 DailyCompactor。请确保 data/daily_compactor.py 文件存在。")
         return
@@ -132,7 +131,7 @@ def cmd_compact(symbol, target_date=None):
 
 def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retain_days):
     """Compact one (symbol, raw_dir) combination across all dates with fragments."""
-    from data.daily_compactor import DailyCompactor
+    from recorder.daily_compactor import DailyCompactor
     symbol = symbol.upper()
 
     # 扫描指定交易对的 1min RAW 文件
@@ -223,7 +222,7 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
         source = None
         if exchange in (None, "binance"):
             try:
-                from data.historical import get_source
+                from recorder.historical import get_source
                 source = get_source("binance_vision")
             except Exception:
                 source = None
@@ -244,74 +243,6 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
         print("=" * 60)
         
     print("\n✅ 所有批次数据聚合与交叉验证完毕！请前往 GUI [冷数据仓库] 查看全盘资产。")
-
-def cmd_build_cache(market_type, symbol, base_dir):
-    """
-    离线特征缓存构建管线 (Feature Cache)
-    调用 FeatureBuilder 一键生成并固化高级盘口特征
-    """
-    print("🏗️ 启动离线特征缓存 (Feature Cache) 构建管线...")
-    
-    # 延迟导入重型数据处理库
-    try:
-        from data.feature_builder import FeatureBuilder
-        from gui.utils import get_all_parquet_files
-    except ImportError as e:
-        print(f"❌ 导入依赖失败: {e}。请确保依赖项已安装，并在项目根目录下运行。")
-        return
-
-    symbol = symbol.upper()
-    market_dir = os.path.join(base_dir, market_type, "l2")
-    cache_dir = os.path.join(market_dir, "backtest_cache")
-    
-    if not os.path.exists(market_dir):
-        print(f"❌ 错误: 数据目录 {market_dir} 不存在。")
-        return
-
-    all_files = get_all_parquet_files(market_dir)
-    raw_files = [f for f in all_files if f.endswith(".parquet") and "backtest_cache" not in f and "RAW" in f.upper()]
-    
-    if symbol != "ALL":
-        raw_files = [f for f in raw_files if os.path.basename(f).upper().startswith(symbol)]
-        
-    raw_files = sorted(raw_files)
-    if not raw_files:
-        print(f"⚠️ 没有找到 {market_type} 市场下 {symbol} 的 RAW 数据文件。请先运行 record 收集数据。")
-        return
-
-    # 哈希计算对齐 UI 保证命中率
-    file_names = "".join(sorted([os.path.basename(p) for p in raw_files]))
-    hash_str = hashlib.md5(file_names.encode('utf-8')).hexdigest()[:8]
-    symbol_prefix = symbol if symbol != "ALL" else "MIXED"
-    cache_filename = f"{symbol_prefix}_100ms_merged_{hash_str}.parquet"
-    cache_file_path = os.path.join(cache_dir, cache_filename)
-
-    if os.path.exists(cache_file_path):
-        print(f"⚡ 命中已有缓存！该批次文件此前已处理完毕，无需重复构建。\n📍 路径: {cache_file_path}")
-        return
-        
-    print(f"⏳ 开始并发读取 {len(raw_files)} 个 {symbol} 的 RAW 碎片文件...")
-    t_start = time.time()
-    
-    try:
-        # 使用 FeatureBuilder 封装好的高级流水线处理文件
-        fb = FeatureBuilder()
-        reconstructed_df = fb.build_from_raw_files(raw_files)
-        
-        # 落盘
-        if not reconstructed_df.empty:
-            os.makedirs(cache_dir, exist_ok=True)
-            reconstructed_df.to_parquet(cache_file_path, engine='pyarrow', compression='snappy')
-            
-            elapsed = time.time() - t_start
-            print(f"✅ 特征缓存构建成功！总耗时: {elapsed:.2f} 秒")
-            print(f"💾 缓存已固化至: {cache_file_path}")
-            print(f"💡 现在您可以运行 `python main.py gui` 打开面板，点击【全选并导入全部】，回测将在 1 秒内瞬间启动！")
-        else:
-            print("❌ 构建失败，重构后数据切片为空。")
-            
-    except Exception as e:
-        print(f"❌ 构建过程中发生致命错误: {e}")
 
 def main():
     parser = argparse.ArgumentParser(description="Narci 量化系统核心调度引擎")
@@ -340,13 +271,7 @@ def main():
     parser_download = subparsers.add_parser("download", help="从 Binance Vision 批量下载历史数据 (spot + futures)")
     parser_download.add_argument("--config", type=str, default="configs/downloader.yaml", help="下载器配置文件路径")
 
-    # 6. Build-Cache 命令
-    parser_cache = subparsers.add_parser("build-cache", help="离线聚合 RAW 数据并调用 FeatureBuilder 构建特征缓存")
-    parser_cache.add_argument("--market", type=str, default="um_futures", help="市场类型 (默认: um_futures)")
-    parser_cache.add_argument("--symbol", type=str, default="ETHUSDT", help="交易对 (默认: ETHUSDT，输入 ALL 处理所有)")
-    parser_cache.add_argument("--dir", type=str, default=os.path.join(current_dir, "replay_buffer", "realtime"), help="基础数据目录")
-
-    # 7. Tardis Download 命令
+    # 6. Tardis Download 命令
     parser_tardis = subparsers.add_parser("tardis", help="从 Tardis.dev 下载 L2 depth 数据")
     parser_tardis.add_argument("--symbol", type=str, required=True, help="交易对 (如 ETHUSDT)")
     parser_tardis.add_argument("--start", type=str, required=True, help="起始日期 (如 2025-09-01)")
@@ -373,20 +298,18 @@ def main():
     elif args.command == "compact":
         cmd_compact(args.symbol, args.date)
     elif args.command == "cloud-sync":
-        from data.cloud_sync import CloudSyncDaemon
+        from recorder.cloud_sync import CloudSyncDaemon
         if not args.remote:
             print("❌ 未指定远端路径。请设置 --remote 或 NARCI_RCLONE_REMOTE 环境变量。")
             return
         daemon = CloudSyncDaemon(local_dir=args.local_dir, remote=args.remote, interval=args.interval)
         daemon.run()
     elif args.command == "download":
-        from data.download import BinanceDownloader
-        downloader = BinanceDownloader(config_path=args.config)
+        from recorder.download import HistoricalDownloader
+        downloader = HistoricalDownloader(config_path=args.config)
         downloader.run()
-    elif args.command == "build-cache":
-        cmd_build_cache(args.market, args.symbol, args.dir)
     elif args.command == "tardis":
-        from data.tardis_downloader import TardisDownloader
+        from recorder.tardis_downloader import TardisDownloader
         import logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
         dl = TardisDownloader(output_dir=args.output_dir)
@@ -394,7 +317,7 @@ def main():
         print(f"\n{'='*50}")
         print(f"Tardis download complete: {len(files)} files saved")
     elif args.command == "merge":
-        from data.format_converter import FormatConverter
+        from recorder.format_converter import FormatConverter
         import logging
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
         converter = FormatConverter(

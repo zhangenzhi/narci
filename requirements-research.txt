@@ -1,0 +1,12 @@
+# analytics / research 额外依赖(P5 依赖隔离)。
+# 在研究/回测机上装:  pip install -r requirements-research.txt
+# 它会先拉 recorder 基础集,再加 analytics 层(重建/特征/模拟/校准/研究/GUI)
+# 才需要的重依赖。录制容器**不装**这些(见 requirements.txt 头注)。
+-r requirements.txt
+
+# 模型加载(calibration/alpha_models;均为惰性 import,按模型种类才需要)
+lightgbm>=4.0        # LGB booster
+torch>=2.0           # GRU 序列模型
+
+# GUI 仪表盘(gui/)
+streamlit>=1.30
