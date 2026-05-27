@@ -37,7 +37,7 @@ def _probe_cold():
 
 def main() -> None:
     st.title("🛰️ Narci Reco Ops")
-    st.caption("reco 运维域只读看板 · SSM 实时拉 AWS fleet · 数据源 = EC2(无 gdrive/lustre,P1)")
+    st.caption("reco 运维域只读看板 · 数据源:SSM → AWS fleet + ssh → lustre1 cold-tier(不经 gdrive)")
 
     avail = config.available_fleets()
     if not avail:
