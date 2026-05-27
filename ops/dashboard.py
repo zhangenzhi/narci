@@ -48,9 +48,15 @@ def main() -> None:
         st.info("选至少一个 fleet。")
         st.stop()
 
-    for name in sel:
-        with st.spinner(f"探测 {name.upper()} (SSM ~6s)…"):
-            res = _probe(name)
+    with st.spinner(f"探测 {', '.join(s.upper() for s in sel)} (SSM ~6s/fleet)…"):
+        results = [_probe(name) for name in sel]
+
+    # 顶部跨-fleet 总览 strip(2 秒判断)+ 单一 legend
+    panels.render_summary(results, int(stale_sec))
+    st.divider()
+
+    # 每 fleet 明细
+    for res in results:
         panels.render_fleet(res, int(stale_sec))
         st.divider()
 

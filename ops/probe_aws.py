@@ -97,7 +97,7 @@ echo '###COMMIT###'
 git rev-parse --short HEAD 2>/dev/null
 git log -1 --format=%s 2>/dev/null
 echo '###PS###'
-COMPOSE_PROFILES={cfg.profiles} docker compose ps --format '{{{{.Name}}}}|{{{{.Status}}}}|{{{{.Image}}}}' 2>/dev/null
+COMPOSE_PROFILES={cfg.profiles} docker compose ps -a --format '{{{{.Name}}}}|{{{{.Status}}}}|{{{{.Image}}}}' 2>/dev/null
 echo '###SCAN###'
 C=$(docker ps --filter name=narci-recorder --format '{{{{.Names}}}}' | head -1)
 [ -n "$C" ] && docker exec -i "$C" python3 - <<'PYEOF' 2>/dev/null

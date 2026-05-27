@@ -64,6 +64,26 @@ def test_classify_freshness_fresh_stale_parked():
     assert out == {"X": "fresh", "Y": "stale", "Z": "parked"}
 
 
+def test_parked_venues_from_exited():
+    ps = fleet.parse_ps(
+        "narci-recorder-gmo-spot|Exited (0) 6 days ago|img\n"
+        "narci-recorder-coincheck|Up 1 hour (healthy)|img")
+    assert fleet.parked_venues(ps) == {("gmo", "spot")}
+
+
+def test_parked_venue_exempts_stale_false_positive():
+    """GMO 5/21 park 后第 6 天:老 shard < 7d 本会判 stale,但容器 exited → 应豁免为 parked。"""
+    now = 1_000_000.0
+    rows = [{"exchange": "gmo", "market": "spot", "symbol": "BTC",
+             "last_shard_ts": now - 6 * 86400}]   # 6 天前,<7d parked_sec
+    # 不传 parked_venues → 误判 stale
+    assert fleet.classify_freshness(rows, now=now)[0]["status"] == "stale"
+    # 传入(容器 exited)→ 豁免 parked,不再 stale
+    out = fleet.classify_freshness(rows, now=now, parked_venues={("gmo", "spot")})
+    assert out[0]["status"] == "parked"
+    assert fleet.summarize([], out)["overall"] != "RED"
+
+
 def test_summarize_red_on_stale_or_bad():
     ps = fleet.parse_ps(PS_TEXT)
     fresh = fleet.classify_freshness(
@@ -72,6 +92,29 @@ def test_summarize_red_on_stale_or_bad():
     assert summ["overall"] == "RED"                 # event-publisher restarting + stale
     assert "narci-event-publisher" in summ["bad_containers"]
     assert summ["n_parked"] == 1                    # gmo exited
+
+
+def test_container_venue_mapping():
+    assert fleet.container_venue("narci-recorder-binance-umfut") == ("binance", "um_futures")
+    assert fleet.container_venue("narci-recorder-coincheck") == ("coincheck", "spot")
+    assert fleet.container_venue("narci-recorder-bitflyer-fx") == ("bitflyer", "fx")
+    # binance-jp 写到 exchange=binance_jp(不是 binance)—— "jp" 是 exchange 变体
+    assert fleet.container_venue("narci-recorder-binance-jp") == ("binance_jp", "spot")
+    assert fleet.container_venue("narci-recorder-binance-spot") == ("binance", "spot")
+    assert fleet.container_venue("narci-cloud-sync") == (None, None)
+    # 未登记 venue 走启发式兜底
+    assert fleet.container_venue("narci-recorder-kraken-spot") == ("kraken", "spot")
+
+
+def test_tile_health():
+    fresh_stale = [{"exchange": "binance", "market": "um_futures", "symbol": "B", "status": "stale"}]
+    fresh_ok = [{"exchange": "binance", "market": "um_futures", "symbol": "B", "status": "fresh"}]
+    umfut = {"name": "narci-recorder-binance-umfut", "state": "healthy"}
+    assert fleet.tile_health(umfut, fresh_ok) == "ok"
+    assert fleet.tile_health(umfut, fresh_stale) == "bad"   # 容器健康但 venue 静默死
+    assert fleet.tile_health({"name": "narci-recorder-gmo-spot", "state": "exited"}, []) == "parked"
+    assert fleet.tile_health({"name": "narci-event-publisher", "state": "restarting"}, []) == "bad"
+    assert fleet.tile_health({"name": "narci-cloud-sync", "state": "up"}, []) == "ok"
 
 
 def test_summarize_green_all_healthy():

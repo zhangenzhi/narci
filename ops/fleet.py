@@ -104,20 +104,28 @@ def parse_scan(text: str) -> dict:
 
 def classify_freshness(rows: list[dict], now: float | None = None,
                        stale_sec: int = DEFAULT_STALE_SEC,
-                       parked_sec: int = PARKED_SEC) -> list[dict]:
+                       parked_sec: int = PARKED_SEC,
+                       parked_venues: set[tuple[str | None, str | None]] | None = None) -> list[dict]:
     """用客户端 now + 阈值重算 age/status（容器内 scan 的 status 阈值固定，这里覆盖）。
 
-    status: parked(>7d, 故意停, 不算 RED) | stale(>阈值) | fresh。
+    status: parked | stale(>阈值) | fresh | unknown。
+
+    parked 判定优先看 **parked_venues**(其 recorder 容器已 exited，故意停的 venue)——
+    这比"7 天无 shard"准且即时(否则刚 park 几天的 venue 会被误判 stale 触发 RED,
+    如 GMO 5/21 park 后第 6 天)。无容器信息时回退 parked_sec 老 shard 启发式。
     """
     now = time.time() if now is None else now
+    parked_venues = parked_venues or set()
     out = []
     for r in rows:
         ts = r.get("last_shard_ts")
         age = None if ts is None else round(now - ts, 1)
-        if age is None:
+        if (r.get("exchange"), r.get("market")) in parked_venues:
+            status = "parked"               # 容器已 exited → 故意停,即时豁免
+        elif age is None:
             status = "unknown"
         elif age > parked_sec:
-            status = "parked"
+            status = "parked"               # 回退:超 7 天无 shard
         elif age > stale_sec:
             status = "stale"
         else:
@@ -127,6 +135,72 @@ def classify_freshness(rows: list[dict], now: float | None = None,
     order = {"stale": 0, "unknown": 1, "fresh": 2, "parked": 3}
     return sorted(out, key=lambda r: (order.get(r["status"], 9),
                                       r.get("exchange", ""), r.get("symbol", "")))
+
+
+# 容器服务名 → 写盘 (exchange, market) 目录的显式映射。
+# 真相源 = recorder 实际写到 realtime/{exchange}/{market}/ 的目录名(2026-05-27 实测)。
+# 注意 binance-jp 写到 exchange=**binance_jp**(不是 binance) —— "jp" 是 exchange 变体,
+# 不是 market;启发式("第一段当 exchange")会错,故走显式表。新增 venue 在此登记。
+_VENUE_MAP = {
+    "coincheck": ("coincheck", "spot"),
+    "binance-jp": ("binance_jp", "spot"),
+    "binance-spot": ("binance", "spot"),
+    "binance-umfut": ("binance", "um_futures"),
+    "bitbank": ("bitbank", "spot"),
+    "bitflyer-fx": ("bitflyer", "fx"),
+    "bitflyer-spot": ("bitflyer", "spot"),
+    "gmo-spot": ("gmo", "spot"),
+    "gmo-leverage": ("gmo", "leverage"),
+}
+_MARKET_ALIAS = {"umfut": "um_futures", "fx": "fx", "leverage": "leverage", "spot": "spot"}
+
+
+def container_venue(name: str) -> tuple[str | None, str | None]:
+    """narci-recorder-<svc> → (exchange, market)；非 recorder(cloud-sync 等)→ (None, None)。
+
+    优先查显式 _VENUE_MAP(已部署 venue 的真相);未登记的走启发式兜底
+    (第一段=exchange,末段=market),新 venue 上线时建议补进 _VENUE_MAP。
+    """
+    if "recorder-" not in name:
+        return (None, None)
+    base = name.split("recorder-", 1)[1]
+    if base in _VENUE_MAP:
+        return _VENUE_MAP[base]
+    parts = base.split("-")
+    mkt = _MARKET_ALIAS.get(parts[-1], parts[-1]) if len(parts) > 1 else "spot"
+    return (parts[0], mkt)
+
+
+def parked_venues(containers: list[dict]) -> set[tuple[str, str]]:
+    """recorder 容器 exited 的 venue 集合(故意停的,如 GMO)——freshness 据此即时豁免。"""
+    s = set()
+    for c in containers:
+        if c.get("state") == "exited":
+            ex, mkt = container_venue(c.get("name", ""))
+            if ex is not None:
+                s.add((ex, mkt))
+    return s
+
+
+def tile_health(container: dict, freshness: list[dict]) -> str:
+    """单模块色块健康度:ok(绿) | bad(红) | parked(灰) | warn(黄)。
+
+    容器异常直接 bad/灰;容器在跑则看其 venue 的 symbol 有没有 stale(catch 静默死)。
+    """
+    state = container.get("state")
+    if state in ("restarting", "unhealthy"):
+        return "bad"
+    if state == "exited":
+        return "parked"
+    if state in ("created", "unknown"):
+        return "warn"
+    ex, mkt = container_venue(container.get("name", ""))
+    if ex is None:                      # cloud-sync / event-publisher：无 venue，仅看 up
+        return "ok"
+    matched = [f for f in freshness if f.get("exchange") == ex and f.get("market") == mkt]
+    if any(f.get("status") == "stale" for f in matched):
+        return "bad"
+    return "ok"
 
 
 def summarize(ps: list[dict], freshness: list[dict]) -> dict:

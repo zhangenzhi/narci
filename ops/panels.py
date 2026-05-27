@@ -1,91 +1,214 @@
-"""ops 渲染层(薄 Streamlit;数据来自 probe_aws，解析/分类在 fleet）。
+"""ops 渲染层（薄 Streamlit;数据来自 probe_aws，解析/分类在 fleet）。
 
-v1 四块:fleet 总览行 / per-venue 新鲜度 / WAL 落盘积压 / /health 明细。
+可视化(经 design-critique + accessibility-review 迭代):
+- 顶部跨-fleet 总览 strip(HTML 彩色大块,一屏 2 秒判断;色 + 形双编码,不靠 st-key CSS)
+- 每 fleet 卡片:状态徽章 + metric 行 + 模块色块按钮板(点击下钻)+ stale 自动展开 + 底部元信息
+- 状态用**形状不同**的字符(✓/✕/⏸/!)+ 颜色,避免红绿色盲只靠色相(WCAG 1.4.1)
+- 色块对比度经核:绿/红/琥珀过 AA;灰加深至 #5c636b 留余量
 cold-tier 落地(P3,ssh lustre1)另起 panel。
 """
 from __future__ import annotations
 
 import datetime as dt
+import html
+import re
 
 import pandas as pd
 import streamlit as st
 
 from ops import fleet
 
-_BADGE = {"GREEN": "🟢", "RED": "🔴", "EMPTY": "⚪"}
-_STATE_ICON = {"healthy": "🟢", "up": "🟢", "unhealthy": "🔴",
-               "restarting": "🔴", "exited": "⏸", "created": "🟡", "unknown": "❔"}
-_FRESH_ICON = {"fresh": "🟢", "stale": "🔴", "parked": "⏸", "unknown": "❔"}
+# health -> (色, 形状字符)。形状区分 → 红绿色盲也能辨(WCAG 1.4.1)
+_TILE = {
+    "ok": ("#1a7f37", "✓"), "bad": ("#cf222e", "✕"),
+    "parked": ("#5c636b", "⏸"), "warn": ("#9a6700", "!"),
+}
+_OVERALL = {  # overall -> (色, 形状, 文案)
+    "GREEN": ("#1a7f37", "✓", "运行正常"),
+    "RED": ("#cf222e", "✕", "需要关注"),
+    "EMPTY": ("#5c636b", "·", "无数据"),
+}
+_ROW_BG = {
+    "fresh": "", "ok": "", "unknown": "",
+    "stale": "background-color: rgba(255,75,75,.22)",
+    "parked": "background-color: rgba(130,130,130,.18)",
+    "bad": "background-color: rgba(255,75,75,.22)",
+}
+_FRESH_ICON = {"fresh": "✓", "stale": "✕", "parked": "⏸", "unknown": "?"}
 
 
-def render_fleet(res: dict, stale_sec: int) -> None:
-    name = res.get("fleet", "?").upper()
-    if res.get("error"):
-        st.error(f"**{name}** 探测失败:{res['error']}")
-        return
+def _safe(s: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z_]", "_", s)
 
-    fresh = fleet.classify_freshness(res.get("freshness_raw", []), stale_sec=stale_sec)
-    summ = fleet.summarize(res.get("containers", []), fresh)
-    commit = res.get("commit", {})
-    age = int(dt.datetime.now().timestamp() - res.get("ts", 0))
 
-    # ── 总览行 ──
-    st.markdown(
-        f"### {_BADGE.get(summ['overall'],'⚪')} {name} "
-        f"· EC2 `{res.get('ec2_state')}` · SSM `{res.get('ssm_ping')}` "
-        f"· commit `{commit.get('sha','?')}` "
-        f"· {summ['n_up']} up / {summ['n_parked']} parked / {summ['n_bad']} bad "
-        f"· 探于 {age}s 前"
-    )
-    if summ["overall"] == "RED":
-        msg = []
-        if summ["bad_containers"]:
-            msg.append("容器异常:" + ", ".join(summ["bad_containers"]))
-        if summ["stale_venues"]:
-            msg.append("陈旧 venue:" + ", ".join(summ["stale_venues"]))
-        st.error("⚠️ " + " ｜ ".join(msg))
+def _short(name: str) -> str:
+    return name.split("recorder-", 1)[1] if "recorder-" in name else name.replace("narci-", "")
 
-    # ── 容器 ──
-    cs = res.get("containers", [])
-    if cs:
-        st.dataframe(
-            pd.DataFrame([{"容器": c["name"], "": _STATE_ICON.get(c["state"], "❔"),
-                           "状态": c["status"]} for c in cs]),
-            width="stretch", hide_index=True)
 
-    # ── ① 新鲜度 ──
-    with st.expander(f"① Per-venue 新鲜度（{len([f for f in fresh if f['status']=='stale'])} stale）",
-                     expanded=bool(summ["stale_venues"])):
-        if fresh:
-            df = pd.DataFrame([{
-                "": _FRESH_ICON.get(f["status"], "❔"),
-                "交易所": f.get("exchange"), "市场": f.get("market"), "交易对": f.get("symbol"),
-                "状态": f["status"], "距今(s)": f.get("age_sec"), "shard 数": f.get("n_shards"),
-                "最后录制": dt.datetime.fromtimestamp(f["last_shard_ts"]) if f.get("last_shard_ts") else None,
-            } for f in fresh])
-            st.dataframe(df, width="stretch", hide_index=True)
+def _row_style(col):
+    def _f(row):
+        return [_ROW_BG.get(str(row.get(col, "")), "")] * len(row)
+    return _f
+
+
+def _digest(res: dict, stale_sec: int):
+    """算一个 fleet 的 (fresh 分类, summary)。
+
+    parked venue(recorder 容器已 exited,如 GMO)即时豁免,不误判 stale 触发 RED。
+    """
+    containers = res.get("containers", [])
+    parked = fleet.parked_venues(containers)
+    fresh = fleet.classify_freshness(res.get("freshness_raw", []), stale_sec=stale_sec,
+                                     parked_venues=parked)
+    return fresh, fleet.summarize(containers, fresh)
+
+
+# ───────────────────────── 顶部总览 strip ───────────────────────── #
+
+def render_summary(results: list[dict], stale_sec: int) -> None:
+    st.markdown("##### Fleet 总览")
+    cards = []
+    for res in results:
+        name = res.get("fleet", "?").upper()
+        if res.get("error"):
+            color, icon, word, sub = "#5c636b", "?", "探测失败", html.escape(res["error"][:60])
         else:
-            st.caption("无 RAW 数据")
+            _, summ = _digest(res, stale_sec)
+            color, icon, word = _OVERALL.get(summ["overall"], ("#5c636b", "·", ""))
+            sub = (f"{summ['n_up']} up · {summ['n_parked']} parked · "
+                   f"{summ['n_bad']} bad · {len(summ['stale_venues'])} stale")
+        cards.append(
+            f"<div style='flex:1;min-width:200px;background:{color};border-radius:12px;"
+            f"padding:14px 18px;color:#fff'>"
+            f"<div style='font-size:13px;opacity:.85'>{html.escape(name)}</div>"
+            f"<div style='font-size:26px;font-weight:700;line-height:1.2'>{icon} {word}</div>"
+            f"<div style='font-size:13px;opacity:.9;margin-top:2px'>{sub}</div></div>")
+    st.markdown(
+        "<div style='display:flex;gap:12px;flex-wrap:wrap'>" + "".join(cards) + "</div>",
+        unsafe_allow_html=True)
+    st.caption("模块色块:✓正常(绿) · ✕异常/陈旧(红) · ⏸PARKED(灰) · !未知(黄) —— 点色块看明细")
 
-    # ── ② WAL 积压 ──
-    wal = sorted(res.get("wal", []), key=lambda x: -x["pending_segments"])
-    with st.expander(f"② WAL 落盘积压（{len(wal)} venue 有未合并段）"):
-        st.caption("正常每 save_interval 合并清空;**持续非零/单调上涨 = 落盘或合并卡住**。"
-                   "单次几十~几百段在 600s 合并周期内属正常。")
+
+# ───────────────────────── tile CSS ───────────────────────── #
+
+def _inject_tile_css(tiles: list[tuple[str, str]]) -> None:
+    rules = []
+    for key, healthv in tiles:
+        c = _TILE.get(healthv, ("#5c636b", ""))[0]
+        rules.append(
+            f".st-key-{key} button{{background-color:{c};border-color:{c};color:#fff;font-weight:600}}"
+            f".st-key-{key} button:hover{{filter:brightness(1.12);border-color:#fff;color:#fff}}")
+    st.markdown("<style>" + "".join(rules) + "</style>", unsafe_allow_html=True)
+
+
+def _freshness_table(rows: list[dict], compact: bool = False) -> None:
+    cols = ([{"": _FRESH_ICON.get(r["status"], "?"), "交易对": r.get("symbol"),
+              "status": r["status"], "距今": r.get("age_sec"), "shard": r.get("n_shards")}
+             for r in rows] if compact else
+            [{"": _FRESH_ICON.get(r["status"], "?"), "交易所": r.get("exchange"),
+              "市场": r.get("market"), "交易对": r.get("symbol"), "status": r["status"],
+              "距今": r.get("age_sec"), "shard": r.get("n_shards")} for r in rows])
+    df = pd.DataFrame(cols)
+    st.dataframe(df.style.apply(_row_style("status"), axis=1), width="stretch", hide_index=True,
+                 column_config={"status": None,
+                                "距今": st.column_config.NumberColumn(format="%d s")})
+
+
+def _venue_detail(res: dict, container: dict, fresh: list[dict]) -> None:
+    name = container["name"]
+    st.markdown(f"**{name}** — `{container['status']}`")
+    ex, mkt = fleet.container_venue(name)
+    if ex is None:
+        st.caption("非 recorder 模块(无 venue 数据),仅容器状态。")
+        return
+    rows = [f for f in fresh if f.get("exchange") == ex and f.get("market") == mkt]
+    wal = [w for w in res.get("wal", []) if w.get("exchange") == ex and w.get("market") == mkt]
+    c1, c2 = st.columns(2)
+    with c1:
+        st.caption(f"① {ex}/{mkt} 新鲜度({sum(1 for r in rows if r['status']=='stale')} stale / {len(rows)})")
+        _freshness_table(rows, compact=True) if rows else st.caption("无 RAW")
+    with c2:
+        st.caption(f"② WAL 待合并段({len(wal)})")
         if wal:
-            st.dataframe(pd.DataFrame([{
-                "交易所": w["exchange"], "市场": w["market"], "交易对": w["symbol"],
-                "待合并段数": w["pending_segments"]} for w in wal]),
-                width="stretch", hide_index=True)
+            df = pd.DataFrame([{"交易对": w["symbol"], "段数": w["pending_segments"]} for w in wal])
+            st.dataframe(df, width="stretch", hide_index=True,
+                         column_config={"段数": st.column_config.ProgressColumn(
+                             format="%d", min_value=0, max_value=max(300, df["段数"].max()))})
         else:
             st.caption("无积压 ✅")
 
-    # ── ③ /health ──
-    h = res.get("health", [])
-    with st.expander(f"③ /health 端口（{sum(1 for x in h if x['ok'])}/{len(h)} OK）"):
-        if h:
-            st.dataframe(pd.DataFrame([{
-                "端口": x["port"], "": "🟢" if x["ok"] else "🔴", "HTTP": x["code"]} for x in h]),
-                width="stretch", hide_index=True)
+
+# ───────────────────────── 每 fleet 卡片 ───────────────────────── #
+
+def render_fleet(res: dict, stale_sec: int) -> None:
+    name = res.get("fleet", "?").upper()
+    with st.container(border=True):
+        if res.get("error"):
+            st.subheader(f"✕ {name}")
+            st.error(f"探测失败:{res['error']}")
+            return
+
+        fresh, summ = _digest(res, stale_sec)
+        color, icon, word = _OVERALL.get(summ["overall"], ("#5c636b", "·", ""))
+        st.subheader(f"{icon} {name} · {word}")
+
+        n_stale = len(summ["stale_venues"])
+        m = st.columns(5)
+        m[0].metric("容器 up", summ["n_up"])
+        m[1].metric("PARKED", summ["n_parked"])
+        m[2].metric("异常容器", summ["n_bad"],
+                    delta=None if not summ["n_bad"] else f"+{summ['n_bad']}", delta_color="inverse")
+        m[3].metric("陈旧 venue", n_stale,
+                    delta=None if not n_stale else f"+{n_stale}", delta_color="inverse")
+        oldest = max((f["age_sec"] for f in fresh
+                      if f["status"] in ("fresh", "stale") and f["age_sec"] is not None), default=None)
+        m[4].metric("最旧活跃数据", "—" if oldest is None else f"{int(oldest)}s")
+
+        # RED:横幅 + 自动展开 stale 明细(不必点击)
+        if summ["overall"] == "RED":
+            parts = []
+            if summ["bad_containers"]:
+                parts.append("容器异常:" + ", ".join(summ["bad_containers"]))
+            if summ["stale_venues"]:
+                parts.append("陈旧 venue:" + ", ".join(summ["stale_venues"]))
+            st.error("⚠️ " + " ｜ ".join(parts))
+            stale_rows = [f for f in fresh if f["status"] == "stale"]
+            if stale_rows:
+                st.markdown("**陈旧 venue 明细(自动展开)**")
+                _freshness_table(stale_rows)
+
+        # 模块色块按钮板
+        cs = res.get("containers", [])
+        tiles = [(f"tile_{res['fleet']}_{_safe(c['name'])}", fleet.tile_health(c, fresh), c)
+                 for c in cs]
+        _inject_tile_css([(k, h) for k, h, _ in tiles])
+        sel_key = f"sel_{res['fleet']}"
+        ncol = min(4, len(tiles)) or 1
+        cols = st.columns(ncol)
+        for i, (key, healthv, c) in enumerate(tiles):
+            ic = _TILE.get(healthv, ("", "?"))[1]
+            if cols[i % ncol].button(f"{ic} {_short(c['name'])}", key=key, use_container_width=True):
+                st.session_state[sel_key] = c["name"]
+
+        # 选中模块明细
+        sel_c = next((c for c in cs if c["name"] == st.session_state.get(sel_key)), None)
+        if sel_c:
+            with st.container(border=True):
+                _venue_detail(res, sel_c, fresh)
         else:
-            st.caption("未配 health 端口（deploy/reco/.env 的 NARCI_*_HEALTH_PORTS）")
+            st.caption("👆 点一个模块色块查看该 venue 的逐 symbol 明细。")
+
+        # 元信息 + 全量,降权放底部
+        st.caption(f"EC2 `{res.get('ec2_state')}` · SSM `{res.get('ssm_ping')}` · "
+                   f"commit `{res.get('commit',{}).get('sha','?')}` · "
+                   f"探于 {int(dt.datetime.now().timestamp() - res.get('ts', 0))}s 前 · "
+                   f"`{res.get('instance_id','')}`")
+        with st.expander("全部明细(新鲜度 / health 全量)"):
+            if fresh:
+                _freshness_table(fresh)
+            h = res.get("health", [])
+            if h:
+                st.caption(f"/health: {sum(1 for x in h if x['ok'])}/{len(h)} OK")
+                st.dataframe(pd.DataFrame([{"端口": x["port"], "": "✓" if x["ok"] else "✕",
+                                            "HTTP": x["code"]} for x in h]),
+                             width="stretch", hide_index=True)
