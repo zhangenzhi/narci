@@ -63,6 +63,12 @@ def lustre_target() -> str | None:
     return _env("NARCI_LUSTRE_SSH")
 
 
+def lustre_ssh_key() -> str | None:
+    """lustre ssh 私钥路径（~ 展开）；未配则 None（走默认 key / ssh config）。"""
+    k = _env("NARCI_LUSTRE_SSH_KEY")
+    return os.path.expanduser(k) if k else None
+
+
 def lustre_cold_path() -> str:
     return _env("NARCI_LUSTRE_COLD_PATH") or "/lustre1/work/c30636/narci/replay_buffer/cold"
 

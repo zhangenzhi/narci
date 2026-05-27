@@ -26,11 +26,15 @@ _TILE = {
 _OVERALL = {  # overall -> (色, 形状, 文案)
     "GREEN": ("#1a7f37", "✓", "运行正常"),
     "RED": ("#cf222e", "✕", "需要关注"),
+    "AMBER": ("#9a6700", "!", "滞后"),
     "EMPTY": ("#5c636b", "·", "无数据"),
 }
+_COLD_ICON = {"ok": "✓", "lag": "!", "stale": "✕", "missing": "✕", "parked": "⏸"}
 _ROW_BG = {
     "fresh": "", "ok": "", "unknown": "",
     "stale": "background-color: rgba(255,75,75,.22)",
+    "missing": "background-color: rgba(255,75,75,.22)",
+    "lag": "background-color: rgba(250,176,5,.18)",
     "parked": "background-color: rgba(130,130,130,.18)",
     "bad": "background-color: rgba(255,75,75,.22)",
 }
@@ -136,6 +140,43 @@ def _venue_detail(res: dict, container: dict, fresh: list[dict]) -> None:
                              format="%d", min_value=0, max_value=max(300, df["段数"].max()))})
         else:
             st.caption("无积压 ✅")
+
+
+# ───────────────────────── Cold-tier(lustre1,全局)───────────────────────── #
+
+def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None:
+    import datetime as dt
+    with st.container(border=True):
+        if cold_res.get("error"):
+            st.subheader("❄️ Cold-tier 落地")
+            st.warning(f"cold 探测不可用(lustre1):{cold_res['error']}")
+            return
+        rows = fleet.classify_cold(cold_res.get("rows", []), today_yyyymmdd, parked_venues)
+        overall = fleet.cold_overall(rows)
+        color, icon, word = _OVERALL.get(overall, ("#5c636b", "·", ""))
+        bad = [r for r in rows if r["status"] in ("stale", "missing")]
+        lag = [r for r in rows if r["status"] == "lag"]
+        st.subheader(f"❄️ {icon} Cold-tier 落地 · {word}")
+        age = int(dt.datetime.now().timestamp() - cold_res.get("ts", 0))
+        st.caption(f"每 venue 昨日(UTC {today_yyyymmdd} 的前一日)DAILY 是否已落 lustre1 · "
+                   f"探于 {age}s 前 · ssh→HPC")
+        if bad:
+            st.error("⚠️ 未落地/滞后多日:" + ", ".join(f"{r['exchange']}/{r['market']}" for r in bad))
+        elif lag:
+            st.warning("滞后 1 天(可能今日 compact 未跑):"
+                       + ", ".join(f"{r['exchange']}/{r['market']}" for r in lag))
+        if rows:
+            df = pd.DataFrame([{
+                "": _COLD_ICON.get(r["status"], "?"),
+                "交易所": r["exchange"], "市场": r["market"], "status": r["status"],
+                "最新 DAILY": r.get("latest_daily") or "—",
+                "落后(天)": r.get("days_behind"), "DAILY 数": r.get("n_daily"),
+                "GAPS": r.get("n_gaps"),
+            } for r in rows])
+            st.dataframe(df.style.apply(_row_style("status"), axis=1), width="stretch",
+                         hide_index=True, column_config={"status": None})
+        else:
+            st.caption("cold 下无 venue 目录")
 
 
 # ───────────────────────── 每 fleet 卡片 ───────────────────────── #

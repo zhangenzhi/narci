@@ -203,6 +203,63 @@ def tile_health(container: dict, freshness: list[dict]) -> str:
     return "ok"
 
 
+def parse_cold(stdout: str) -> list[dict]:
+    """###COLD### 段:每行 exchange/market|latest_daily|n_daily|n_gaps。"""
+    sec = split_sections(stdout).get("COLD", "")
+    rows = []
+    for line in sec.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) != 4 or "/" not in parts[0]:
+            continue
+        ex, _, mkt = parts[0].partition("/")
+        rows.append({"exchange": ex, "market": mkt,
+                     "latest_daily": parts[1] or None,
+                     "n_daily": int(parts[2]) if parts[2].isdigit() else 0,
+                     "n_gaps": int(parts[3]) if parts[3].isdigit() else 0})
+    return rows
+
+
+def classify_cold(rows: list[dict], today_yyyymmdd: str,
+                  parked_venues: set[tuple[str, str]] | None = None) -> list[dict]:
+    """每 venue cold 落地状态:ok | lag | stale | missing | parked。
+
+    昨日(today-1)是最新可期望的 DAILY(compact 处理上一 UTC 日)。
+    behind = (昨日 - latest).days:<=0 ok / ==1 lag(可能今天 compact 未跑) / >=2 stale。
+    parked venue(AWS 容器 exited)豁免。
+    """
+    import datetime as _dt
+    parked_venues = parked_venues or set()
+    today = _dt.datetime.strptime(today_yyyymmdd, "%Y%m%d").date()
+    yesterday = today - _dt.timedelta(days=1)
+    out = []
+    for r in rows:
+        ev = (r["exchange"], r["market"])
+        latest = r.get("latest_daily")
+        if ev in parked_venues:
+            status = "parked"
+            behind = None
+        elif not latest:
+            status, behind = "missing", None
+        else:
+            d = _dt.datetime.strptime(latest, "%Y%m%d").date()
+            behind = (yesterday - d).days
+            status = "ok" if behind <= 0 else ("lag" if behind == 1 else "stale")
+        out.append({**r, "status": status, "days_behind": behind})
+    order = {"stale": 0, "missing": 0, "lag": 1, "ok": 2, "parked": 3}
+    return sorted(out, key=lambda r: (order.get(r["status"], 9), r["exchange"], r["market"]))
+
+
+def cold_overall(classified: list[dict]) -> str:
+    """cold 总体:有 stale/missing → RED;有 lag → AMBER;否则 GREEN/EMPTY。"""
+    if not classified:
+        return "EMPTY"
+    if any(r["status"] in ("stale", "missing") for r in classified):
+        return "RED"
+    if any(r["status"] == "lag" for r in classified):
+        return "AMBER"
+    return "GREEN"
+
+
 def summarize(ps: list[dict], freshness: list[dict]) -> dict:
     """一句话总览：RED 触发 = 有 stale venue 或有 restarting/unhealthy 容器。"""
     stale = [r for r in freshness if r["status"] == "stale"]
