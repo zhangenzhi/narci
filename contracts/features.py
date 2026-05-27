@@ -42,7 +42,7 @@ BASELINE_FEATURES = [
     #     premium = contango, generally bullish-leaning carry).
     #     STRICT: NaN whenever the BS book hasn't bootstrapped — most
     #     pre-2026-05-13 days are Vision-backfilled trade-only (Vision
-    #     bookTicker not available — see deploy/donor/NARCI_DONOR_INTERFACE.md),
+    #     bookTicker not available — see deploy/reco/donor/NARCI_DONOR_INTERFACE.md),
     #     so this is only finite on 2026-05-13+ live recording.
     #   basis_um_bps_trade_proxy = log(um_mid / bs_last_trade_price) * 1e4
     #     (v5 2026-05-14, addendum) Lossy fallback that lets the basis

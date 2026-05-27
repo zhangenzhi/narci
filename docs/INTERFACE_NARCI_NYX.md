@@ -268,7 +268,7 @@ ack/done/blocked 状态,**不重复 ask 内容**。
 | 5 | P3.1 penetration fill | ✅ done | `e09e4c3` |
 | 6 | CC depth watchdog | ✅ done | `20e8a38` |
 | 7 | v5 期现 basis (strict + proxy) | ✅ done | `555bb30` + `84354aa` |
-| 8 | bookTicker 回补路线 | ❌ blocked | Vision spot bookTicker 不存在,UM 停更 2024-03-30;见 `deploy/donor/NARCI_DONOR_INTERFACE.md` |
+| 8 | bookTicker 回补路线 | ❌ blocked | Vision spot bookTicker 不存在,UM 停更 2024-03-30;见 `deploy/reco/donor/NARCI_DONOR_INTERFACE.md` |
 | 9 | P3.2 counterfactual fill | 🟡 optional,不阻塞 production | 等 nyx 重新评估必要性 |
 | 10 | Multi-horizon target enum | 🟡 低优 | 现 `TARGET_KINDS` 已覆盖 1s/5s/10s/30s + event-time,扩前等 nyx 给具体 horizon |
 | 11 | `trade_intensity_burst_50ms` (v6) | ✅ done | `d5d4cc8` — FEATURES_VERSION v5 → v6,38 列 |

@@ -7,7 +7,7 @@
 # files that already exist locally.
 #
 # Cron example (UTC, daily at 04:30 — Binance publishes T-1 around midnight UTC):
-#   30 4 * * * /path/to/narci/deploy/donor/binance_vision_push.sh >> /var/log/bv_push.log 2>&1
+#   30 4 * * * /path/to/narci/deploy/reco/donor/binance_vision_push.sh >> /var/log/bv_push.log 2>&1
 #
 # Required env (override via shell or systemd):
 #   NARCI_DIR        — narci project root (default: derived from script path)

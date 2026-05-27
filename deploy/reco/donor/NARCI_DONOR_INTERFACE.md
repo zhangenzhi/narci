@@ -1,8 +1,14 @@
 # narci ↔ donor host interface
 
-Donor 端 = 可以访问 Binance Vision 的机器（Mac mini / linux box），
-负责把 `data.binance.vision` 上的官方归档拉下来推到 gdrive，给
-`/lustre1` 这边消费（[[feedback_no_crypto_network]]）。
+Donor 端 = 可以访问 Binance Vision 的机器,负责把 `data.binance.vision` 上的官方
+归档拉下来推到 gdrive,给 `/lustre1` 这边消费（[[feedback_no_crypto_network]]）。
+
+> **部署位置(2026-05,并入 reco/aws)**:donor 角色现归 narci-reco 子项目,
+> 预期跑在 **aws-sg(AWS Singapore EC2)** 上 —— 它已能上 Binance 且自带
+> rclone→gdrive(见 `deploy/reco/docs/TOPOLOGY.md`),无需单独的 Mac mini donor。
+> ⚠️ **Mac→Linux 适配**:`donor_loop.sh` 的 tmux 可换 systemd/cron;
+> `check_health.sh` 的 macOS `osascript` 通知在 linux 上是 no-op(已 `|| true`
+> 降级,FAIL 仍写状态文件)——aws-sg 上应改用 CloudWatch/SNS/日志告警。
 
 ## Topology
 
@@ -24,8 +30,8 @@ data.binance.vision
 
 ## 常驻
 
-- `deploy/donor/donor_loop.sh` — tmux 后台跑，每 24h 一轮（`INTERVAL=86400`）
-- `deploy/donor/binance_vision_push.sh` — 单次执行：`main.py download` + `rclone copy`
+- `deploy/reco/donor/donor_loop.sh` — tmux 后台跑，每 24h 一轮（`INTERVAL=86400`）
+- `deploy/reco/donor/binance_vision_push.sh` — 单次执行：`main.py download` + `rclone copy`
 - 配置：`configs/downloader.yaml`（symbols / data_types / date_range）
 
 ## Manual trigger
@@ -34,7 +40,7 @@ data.binance.vision
 ssh donor
 cd ~/narci
 git pull origin main          # 拿最新 downloader.yaml
-bash deploy/donor/binance_vision_push.sh
+bash deploy/reco/donor/binance_vision_push.sh
 # tail -f .donor/binance_vision_push.log
 ```
 
@@ -115,7 +121,7 @@ narci downloader.yaml（commit `c5eac4b`）。后续 cron 自动拉。
 
 2. **立刻手动跑一次**：
    ```bash
-   bash deploy/donor/binance_vision_push.sh
+   bash deploy/reco/donor/binance_vision_push.sh
    ```
 
    - `aggTrades` 2026-04-17 → 昨天 已经在 gdrive 上，idempotent skip

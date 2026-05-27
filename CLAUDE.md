@@ -137,7 +137,7 @@ backtest panel was removed in P4; backtesting now runs via simulation/calibratio
 - `supervisord.conf` — Runs recorder + healthcheck.
 - `healthcheck.py` — HTTP `/health` on port 8079.
 - `server-aliases.sh` — SSH aliases: `nstart`, `nstop`, `nlog{cc,spot,umfut}`, `nrestart{cc,spot,umfut}`, `nhealth{cc,spot,umfut}`, `npull`, `nsynclog`, etc.
-- `reco/` — the narci-reco ops sub-project (AWS deploy, donor interface, topology/incident docs); moved here from repo root in P5 housekeeping.
+- `reco/` — the narci-reco ops sub-project: `aws/` (EC2 lifecycle / SSM / IAM scripts), `donor/` (Binance Vision download→gdrive push, now targeting the aws-sg EC2 instead of a separate Mac donor), `docs/` (topology/incidents). Moved here from repo root in P5 housekeeping.
 
 ### Docker Topology
 
