@@ -36,6 +36,7 @@ narci 仓库下三角色:
 - [x] AWS recorder 实例 describe (jp + sg)
 - [x] AWS recorder 重启 via SSM SendCommand
 - [x] AWS recorder 健康探测 via SSM (curl localhost:807x/health on instance)
+- [x] **reco-gui** 只读 fleet 监控控制台 (streamlit;SSM + ssh-lustre cold 落地)
 - [ ] CloudWatch CPU/mem/disk 探测
 - [ ] AMI / EBS snapshot 备份
 - [ ] narci-donor 接管 (future,via tailscale)
@@ -65,6 +66,38 @@ $EDITOR .env
 ./aws/recorder_restart.sh jp
 ./aws/recorder_restart.sh sg
 ```
+
+## reco-gui — 只读 fleet 监控控制台
+
+把上面那些 SSM 探测脚本的信号汇成一屏 GREEN/RED 的可视化看板。**纯只读**,不动产线
+(重启/回滚仍走上面的 CLI)。代码在**仓库根 `ops/`**(不在本目录;它是顶层 leaf 模块,
+设计见 [`docs/design/RECO_OPS_GUI.md`](../../docs/design/RECO_OPS_GUI.md))。
+
+数据源:每 fleet 一发 **SSM 批量探针**(容器 / health / per-venue 新鲜度 / WAL 积压 /
+部署 commit)+ **ssh lustre1** 查 cold-tier 昨日 DAILY 落地。不碰 gdrive。
+
+### 启动(Mac Studio,narci conda env)
+
+streamlit 在 narci conda env(`requirements-research.txt`)。`.env` 除 EC2 那几项,cold
+面板还需 `NARCI_LUSTRE_SSH` / `NARCI_LUSTRE_SSH_KEY` / `NARCI_LUSTRE_COLD_PATH`。
+
+```bash
+conda activate narci                 # streamlit / pandas 在此 env
+cd ~/narci
+python main.py reco-gui              # = streamlit run ops/dashboard.py(默认 :8501)
+
+# 常驻(tmux + 自定义端口):
+tmux new -d -s narci-reco-gui -c ~/narci \
+  'streamlit run ops/dashboard.py --server.port 8502 --server.headless true'
+# 浏览器开 http://localhost:8502;停:tmux kill-session -t narci-reco-gui
+```
+
+### 看什么
+- **顶部总览 strip**:jp / sg 各一块 GREEN/RED,2 秒判断
+- **每 fleet 卡片**:模块色块(点击下钻该 venue 逐 symbol 新鲜度 + WAL),RED 自动展开陈旧 venue
+- **❄️ Cold-tier 落地**:每 venue 昨日 DAILY 是否已落 lustre1
+
+PARKED venue(容器 exited,如 GMO)即时豁免,不误报 RED。刷新 = 60s 缓存 + 手动按钮(省 SSM quota)。
 
 ## 角色边界(同 repo 不同角色的纪律)
 
@@ -97,3 +130,6 @@ reco/
 └── donor/                 # future 接管 Mac mini puller 代码
     └── .gitkeep
 ```
+
+> reco-gui 控制台代码不在本目录,在**仓库根 `ops/`**(`config/probe_aws/probe_hpc/fleet/
+> panels/dashboard`)+ 测试 `tests/ops/`,入口 `main.py reco-gui`。设计见 `docs/design/RECO_OPS_GUI.md`。
