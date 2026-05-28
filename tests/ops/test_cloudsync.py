@@ -56,3 +56,29 @@ def test_cloudsync_health_stale():
 
 def test_cloudsync_health_unknown_empty():
     assert fleet.cloudsync_health(fleet.parse_cloudsync("", now=NOW)) == "unknown"
+
+
+def test_cloudsync_health_sigterm_is_transient_not_bad():
+    """rc=143 (SIGTERM) 是 redeploy 时容器 recreate 杀的 rclone,非真故障。
+    新容器在跑(in_progress)或近期有成功 → 仍 ok;否则 stale 等下一轮,**不是 bad**。"""
+    # 场景 1:历史有 rc=0,最近一轮被 SIGTERM(redeploy),且新容器在跑
+    s = fleet.parse_cloudsync(
+        "2026-05-27T05:33:04.7Z [cloud-sync] syncing...\n"
+        "2026-05-27T05:49:53.5Z [cloud-sync] done (rc=0)\n"
+        "2026-05-27T05:50:00.0Z [cloud-sync] syncing...\n"
+        "2026-05-27T05:55:00.0Z [cloud-sync] done (rc=143)\n"
+        "2026-05-27T05:56:00.0Z [cloud-sync] syncing...\n", now=NOW)
+    assert s["last_rc"] == 143 and s["in_progress"] is True
+    assert fleet.cloudsync_health(s) == "ok"      # 不是 bad
+
+    # 场景 2:只有一次 SIGTERM,没在跑、没历史成功 → stale(等下一轮),非 bad
+    s2 = fleet.parse_cloudsync(
+        "2026-05-27T05:50:00.0Z [cloud-sync] syncing...\n"
+        "2026-05-27T05:55:00.0Z [cloud-sync] done (rc=143)\n", now=NOW)
+    assert fleet.cloudsync_health(s2) == "stale"
+
+    # 场景 3:真 timeout rc=124 仍判 bad(不能被新逻辑放水)
+    s3 = fleet.parse_cloudsync(
+        "2026-05-27T05:33:04.7Z [cloud-sync] syncing...\n"
+        "2026-05-27T05:53:04.7Z [cloud-sync] done (rc=124)\n", now=NOW)
+    assert fleet.cloudsync_health(s3) == "bad"

@@ -329,18 +329,34 @@ def parse_cloudsync(text: str, now: float | None = None) -> dict:
     }
 
 
+# rc=128+N 是 shell 报告"被信号 N 杀"的约定(143=128+15 SIGTERM、137=128+9 SIGKILL):
+# cloud-sync 容器 recreate 时 docker 给运行中的 rclone 发 SIGTERM → rc=143。这是
+# redeploy/重启的瞬时产物,不是 rclone 错。新容器起来后下一轮会 rc=0。
+_SIGNAL_EXIT_RCS = {137, 143}
+
+
 def cloudsync_health(summ: dict, stale_sec: int = 3600) -> str:
-    """推送腿健康:ok | bad(超时/错误)| stale(太久没成功)| unknown。"""
+    """推送腿健康:ok | bad(真超时/rclone 错)| stale(太久没成功)| unknown。
+
+    rc=143/137 = 容器 recreate 时 rclone 被 SIGTERM/SIGKILL 杀(redeploy 瞬时),
+    若现在正在跑(in_progress)或近 5 轮里有 rc=0,就算 ok —— 不是真故障。
+    rc=124 = `timeout` cmd 杀的(rclone 真卡住,2026-05-21 那类)→ bad。
+    """
     rc = summ.get("last_rc")
     age = summ.get("last_done_age")
     if rc is None and not summ.get("in_progress"):
         return "unknown"
     if rc == 124:
-        return "bad"                 # rclone 超时被强杀 → 推送卡住
+        return "bad"                              # rclone 真超时卡住
+    if rc in _SIGNAL_EXIT_RCS:
+        # SIGTERM/SIGKILL:若新容器在跑或近期有成功轮,视为 transient
+        if summ.get("in_progress") or 0 in (summ.get("recent_rcs") or []):
+            return "ok"
+        return "stale"                            # 持续被信号杀且没恢复 → 等下一轮
     if rc not in (0, None):
-        return "bad"                 # rclone 其它错
+        return "bad"                              # rclone 其它错(真故障)
     if age is not None and age > stale_sec and not summ.get("in_progress"):
-        return "stale"               # 上次成功太久前,且现在没在跑
+        return "stale"
     return "ok"
 
 

@@ -279,12 +279,19 @@ def _render_cloudsync_line(res: dict) -> None:
     rc, age, dur = cs.get("last_rc"), cs.get("last_done_age"), cs.get("last_dur_sec")
     agem = "—" if age is None else f"{int(age)//60}min 前"
     durm = "" if not dur else f" · 耗时 {int(dur)//60}min"
-    tail = f" · 进行中" if cs.get("in_progress") else ""
-    msg = f"上次 rc={rc} · {agem}{durm} · 近5轮 rc={cs.get('recent_rcs')}{tail}"
+    tail = " · 进行中" if cs.get("in_progress") else ""
+    rc_desc = {0: "成功", 124: "rclone 真超时卡住(2026-05-21 那类)",
+               143: "SIGTERM(容器 recreate/redeploy 杀)",
+               137: "SIGKILL(容器被强杀)"}.get(rc, f"rclone 错码 {rc}")
+    msg = f"上次 rc={rc}({rc_desc})· {agem}{durm} · 近5轮 rc={cs.get('recent_rcs')}{tail}"
     if h == "bad":
-        st.error(f"☁️ 推送腿异常:rc={rc}（124=rclone 超时卡住,2026-05-21 那类）· {agem}")
+        st.error(f"☁️ 推送腿真故障:{rc_desc} · {agem} · 近5轮 rc={cs.get('recent_rcs')}")
     elif h == "stale":
-        st.warning(f"☁️ 推送腿:{int(age)//60}min 没成功了,可能卡住 · 近5轮 rc={cs.get('recent_rcs')}")
+        if rc in fleet._SIGNAL_EXIT_RCS:
+            st.warning(f"☁️ 推送 {agem}被信号杀({rc_desc}),等新容器下一轮(~16min) · "
+                       f"近5轮 rc={cs.get('recent_rcs')}")
+        else:
+            st.warning(f"☁️ 推送 {int(age)//60}min 没成功,可能卡住 · 近5轮 rc={cs.get('recent_rcs')}")
     else:
         st.caption(f"☁️ 推送(cloud-sync){_CS_ICON[h]}:{msg}")
 
