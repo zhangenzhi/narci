@@ -318,12 +318,14 @@ def render_fleet(res: dict, stale_sec: int) -> None:
                    f"探于 {int(dt.datetime.now().timestamp() - res.get('ts', 0))}s 前 · "
                    f"`{res.get('instance_id','')}`")
         day = res.get("day", "")
-        with st.expander(f"全部明细(新鲜度 + 今日 UTC {day} 录制覆盖)"):
-            if fresh:
-                _freshness_table(fresh)
-            cov = res.get("coverage") or []
+        cov = res.get("coverage") or []
+        with st.expander(f"📅 今日 UTC {day} 录制覆盖({len(cov)} symbol)"):
+            # 旧 freshness 全量表已删:它跟 coverage 条(每 symbol 一行 144 桶)+
+            # 点色块下钻的逐 symbol 明细 100% 重复。这里只留 coverage 条。
             if cov and day:
                 try:
                     _render_coverage(cov, res.get("n_buckets", 144), day)
                 except Exception as e:
                     st.warning(f"coverage 渲染失败:{e}")
+            else:
+                st.caption("无 coverage 数据")
