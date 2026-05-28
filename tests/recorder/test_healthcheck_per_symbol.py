@@ -162,5 +162,20 @@ class TestPerSymbolStaleness(unittest.TestCase):
         self.assertIn("BTCUSDT", issues[0])
 
 
+    def test_partitioned_and_flat_shards_share_venue_key(self):
+        """2026-05-28 修:partition 后旧扁平 `coincheck/spot/l2/BTC_JPY_RAW_...` 与新分区
+        `coincheck/spot/l2/BTC_JPY/20260528/BTC_JPY_RAW_...` venue key 必须一致(锚 l2),
+        否则旧扁平 shard 被当独立 venue 永远 stale → docker 标 unhealthy(JP 实测踩过)。"""
+        # 旧扁平 5495s 前(redeploy 前最后一个 shard) + 新分区 60s 前(刚录)
+        _touch_shard(self.root, "coincheck/spot/l2", "BTC_JPY", 5495)
+        _touch_shard(self.root, "coincheck/spot/l2/BTC_JPY/20260528", "BTC_JPY", 60)
+        issues, info = self.hc.check_per_symbol_staleness(time.time())
+        # 必须合成一对(venue,symbol),取最新 mtime → 不 stale
+        assert info["per_symbol_pairs"] == 1, (
+            f"扁平+分区应共用同一 venue key,实得 {info['per_symbol_pairs']} 对 → "
+            "退化为分两个 venue,旧扁平那条永远 stale")
+        assert info["per_symbol_stale"] == 0, f"max(mtime)=60s 应 fresh,实得 stale={issues}"
+
+
 if __name__ == "__main__":
     unittest.main()

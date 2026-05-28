@@ -121,7 +121,14 @@ def _scan_all_per_symbol_latest() -> dict[tuple[str, str], float]:
         mt = _safe_mtime(path)
         if mt is None:
             continue
-        venue_rel = os.path.relpath(os.path.dirname(path), DATA_DIR)
+        # venue key = 路径到 'l2' 段为止(不含其下的 {SYMBOL}/{YYYYMMDD}/ 分区),
+        # 让旧扁平 .../l2/<file> 和新分区 .../l2/<SYM>/<DATE>/<file> 共用同一 venue
+        # key,max(mtime) 取最新 → 不再把旧扁平 shard 误判 stale(2026-05-28 修)。
+        parts = os.path.relpath(path, DATA_DIR).split(os.sep)
+        if "l2" in parts:
+            venue_rel = os.sep.join(parts[: parts.index("l2") + 1])
+        else:
+            venue_rel = os.path.relpath(os.path.dirname(path), DATA_DIR)
         key = (venue_rel, symbol)
         if mt > latest.get(key, 0.0):
             latest[key] = mt
