@@ -64,11 +64,20 @@ class HistoricalDownloader:
             print("❌ 配置错误: date_range 缺失")
             return []
 
-        # "auto"/"yesterday" → T-1(UTC),两端都支持 → donor 只拉昨日一天
+        # 日期支持:
+        #   "2026-05-27"   绝对 ISO 日期
+        #   "auto"/"yesterday" → T-1 UTC
+        #   "T-N"          → T-N UTC(donor 用 "T-2"/"auto" 形成 2 天缓冲,
+        #                    防 Vision archive 延迟 T-1 还没上线)
+        import re as _re
         def _resolve(s):
-            return (datetime.utcnow() - timedelta(days=1)
-                    if s in ("auto", "yesterday")
-                    else datetime.strptime(s, "%Y-%m-%d"))
+            s = str(s)
+            if s in ("auto", "yesterday"):
+                return datetime.utcnow() - timedelta(days=1)
+            m = _re.match(r"^T-(\d+)$", s)
+            if m:
+                return datetime.utcnow() - timedelta(days=int(m.group(1)))
+            return datetime.strptime(s, "%Y-%m-%d")
         start = _resolve(dr["start_date"])
         end = _resolve(dr["end_date"])
 

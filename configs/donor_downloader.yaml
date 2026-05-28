@@ -31,9 +31,11 @@ downloader:
   data_types:
     - "aggTrades"
 
-  # T-1 一天:两端 auto → UTC 昨日(同一天)
+  # 2 天窗口(T-2 → T-1):缓冲 Vision archive 偶尔延迟(spot 通常 T+1 02:00 UTC 上线,
+  # um_futures 偶尔晚几小时;5/27 那次实测 spot 齐 / um_futures 还 404)。
+  # 第二轮 cycle 上 T-2 已下载本地存在 → idempotent skip,几乎零带宽。
   date_range:
-    start_date: "auto"
+    start_date: "T-2"
     end_date: "auto"
 
   retry:

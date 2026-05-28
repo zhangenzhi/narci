@@ -86,6 +86,19 @@ def test_generate_tasks_auto_start_and_end_yields_single_day():
     assert {t[1] for t in tasks} == {expected_date}
 
 
+def test_generate_tasks_t_minus_n_window():
+    """T-N 语法:donor 实际用 'T-2' → 'auto' = 2 天窗口(缓冲 Vision archive 延迟)。"""
+    from datetime import datetime, timedelta
+    dl = _dl({
+        "market_type": "spot", "symbols": ["ETHUSDT"], "data_types": ["aggTrades"],
+        "date_range": {"start_date": "T-2", "end_date": "auto"},   # T-2 → T-1
+    })
+    tasks = dl.generate_tasks()
+    today = datetime.utcnow().date()
+    expected = {(today - timedelta(days=n)).strftime("%Y-%m-%d") for n in (1, 2)}
+    assert len(tasks) == 2 and {t[1] for t in tasks} == expected
+
+
 # ----------------------------- 委派 process_task ----------------------------- #
 
 class _FakeSource:
