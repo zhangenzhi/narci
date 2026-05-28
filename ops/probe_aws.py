@@ -152,7 +152,7 @@ def _ssm_exec(cfg: config.FleetConfig, script: str, comment: str, poll_sec: int 
     deadline = time.time() + poll_sec
     status = "Pending"
     while time.time() < deadline:
-        time.sleep(3)
+        time.sleep(1.5)   # 主机命令典型 4-7s,1.5s 间隔减检测抖动
         inv = json.loads(_aws(["ssm", "get-command-invocation",
                                "--command-id", cmd_id, "--instance-id", cfg.instance_id,
                                "--query", "{S:Status,O:StandardOutputContent}"], cfg.region))

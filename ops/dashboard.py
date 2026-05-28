@@ -17,6 +17,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import datetime as dt  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 
 from ops import config, fleet, probe_aws, probe_hpc, panels  # noqa: E402
 
@@ -58,8 +59,13 @@ def main() -> None:
         st.stop()
 
     today_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
-    with st.spinner(f"探测 {', '.join(s.upper() for s in sel)} (SSM ~6s/fleet)…"):
-        results = [_probe(name, today_utc) for name in sel]
+    # 并行:两 fleet SSM + cold ssh 之间无依赖,同时跑 → 时间从 sum 变 max
+    with st.spinner(f"并行探测 {', '.join(s.upper() for s in sel)} + cold(ssh lustre)…"):
+        with ThreadPoolExecutor(max_workers=len(sel) + 1) as ex:
+            fleet_futs = {n: ex.submit(_probe, n, today_utc) for n in sel}
+            cold_fut = ex.submit(_probe_cold)
+            results = [fleet_futs[n].result() for n in sel]
+            cold_res = cold_fut.result()
 
     # 顶部跨-fleet 总览 strip(2 秒判断)+ 单一 legend
     panels.render_summary(results, int(stale_sec))
@@ -74,8 +80,6 @@ def main() -> None:
     parked_all = set()
     for res in results:
         parked_all |= fleet.parked_venues(res.get("containers", []))
-    with st.spinner("探测 cold-tier (ssh lustre1)…"):
-        cold_res = _probe_cold()
     panels.render_cold(cold_res, parked_all, today_utc)
 
 
