@@ -205,19 +205,59 @@ def tile_health(container: dict, freshness: list[dict]) -> str:
 
 
 def parse_cold(stdout: str) -> list[dict]:
-    """###COLD### 段:每行 exchange/market|latest_daily|n_daily|n_gaps。"""
+    """###COLD### 段每行:ex/mkt|latest|n_daily|n_gaps[|days_csv|bad_csv]。
+
+    后两字段(2026-05 加)为近 120 天 DAILY 日期集合 + .corrupted 损坏集合,
+    供 classify_cold_history 算每 venue 近 90 天落地条。缺则视为空(向后兼容)。
+    """
     sec = split_sections(stdout).get("COLD", "")
     rows = []
     for line in sec.splitlines():
         parts = line.strip().split("|")
-        if len(parts) != 4 or "/" not in parts[0]:
+        if len(parts) < 4 or "/" not in parts[0]:
             continue
         ex, _, mkt = parts[0].partition("/")
+        days = set(d for d in parts[4].split(",") if d) if len(parts) > 4 else set()
+        bad = set(d for d in parts[5].split(",") if d) if len(parts) > 5 else set()
         rows.append({"exchange": ex, "market": mkt,
                      "latest_daily": parts[1] or None,
                      "n_daily": int(parts[2]) if parts[2].isdigit() else 0,
-                     "n_gaps": int(parts[3]) if parts[3].isdigit() else 0})
+                     "n_gaps": int(parts[3]) if parts[3].isdigit() else 0,
+                     "days": days, "bad": bad})
     return rows
+
+
+def classify_cold_history(rows: list[dict], today_yyyymmdd: str,
+                          parked_venues: set[tuple[str, str]] | None = None,
+                          n_days: int = 90) -> list[dict]:
+    """每 venue 近 n_days 天 DAILY 落地 bitmap(oldest→newest,n_days 字符):
+       '1' 已落 / '0' 缺(>=2 天前的真 gap)/ '?' lag(今/昨,compact 可能未跑)
+       / 'p' parked(venue 容器 exited,缺天豁免)/ 'x' corrupted(.corrupted 文件)。
+    """
+    import datetime as _dt
+    parked_venues = parked_venues or set()
+    today = _dt.datetime.strptime(today_yyyymmdd, "%Y%m%d").date()
+    out = []
+    for r in rows:
+        days_set = r.get("days", set())
+        bad_set = r.get("bad", set())
+        is_parked = (r["exchange"], r["market"]) in parked_venues
+        bits = []
+        for i in range(n_days):
+            offset = n_days - 1 - i              # i=0 → 最早一天, i=n-1 → 今天
+            day_str = (today - _dt.timedelta(days=offset)).strftime("%Y%m%d")
+            if day_str in bad_set:
+                bits.append("x")
+            elif day_str in days_set:
+                bits.append("1")
+            elif is_parked:
+                bits.append("p")
+            elif offset <= 1:                    # 今天/昨天 missing 算 lag(yellow)
+                bits.append("?")
+            else:
+                bits.append("0")                 # 旧天数 missing 真 gap(red)
+        out.append({**r, "history": "".join(bits)})
+    return sorted(out, key=lambda r: (r["exchange"], r["market"]))
 
 
 def classify_cold(rows: list[dict], today_yyyymmdd: str,

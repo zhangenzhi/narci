@@ -188,6 +188,30 @@ def _render_coverage(coverage: list, n_buckets: int, day: str) -> None:
 
 # ───────────────────────── Cold-tier(lustre1,全局)───────────────────────── #
 
+_COLD_HIST_CSS = """<style>
+.coldh-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-family:monospace;font-size:11.5px}
+.coldh-label{min-width:200px}
+.coldh-bar{display:inline-block;background:rgba(255,255,255,.06);border-radius:2px;line-height:0;font-size:0;vertical-align:middle}
+.coldh-bar span{display:inline-block;width:8px;height:18px}
+.coldh-bar span.g{background:#1a7f37}
+.coldh-bar span.y{background:#9a6700}
+.coldh-bar span.r{background:#cf222e}
+.coldh-bar span.x{background:#7a1620}
+.coldh-bar span.p{background:#5c636b}
+.coldh-scale{display:flex;gap:8px;margin-top:4px;font-family:monospace}
+.coldh-scale .pad{min-width:200px}
+.coldh-scale .marks span{display:inline-block;font-size:10px;opacity:.55}
+</style>"""
+_COLD_BIT_HTML = {"1": '<span class="g"></span>', "?": '<span class="y"></span>',
+                  "0": '<span class="r"></span>', "x": '<span class="x"></span>',
+                  "p": '<span class="p"></span>'}
+
+
+def _cold_history_bar(history: str) -> str:
+    cells = "".join(_COLD_BIT_HTML.get(c, "<span></span>") for c in history)
+    return f'<div class="coldh-bar">{cells}</div>'
+
+
 def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None:
     import datetime as dt
     with st.container(border=True):
@@ -195,32 +219,51 @@ def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None
             st.subheader("❄️ Cold-tier 落地")
             st.warning(f"cold 探测不可用(lustre1):{cold_res['error']}")
             return
-        rows = fleet.classify_cold(cold_res.get("rows", []), today_yyyymmdd, parked_venues)
-        overall = fleet.cold_overall(rows)
+        N_DAYS = 90
+        hist = fleet.classify_cold_history(cold_res.get("rows", []), today_yyyymmdd,
+                                           parked_venues, n_days=N_DAYS)
+        # 总览:任何 active venue 近 N 天有 '0' 就 RED;只有 '?' 就 AMBER;全 ok/parked 就 GREEN
+        any_red = any("0" in r["history"] or "x" in r["history"] for r in hist)
+        any_lag = any("?" in r["history"] for r in hist)
+        overall = "RED" if any_red else ("AMBER" if any_lag else "GREEN" if hist else "EMPTY")
         color, icon, word = _OVERALL.get(overall, ("#5c636b", "·", ""))
-        bad = [r for r in rows if r["status"] in ("stale", "missing")]
-        lag = [r for r in rows if r["status"] == "lag"]
-        st.subheader(f"❄️ {icon} Cold-tier 落地 · {word}")
+        st.subheader(f"❄️ {icon} Cold-tier 落地 · 近 {N_DAYS} 天 · {word}")
         age = int(dt.datetime.now().timestamp() - cold_res.get("ts", 0))
-        st.caption(f"每 venue 昨日(UTC {today_yyyymmdd} 的前一日)DAILY 是否已落 lustre1 · "
-                   f"探于 {age}s 前 · ssh→HPC")
-        if bad:
-            st.error("⚠️ 未落地/滞后多日:" + ", ".join(f"{r['exchange']}/{r['market']}" for r in bad))
-        elif lag:
-            st.warning("滞后 1 天(可能今日 compact 未跑):"
-                       + ", ".join(f"{r['exchange']}/{r['market']}" for r in lag))
-        if rows:
-            df = pd.DataFrame([{
-                "": _COLD_ICON.get(r["status"], "?"),
-                "交易所": r["exchange"], "市场": r["market"], "status": r["status"],
-                "最新 DAILY": r.get("latest_daily") or "—",
-                "落后(天)": r.get("days_behind"), "DAILY 数": r.get("n_daily"),
-                "GAPS": r.get("n_gaps"),
-            } for r in rows])
-            st.dataframe(df.style.apply(_row_style("status"), axis=1), width="stretch",
-                         hide_index=True, column_config={"status": None})
-        else:
+        st.caption(f"每 venue 每日 DAILY 是否已落 lustre1 · 🟢 已落 · 🟡 今/昨 lag · "
+                   f"🔴 缺(真 gap)· ⬛ PARKED · 🟥 corrupted · 探于 {age}s 前 · ssh→HPC")
+        if any_red:
+            reds = [f'{r["exchange"]}/{r["market"]}({r["history"].count("0")}天)'
+                    for r in hist if "0" in r["history"]]
+            st.error("⚠️ 缺 DAILY:" + ", ".join(reds))
+        if not hist:
             st.caption("cold 下无 venue 目录")
+            return
+        st.markdown(_COLD_HIST_CSS, unsafe_allow_html=True)
+        for r in hist:
+            h = r["history"]
+            green = h.count("1"); yellow = h.count("?"); red = h.count("0")
+            corrupt = h.count("x"); parked = h.count("p")
+            label = (f'<span style="opacity:.9">{r["exchange"]}/<b>{r["market"]}</b></span>'
+                     f'<span style="opacity:.55"> &nbsp;{green}/{N_DAYS}')
+            if red: label += f' · <span style="color:#cf222e">缺{red}</span>'
+            if yellow: label += f' · <span style="color:#9a6700">lag{yellow}</span>'
+            if parked: label += f' · 停{parked}'
+            if corrupt: label += f' · <span style="color:#7a1620">坏{corrupt}</span>'
+            label += "</span>"
+            st.markdown(
+                f'<div class="coldh-row"><div class="coldh-label">{label}</div>'
+                f'{_cold_history_bar(h)}</div>', unsafe_allow_html=True)
+        # 时间刻度:每 30 天一标(N_DAYS 天 × 8px = 720px;240px / 标)
+        cell_px = 8
+        n_marks = 3
+        mark_w = (N_DAYS * cell_px) // n_marks
+        labels_html = "".join(
+            f'<span style="display:inline-block;width:{mark_w}px">{N_DAYS - i*(N_DAYS//n_marks)}d 前</span>'
+            for i in range(n_marks))
+        labels_html += '<span style="display:inline-block">今天</span>'
+        st.markdown(
+            f'<div class="coldh-scale"><div class="pad"></div><div class="marks">{labels_html}</div></div>',
+            unsafe_allow_html=True)
 
 
 _CS_ICON = {"ok": "✓", "bad": "✕", "stale": "!", "unknown": "?"}

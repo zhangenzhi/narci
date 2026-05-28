@@ -22,17 +22,54 @@ class HpcError(RuntimeError):
 
 
 def _remote_script(cold_path: str) -> str:
+    """lustre 侧只读扫描:对每 venue 输出 ex/mkt|latest|n_daily|n_gaps|days_csv|bad_csv。
+
+    days_csv = 该 venue 已有 DAILY 的日期集合(近 120 天,YYYYMMDD 逗号串);
+    bad_csv  = 含 .corrupted 后缀的损坏 DAILY 日期集合。
+    用 Python heredoc(quoted)避免 bash 跟 Python 字符串互相干扰;COLD 路径走 env。
+    """
     return f"""set +e
-COLD={cold_path}
+export COLD={cold_path}
 [ -d "$COLD" ] || {{ echo "###ERR### cold path not found: $COLD"; exit 0; }}
 echo '###COLD###'
-for d in $(find "$COLD" -mindepth 2 -maxdepth 2 -type d | sort); do
-  rel=${{d#$COLD/}}
-  latest=$(ls "$d"/*_DAILY*.parquet 2>/dev/null | sed -E 's/.*_([0-9]{{8}})_DAILY.*/\\1/' | sort | tail -1)
-  ndaily=$(ls "$d"/*_DAILY*.parquet 2>/dev/null | wc -l | tr -d ' ')
-  ngaps=$(ls "$d"/*_GAPS_*.json 2>/dev/null | wc -l | tr -d ' ')
-  echo "$rel|$latest|$ndaily|$ngaps"
-done
+python3 - <<'PYEOF'
+import os, re, datetime
+COLD = os.environ["COLD"]
+RAW_DAILY = re.compile(r"_RAW_(\\d{{8}})_DAILY\\.parquet$")
+RAW_BAD   = re.compile(r"_RAW_(\\d{{8}})_DAILY\\.parquet\\.corrupted$")
+cutoff = (datetime.date.today() - datetime.timedelta(days=120)).strftime("%Y%m%d")
+try:
+    exchanges = sorted(os.listdir(COLD))
+except OSError:
+    exchanges = []
+for ex in exchanges:
+    ex_p = os.path.join(COLD, ex)
+    if not os.path.isdir(ex_p):
+        continue
+    for mkt in sorted(os.listdir(ex_p)):
+        mkt_p = os.path.join(ex_p, mkt)
+        if not os.path.isdir(mkt_p):
+            continue
+        try:
+            files = os.listdir(mkt_p)
+        except OSError:
+            continue
+        days, bad = set(), set()
+        ngaps = 0
+        for fn in files:
+            mb = RAW_BAD.search(fn)
+            if mb and mb.group(1) >= cutoff:
+                bad.add(mb.group(1)); continue
+            md = RAW_DAILY.search(fn)
+            if md and md.group(1) >= cutoff:
+                days.add(md.group(1))
+            if fn.endswith(".json") and "_GAPS_" in fn:
+                ngaps += 1
+        latest = max(days) if days else ""
+        n_daily = len(days)
+        print(f"{{ex}}/{{mkt}}|{{latest}}|{{n_daily}}|{{ngaps}}|"
+              f"{{','.join(sorted(days))}}|{{','.join(sorted(bad))}}")
+PYEOF
 """
 
 
