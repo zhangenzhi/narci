@@ -410,6 +410,10 @@ services:
     volumes:
       - narci-donor-data:/app/replay_buffer
     restart: unless-stopped
+    # donor 不跑 health server(Dockerfile 的 curl localhost:8079/health 不适用)
+    # 否则 docker 会标 unhealthy → reco-gui 红
+    healthcheck:
+      disable: true
     logging:
       driver: json-file
       options:
