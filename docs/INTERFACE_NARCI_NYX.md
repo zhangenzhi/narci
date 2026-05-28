@@ -1,5 +1,12 @@
 # INTERFACE_NARCI_NYX — narci → nyx contract
 
+> ⚠️ **2026-05-28 布局变更通知(需 nyx reader 跟进)**:realtime RAW 落盘改为 **symbol/day
+> 分区** `realtime/{exchange}/{market}/l2/{SYMBOL}/{YYYYMMDD}/{SYM}_RAW_*.parquet`(原扁平
+> `l2/{SYM}_RAW_*.parquet`,forward-only,旧文件留原地)。**4-col schema、文件名、side enum
+> 全不变**,只是多了 `{SYMBOL}/{YYYYMMDD}/` 两层目录。若 nyx 自己 glob/列 RAW 喂
+> `L2Reconstructor`(而非用 narci 的递归发现 `get_all_parquet_files`),需改成 **递归
+> `**/*_RAW_*.parquet`**,别假设文件直接在 `l2/` 下。cold-tier DAILY 布局不变。narci SHA `512b872`。
+
 > 这份是 **narci** 团队回给 **nyx** 团队的对应文档。与 nyx 端
 > `docs/INTERFACE_NYX_NARCI.md` (nyx SHA `1c0b39b` 重命名前是
 > `NARCI_NYX_INTERFACE.md`) 对偶。

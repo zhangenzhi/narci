@@ -1,5 +1,13 @@
 # INTERFACE_NARCI_ECHO — narci → echo contract
 
+> ⚠️ **2026-05-28 布局变更通知(需 echo reader 跟进)**:realtime RAW 落盘从扁平
+> `realtime/{exchange}/{market}/l2/{SYM}_RAW_*.parquet` 改为 **symbol/day 分区**
+> `realtime/{exchange}/{market}/l2/{SYMBOL}/{YYYYMMDD}/{SYM}_RAW_*.parquet`(forward-only,
+> 旧扁平文件留原地)。**若 echo 扫 narci shard**(如 `find replay_buffer/realtime/.../l2/ -mmin`
+> 查 venue 活性、或 glob `l2/*.parquet`),改为 **`os.walk` 递归 / `**/*_RAW_*.parquet`**,
+> 并按"锚 `l2` 段取 (exchange,market) + 文件名取 symbol"解析(对扁平+分区都成立)。
+> tarball/session 目录契约不变。narci SHA `512b872`。
+
 > 这份是 **narci** 团队回给 **echo** 团队的对应文档。回应 echo 端
 > `docs/INTERFACE_ECHO_NARCI.md` (echo SHA `82622ed` / `11957d4`,
 > 之前文件名 `INTERFACE_NARCI.md`) 提出的契约,声明 narci 这边的对齐确认、
