@@ -13,8 +13,10 @@
   - 原子快照注入（使每个落盘文件自包含）
   - 定时落盘 + 退役清理
 
-落盘目录：{save_dir}/{exchange}/{market_type}/l2/
-文件名：  {SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet
+落盘路径(2026-05 起按 symbol/day 分区):
+  {save_dir}/{exchange}/{market_type}/l2/{SYMBOL}/{YYYYMMDD}/{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet
+消费方靠"正向锚 l2 段取 (exchange,market) + 文件名取 symbol + os.walk 递归"兼容本布局
+与旧扁平布局(文件直接在 l2/ 下),无 flag-day。路径由 wal.raw_shard_path 统一构造。
 """
 
 import asyncio
@@ -28,7 +30,7 @@ from datetime import datetime
 import pandas as pd
 
 from recorder.exchange import get_adapter, ExchangeAdapter
-from recorder.wal import SegmentWAL, recover_orphans, write_parquet_atomic
+from recorder.wal import SegmentWAL, recover_orphans, write_parquet_atomic, raw_shard_path
 from core.config import load_config_section
 from core.io import load_parquet
 
@@ -535,9 +537,7 @@ class L2Recorder:
         raw_path = None
         if paths:
             ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            candidate = os.path.join(
-                self.save_dir, f"{sym.upper()}_RAW_{ts_str}.parquet"
-            )
+            candidate = raw_shard_path(self.save_dir, sym, ts_str)  # {SYMBOL}/{YYYYMMDD}/
             try:
                 n = await asyncio.to_thread(
                     self._merge_segments_to_raw, paths, candidate
@@ -618,13 +618,15 @@ class L2Recorder:
         cutoff = time.time() - self.retain_days * 86400
         removed = 0
         try:
-            for fname in os.listdir(self.save_dir):
-                if not fname.endswith(".parquet"):
-                    continue
-                fpath = os.path.join(self.save_dir, fname)
-                if os.path.getmtime(fpath) < cutoff:
-                    os.remove(fpath)
-                    removed += 1
+            # save_dir 下分区为 {SYMBOL}/{YYYYMMDD}/*.parquet,递归扫(兼容旧扁平)
+            for root, _, files in os.walk(self.save_dir):
+                for fname in files:
+                    if not fname.endswith(".parquet"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    if os.path.getmtime(fpath) < cutoff:
+                        os.remove(fpath)
+                        removed += 1
             if removed:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] 🗑️ 已清理 {removed} 个过期文件 (>{self.retain_days}天)")
         except Exception as e:
@@ -645,7 +647,7 @@ class L2Recorder:
                 continue
             try:
                 ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                raw_path = os.path.join(self.save_dir, f"{sym.upper()}_RAW_{ts_str}.parquet")
+                raw_path = raw_shard_path(self.save_dir, sym, ts_str)  # {SYMBOL}/{YYYYMMDD}/
                 n = self._merge_segments_to_raw(paths, raw_path)
                 wal.discard(paths)
                 print(f"[SHUTDOWN] 📥 {sym.upper()} 最终落盘完成 ({n} 行, {len(paths)} 段)")

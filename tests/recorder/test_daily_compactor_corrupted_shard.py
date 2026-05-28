@@ -110,6 +110,22 @@ def test_compact_skips_and_quarantines_corrupted_shards():
         assert len(df) == 300, f"expected 300 rows from 3 valid shards, got {len(df)}"
 
 
+def test_compact_finds_partitioned_shards():
+    """新 symbol/day 分区:shard 落在 {raw}/{SYMBOL}/{YYYYMMDD}/ 下,
+    compactor 递归 glob 应能找到并聚合(数据完整性关键路径)。"""
+    from recorder.wal import raw_shard_path
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _build_compactor(Path(tmp))
+        raw = Path(c.raw_dir)
+        for hh in ("010000", "020000", "030000"):
+            p = Path(raw_shard_path(str(raw), c.symbol, f"20260521_{hh}"))
+            assert p.parent.name == "20260521" and p.parent.parent.name == c.symbol.upper()
+            _write_valid_shard(p, n_rows=50)
+        assert c.compact_small_files() is True
+        df = pd.read_parquet(Path(c.daily_file_path))
+        assert len(df) == 150, f"分区下 3×50 shard 应被找到聚合,得 {len(df)}"
+
+
 def test_compact_returns_false_when_all_corrupted():
     with tempfile.TemporaryDirectory() as tmp:
         c = _build_compactor(Path(tmp))

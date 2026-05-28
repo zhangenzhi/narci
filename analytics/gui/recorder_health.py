@@ -27,12 +27,18 @@ DEFAULT_STALE_SEC = 300
 
 
 def _venue_market(rel_parts: list[str]) -> tuple[str, str]:
-    """从 realtime/ 下的相对路径段解析 (exchange, market)。
-    新结构 {exchange}/{market}/l2/file → (exchange, market);
-    旧结构 {market}/l2/file → ("?", market)。"""
-    if len(rel_parts) >= 3 and rel_parts[-2] == "l2":
-        return rel_parts[-4] if len(rel_parts) >= 4 else "?", rel_parts[-3]
-    return "?", rel_parts[-3] if len(rel_parts) >= 3 else "?"
+    """从 realtime/ 下的相对路径段解析 (exchange, market)，**正向锚 l2**。
+
+    l2 在 venue 根下位置固定:``{exchange}/{market}/l2/...``,其前两段恒为
+    (exchange, market),不管 l2 后是扁平文件还是 ``{symbol}/{date}/`` 分区 —— 故
+    本布局与旧扁平布局都兼容(2026-05 symbol/day 分区后仍正确)。symbol 由文件名取。
+    """
+    if "l2" in rel_parts:
+        i = rel_parts.index("l2")
+        ex = rel_parts[i - 2] if i >= 2 else "?"
+        mkt = rel_parts[i - 1] if i >= 1 else "?"
+        return ex, mkt
+    return "?", rel_parts[-3] if len(rel_parts) >= 3 else "?"   # 旧无 l2 结构兜底
 
 
 def scan_freshness(realtime_root: str, now: float | None = None,

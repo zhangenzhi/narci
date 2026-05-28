@@ -149,6 +149,20 @@ def discovered_symbols(wal_dir: str) -> list[str]:
     return sorted(syms)
 
 
+def raw_shard_path(raw_dir: str, sym: str, ts_str: str, *, mkdir: bool = True) -> str:
+    """规范 RAW 分区路径:``{raw_dir}/{SYMBOL}/{YYYYMMDD}/{SYMBOL}_RAW_{ts}.parquet``。
+
+    ``ts_str`` 形如 ``YYYYMMDD_HHMMSS``;按 symbol/day 分区(2026-05 起),让每个
+    叶子目录小、列举/prune 快。消费方靠"正向锚 l2 段定位 (exchange,market) + 文件名取
+    symbol + os.walk 递归"兼容本布局与旧扁平布局(文件直接在 l2/ 下),无需 flag-day。
+    """
+    sym_u = sym.upper()
+    d = os.path.join(raw_dir, sym_u, ts_str[:8])
+    if mkdir:
+        os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"{sym_u}_RAW_{ts_str}.parquet")
+
+
 def recover_orphans(wal_dir: str, raw_dir: str, *, fsync: bool = True) -> list[str]:
     """把上次进程残留的段合并成规范 RAW 文件,交还后删段。
 
@@ -169,8 +183,7 @@ def recover_orphans(wal_dir: str, raw_dir: str, *, fsync: bool = True) -> list[s
         frames = [load_parquet(p) for p in paths]
         df = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
         ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        raw_path = os.path.join(raw_dir, f"{sym}_RAW_{ts_str}.parquet")
-        os.makedirs(raw_dir, exist_ok=True)
+        raw_path = raw_shard_path(raw_dir, sym, ts_str)   # 分区:{SYMBOL}/{YYYYMMDD}/
         write_parquet_atomic(df, raw_path, fsync=fsync)
         for p in paths:
             try:

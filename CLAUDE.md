@@ -181,7 +181,7 @@ Recorder config keys:
 
 4-column parquet: `timestamp` (ms), `side` (0-4), `price` (float), `quantity` (float, may be negative for seller-maker trades).
 
-Directory layout: `replay_buffer/realtime/{exchange}/{market_type}/l2/{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet`. Daily compacted: `*_DAILY.parquet`.
+Directory layout (symbol/day partitioned since 2026-05): `replay_buffer/realtime/{exchange}/{market_type}/l2/{SYMBOL}/{YYYYMMDD}/{SYMBOL}_RAW_{YYYYMMDD}_{HHMMSS}.parquet`. Daily compacted: `*_DAILY.parquet`. **Consumers must `os.walk`-recurse under `l2/` and derive `(exchange,market)` by anchoring on the `l2` path segment (its preceding two segments), `symbol` from the filename** — this is back-compatible with the pre-2026-05 flat layout (files directly under `l2/`). Write path is built by `wal.raw_shard_path`.
 
 Reconstructed feature files (via nyx's `L2Reconstructor`) add: `mid_price`, `imbalance`, `spread`, `taker_buy_vol`, `taker_sell_vol`, plus depth levels `b_p_N`/`b_q_N`/`a_p_N`/`a_q_N`.
 

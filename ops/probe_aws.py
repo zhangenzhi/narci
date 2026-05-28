@@ -50,8 +50,9 @@ import json, os, re, time
 RB = os.environ.get("RB", "/app/replay_buffer")
 RAW = re.compile(r"^(.+)_RAW_\d{8}_\d{6}\.parquet$")
 def vm(parts):
-    if len(parts) >= 3 and parts[-2] == "l2":
-        return (parts[-4] if len(parts) >= 4 else "?", parts[-3])
+    if "l2" in parts:
+        i = parts.index("l2")
+        return (parts[i-2] if i >= 2 else "?", parts[i-1] if i >= 1 else "?")
     return ("?", parts[-3] if len(parts) >= 3 else "?")
 def freshness(root):
     latest = {}

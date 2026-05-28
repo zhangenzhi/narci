@@ -82,8 +82,10 @@ class DailyCompactor:
 
     def compact_small_files(self) -> bool:
         logger.info(f"[{self.symbol}] 聚合 {self.date_str} 的 1min 碎片...")
-        pattern = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_*.parquet")
-        files = [f for f in glob.glob(pattern) if "DAILY" not in f]
+        # 递归 ** 同时匹配旧扁平 ({raw_dir}/X_RAW_date_*.parquet) 与新分区
+        # ({raw_dir}/{SYMBOL}/{YYYYMMDD}/X_RAW_date_*.parquet);** 含零层目录。
+        pattern = os.path.join(self.raw_dir, "**", f"{self.symbol}_RAW_{self.date_str}_*.parquet")
+        files = sorted({f for f in glob.glob(pattern, recursive=True) if "DAILY" not in f})
         if not files:
             logger.warning(f"[{self.symbol}] 未找到 {self.date_str} 的任何录制文件")
             return False

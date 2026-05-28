@@ -118,12 +118,16 @@ def test_recover_orphans_merges_segments_to_raw(wal_dir):
 
         # 段已被删
         assert [f for f in os.listdir(wal_dir) if f.endswith(SEGMENT_SUFFIX)] == []
-        # 产出规范 RAW 文件名
-        raws = sorted(os.listdir(raw_dir))
-        assert any(f.startswith("BTCJPY_RAW_") and f.endswith(".parquet") for f in raws)
-        assert any(f.startswith("ETHJPY_RAW_") and f.endswith(".parquet") for f in raws)
-        btc = [f for f in raws if f.startswith("BTCJPY_RAW_")][0]
-        df = pd.read_parquet(os.path.join(raw_dir, btc))
+        # 产出**分区** RAW:{raw_dir}/{SYMBOL}/{YYYYMMDD}/{SYMBOL}_RAW_*.parquet
+        import glob as _glob
+        raws = _glob.glob(os.path.join(raw_dir, "**", "*_RAW_*.parquet"), recursive=True)
+        btc = [f for f in raws if os.path.basename(f).startswith("BTCJPY_RAW_")]
+        eth = [f for f in raws if os.path.basename(f).startswith("ETHJPY_RAW_")]
+        assert len(btc) == 1 and len(eth) == 1
+        # 验证 symbol/day 分区结构:.../BTCJPY/{8位日期}/BTCJPY_RAW_...
+        parts = btc[0].split(os.sep)
+        assert parts[-3] == "BTCJPY" and len(parts[-2]) == 8 and parts[-2].isdigit()
+        df = pd.read_parquet(btc[0])
         assert list(df["timestamp"]) == [1000, 1001, 2000, 2001]
     finally:
         import shutil

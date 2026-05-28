@@ -16,11 +16,14 @@ from analytics.gui.recorder_health import scan_freshness, scan_wal_backlog
 
 def _make_rb(tmp_path):
     rt = tmp_path / "realtime" / "binance" / "spot" / "l2"
-    rt.mkdir(parents=True)
-    (rt / "BTCJPY_RAW_20260527_010000.parquet").write_bytes(b"x")
-    (rt / "BTCJPY_RAW_20260527_010600.parquet").write_bytes(b"x")
+    # BTCJPY 走新 symbol/day 分区布局
+    part = rt / "BTCJPY" / "20260527"
+    part.mkdir(parents=True)
+    (part / "BTCJPY_RAW_20260527_010000.parquet").write_bytes(b"x")
+    (part / "BTCJPY_RAW_20260527_010600.parquet").write_bytes(b"x")
+    # ETHJPY 保留旧扁平布局(证明向后兼容)+ DAILY 应被排除
     (rt / "ETHJPY_RAW_20260527_010000.parquet").write_bytes(b"x")
-    (rt / "BTCJPY_DAILY.parquet").write_bytes(b"x")          # DAILY 应被排除
+    (rt / "BTCJPY_DAILY.parquet").write_bytes(b"x")
     wal = tmp_path / "wal" / "binance" / "spot" / "l2"
     wal.mkdir(parents=True)
     (wal / "BTCJPY_000001.segwal").write_bytes(b"x")
