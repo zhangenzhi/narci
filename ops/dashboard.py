@@ -24,9 +24,9 @@ st.set_page_config(page_title="Narci Reco Ops", layout="wide", page_icon="🛰�
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def _probe(name: str):
-    """缓存 60s;刷新按钮 .clear() 强制重拉。"""
-    return probe_aws.probe_fleet(name)
+def _probe(name: str, day_utc: str):
+    """缓存 60s,key 含 day_utc(跨日自动失效);刷新按钮 .clear() 强制重拉。"""
+    return probe_aws.probe_fleet(name, day_utc)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -57,8 +57,9 @@ def main() -> None:
         st.info("选至少一个 fleet。")
         st.stop()
 
+    today_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
     with st.spinner(f"探测 {', '.join(s.upper() for s in sel)} (SSM ~6s/fleet)…"):
-        results = [_probe(name) for name in sel]
+        results = [_probe(name, today_utc) for name in sel]
 
     # 顶部跨-fleet 总览 strip(2 秒判断)+ 单一 legend
     panels.render_summary(results, int(stale_sec))
@@ -75,7 +76,6 @@ def main() -> None:
         parked_all |= fleet.parked_venues(res.get("containers", []))
     with st.spinner("探测 cold-tier (ssh lustre1)…"):
         cold_res = _probe_cold()
-    today_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
     panels.render_cold(cold_res, parked_all, today_utc)
 
 

@@ -94,12 +94,13 @@ def parse_health(text: str) -> list[dict]:
 
 
 def parse_scan(text: str) -> dict:
-    """###SCAN### 段是容器内 scan_freshness/scan_wal_backlog 的 JSON。"""
+    """###SCAN### 段是容器内 scanner 的 JSON(freshness + wal + 当日 coverage bitmap)。"""
     try:
         d = json.loads(text)
     except Exception:
-        return {"freshness": [], "wal": []}
-    return {"freshness": d.get("freshness", []), "wal": d.get("wal", [])}
+        return {"freshness": [], "wal": [], "coverage": [], "n_buckets": 144}
+    return {"freshness": d.get("freshness", []), "wal": d.get("wal", []),
+            "coverage": d.get("coverage", []), "n_buckets": d.get("n_buckets", 144)}
 
 
 def classify_freshness(rows: list[dict], now: float | None = None,

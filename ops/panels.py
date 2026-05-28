@@ -142,6 +142,58 @@ def _venue_detail(res: dict, container: dict, fresh: list[dict]) -> None:
             st.caption("无积压 ✅")
 
 
+# ───────────────────────── Coverage 进度条(当日 144 桶)───────────────────────── #
+
+_COV_COLOR = {"1": "#1a7f37", "x": "#cf222e", "0": "transparent"}
+
+
+def _coverage_bar(bitmap: str, cell_w: int = 4, cell_h: int = 16) -> str:
+    """渲染一条 HTML 色块进度条:每格 = 10min,绿=有/透明=缺/红=坏。"""
+    cells = "".join(
+        f'<span style="display:inline-block;width:{cell_w}px;height:{cell_h}px;'
+        f'background:{_COV_COLOR.get(c, "transparent")}"></span>'
+        for c in bitmap
+    )
+    return (
+        f'<div style="display:inline-block;background:rgba(255,255,255,.06);'
+        f'border-radius:2px;line-height:0;font-size:0;vertical-align:middle">{cells}</div>'
+    )
+
+
+def _render_coverage(coverage: list, n_buckets: int, day: str) -> None:
+    """每 (ex/mkt/sym) 一行:label + 144 桶进度条(00:00→23:59 UTC)。"""
+    st.markdown(f"##### 📅 {day} UTC 录制覆盖({n_buckets} 桶 × {1440 // n_buckets} 分钟)")
+    st.caption(f"🟢 有 shard · ⬛ 缺失 · 🔴 损坏(.corrupted)  ·  按时间从左 00:00 到右 23:59 排布")
+    rows = sorted(coverage, key=lambda r: (r.get("exchange", ""), r.get("market", ""),
+                                           r.get("symbol", "")))
+    parts = []
+    label_w = 240
+    bar_w = n_buckets * 4
+    for r in rows:
+        bm = r.get("bitmap", "0" * n_buckets)
+        present, bad = bm.count("1"), bm.count("x")
+        pct = round(100 * (present + bad) / n_buckets, 1)
+        bad_html = (f' · <span style="color:#cf222e">坏 {bad}</span>') if bad else ""
+        label = (f'<span style="opacity:.9">{r["exchange"]}/{r["market"]}/<b>{r["symbol"]}</b></span>'
+                 f'<span style="opacity:.55"> &nbsp;{present}/{n_buckets} ({pct}%){bad_html}</span>')
+        parts.append(
+            f'<div style="display:flex;align-items:center;gap:8px;margin:3px 0;'
+            f'font-family:monospace;font-size:11.5px">'
+            f'<div style="min-width:{label_w}px">{label}</div>'
+            f'{_coverage_bar(bm)}</div>'
+        )
+    # 时间刻度:每 4h 一标
+    n_marks = 6
+    mark_w = bar_w // n_marks
+    scale_marks = "".join(
+        f'<span style="display:inline-block;width:{mark_w}px;font-size:10px;opacity:.55">'
+        f'{h:02d}:00</span>' for h in range(0, 24, 24 // n_marks)
+    )
+    scale = (f'<div style="display:flex;gap:8px;margin-top:4px;font-family:monospace">'
+             f'<div style="min-width:{label_w}px"></div><div>{scale_marks}</div></div>')
+    st.markdown("".join(parts) + scale, unsafe_allow_html=True)
+
+
 # ───────────────────────── Cold-tier(lustre1,全局)───────────────────────── #
 
 def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None:
@@ -266,16 +318,17 @@ def render_fleet(res: dict, stale_sec: int) -> None:
             st.caption("👆 点一个模块色块查看该 venue 的逐 symbol 明细。")
 
         # 元信息 + 全量,降权放底部
+        h = res.get("health", [])
+        h_ok = sum(1 for x in h if x["ok"]); h_tot = len(h)
         st.caption(f"EC2 `{res.get('ec2_state')}` · SSM `{res.get('ssm_ping')}` · "
                    f"commit `{res.get('commit',{}).get('sha','?')}` · "
+                   f"/health {h_ok}/{h_tot} OK · "
                    f"探于 {int(dt.datetime.now().timestamp() - res.get('ts', 0))}s 前 · "
                    f"`{res.get('instance_id','')}`")
-        with st.expander("全部明细(新鲜度 / health 全量)"):
+        day = res.get("day", "")
+        with st.expander(f"全部明细(新鲜度 + 今日 UTC {day} 录制覆盖)"):
             if fresh:
                 _freshness_table(fresh)
-            h = res.get("health", [])
-            if h:
-                st.caption(f"/health: {sum(1 for x in h if x['ok'])}/{len(h)} OK")
-                st.dataframe(pd.DataFrame([{"端口": x["port"], "": "✓" if x["ok"] else "✕",
-                                            "HTTP": x["code"]} for x in h]),
-                             width="stretch", hide_index=True)
+            cov = res.get("coverage") or []
+            if cov and day:
+                _render_coverage(cov, res.get("n_buckets", 144), day)
