@@ -28,8 +28,8 @@ mkdir -p "$LOG_DIR"
 cd "$NARCI_DIR"
 
 echo "[$(date '+%F %T')] >>> donor host: $(hostname)" | tee -a "$LOG"
-echo "[$(date '+%F %T')] >>> downloading Binance Vision (configs/downloader.yaml)" | tee -a "$LOG"
-"$PYTHON" main.py download 2>&1 | tee -a "$LOG"
+echo "[$(date '+%F %T')] >>> downloading Binance Vision T-1 only (configs/donor_downloader.yaml)" | tee -a "$LOG"
+"$PYTHON" main.py download --config configs/donor_downloader.yaml 2>&1 | tee -a "$LOG"
 
 echo "[$(date '+%F %T')] >>> push replay_buffer/official_validation -> $DRIVE_REMOTE" | tee -a "$LOG"
 rclone copy "${NARCI_DIR}/replay_buffer/official_validation" "$DRIVE_REMOTE" \

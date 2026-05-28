@@ -64,10 +64,13 @@ class HistoricalDownloader:
             print("❌ 配置错误: date_range 缺失")
             return []
 
-        start = datetime.strptime(dr["start_date"], "%Y-%m-%d")
-        end_str = dr["end_date"]
-        end = datetime.now() - timedelta(days=1) if end_str == "auto" \
-            else datetime.strptime(end_str, "%Y-%m-%d")
+        # "auto"/"yesterday" → T-1(UTC),两端都支持 → donor 只拉昨日一天
+        def _resolve(s):
+            return (datetime.utcnow() - timedelta(days=1)
+                    if s in ("auto", "yesterday")
+                    else datetime.strptime(s, "%Y-%m-%d"))
+        start = _resolve(dr["start_date"])
+        end = _resolve(dr["end_date"])
 
         dates = [(start + timedelta(days=d)).strftime("%Y-%m-%d")
                  for d in range((end - start).days + 1)]

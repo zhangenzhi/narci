@@ -1,0 +1,42 @@
+# donor 专用下载配置:每次 cycle 只拉 T-1 一天的 aggTrades 推 gdrive。
+# 与 downloader.yaml(研究用历史 backfill)分开,避免污染研究路径。
+# binance_vision_push.sh 通过 --config 显式指定本文件;每日 INTERVAL=86400 一轮。
+# 既已上传到 gdrive 的天 rclone copy 幂等 skip;容器若被 recreate 也只重拉 T-1。
+downloader:
+  base_dir: "./replay_buffer/official_validation"
+  max_workers: 3
+  market_type: "both"
+
+  symbols:
+    spot:
+      - "BTCUSDT"
+      - "ETHUSDT"
+      - "SOLUSDT"
+      - "BNBUSDT"
+      - "XRPUSDT"
+      - "DOGEUSDT"
+      - "BTCJPY"
+      - "ETHJPY"
+      - "SOLJPY"
+      - "XRPJPY"
+      - "DOGEJPY"
+    um_futures:
+      - "BTCUSDT"
+      - "ETHUSDT"
+      - "SOLUSDT"
+      - "BNBUSDT"
+      - "XRPUSDT"
+      - "DOGEUSDT"
+
+  data_types:
+    - "aggTrades"
+
+  # T-1 一天:两端 auto → UTC 昨日(同一天)
+  date_range:
+    start_date: "auto"
+    end_date: "auto"
+
+  retry:
+    max_retries: 5
+    backoff_factor: 2
+    timeout: 30

@@ -72,6 +72,20 @@ def test_generate_tasks_auto_end_date():
     assert all(t[0] == "ETHUSDT" and t[3] == "spot" for t in tasks)
 
 
+def test_generate_tasks_auto_start_and_end_yields_single_day():
+    """donor 用法:start_date+end_date 都 'auto' → 只拉 T-1 一天(不再做长 backfill)。"""
+    from datetime import datetime, timedelta
+    dl = _dl({
+        "market_type": "spot", "symbols": ["ETHUSDT", "BTCUSDT"], "data_types": ["aggTrades"],
+        "date_range": {"start_date": "auto", "end_date": "auto"},
+    })
+    tasks = dl.generate_tasks()
+    expected_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    # 2 symbol × 1 date × 1 dtype = 2 任务,全是昨日 UTC
+    assert len(tasks) == 2
+    assert {t[1] for t in tasks} == {expected_date}
+
+
 # ----------------------------- 委派 process_task ----------------------------- #
 
 class _FakeSource:
