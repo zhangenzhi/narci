@@ -159,19 +159,42 @@ def backtest_alpha_model(model_path, days, *, cfg: BacktestConfig | None = None,
 
 > 每阶段独立 commit + push;失败可单段 revert,不阻塞后续。
 
-### B0 — 护栏(无功能改动,先锁现状)
+### B0 — 护栏(无功能改动,先锁现状)— ☑ DONE
 
 **动机:** 撮合内核重测,策略外层薄测。重构前必须先把要改的代码全部锁住。
 
-**动作:**
-- `tests/simulation/test_runner_branches.py` —— 锁 warmup 边界 / threshold 跳过 /
-  重报撤 (`STRATEGY_REPRICE`) / TTL 撤 (`QUOTE_TTL_EXPIRED`) / fill 后状态。
-- `tests/simulation/test_pnl_accounting.py` —— 锁 realized + MtM(当前实现),
-  作为 B1 抽出 PnLAccountant 时的金标准。
-- `tests/calibration/test_replay_golden.py` —— 跑 `calibrate_session` 一份小黄金输入,
-  断言 `CalibrationReport` 关键字段。
+**已落地:**
+- `tests/simulation/test_runner_branches.py`(8 例,monkeypatch `_stream_days` +
+  `load_alpha_model` 注入受控事件流和 alpha 序列):
+  - warmup:期内 predict 计数但不下单
+  - 阈值:`|alpha| < threshold` 跳过下单
+  - 下单:`|alpha| >= threshold` 触发 `place_limit`,decisions 流有 PLACE
+  - 重报:live_oid 不空 + 新一次过阈 → `broker.cancel(STRATEGY_REPRICE)`(同向 / 变号
+    路径都覆盖;CC 现货下变号需要先 fill,所以同向 reprice 是最干净的测点)
+  - TTL:`ts >= place_ts + lifetime` → `broker.cancel(QUOTE_TTL_EXPIRED)`
+  - SESSION_END:循环后 dangling 报价 → spy 锁住 `broker.cancel(reason="SESSION_END")`
+    被调到(当前 emission 在 pending_cancels 里、无后续 event 处理 → 不会真 emit,
+    这是已知行为,B1 的 `Strategy.on_session_end` 需要保留这个 call)
+  - 入参守卫:未知 `quote_strategy` / `venue_symbol` 立即 `ValueError`
+- `tests/simulation/test_pnl_accounting.py`(4 例,合成 BUY → 穿透成交 → SELL →
+  穿透成交的完整 round-trip):
+  - 无下单 → PnL = 0
+  - round-trip → `cash = SIZE`, `inventory = 0`, `realized_pnl = cash`
+  - 只买不卖 → `realized_pnl = cash + inv * last_mid` 锁公式(10.5*SIZE)
+  - `edge_per_fill_bps = realized / total_notional * 1e4` 锁公式
+- `tests/calibration/test_replay_golden.py`(2 例,复用既有 `_build_synthetic_session`):
+  - 跑 `calibrate_session`,逐字段断言:身份、fill 匹配、cancel 延迟
+    (`real_p50_ms=187.0`)、adverse 字段存在 + 类型、`queue_scaling_suggestion` 范围、
+    `verdict` 白名单
+  - JSON round-trip 关键字段保持
 
-**验收:** 全套测试通过;新增测试在重构前后输出不变。
+**踩到的坑(留作 B1 参考):**
+- emit dict 字段名是 `cancel_reason`(不是 `reason`);PLACE event 用 `event_type`
+- 撤单进 `pending_cancels` 后,要**下一次** `apply_market_event` 才 emit;测试要加 trailing event
+- CC 现货:无库存不能下 SELL(spot-only inventory check)
+- SESSION_END cancel 调了但 emit 不上 —— B1 的 Strategy / Reporter 抽象要显式 flush
+
+**验收:** ✅ 全套 388 passed / 9 skipped;B0 新增 14 例全绿。
 
 ### B1 — 拆 god function
 
@@ -247,7 +270,7 @@ def backtest_alpha_model(model_path, days, *, cfg: BacktestConfig | None = None,
 
 | 阶段 | 状态 | commit |
 |------|------|--------|
-| B0 护栏 | ☐ TODO | — |
+| B0 护栏 | ☑ DONE | (本 commit) |
 | B1 拆 god | ☐ TODO | — |
 | B2 配置化 | ☐ TODO | — |
 | B3 CLI 收口 | ☐ TODO | — |
