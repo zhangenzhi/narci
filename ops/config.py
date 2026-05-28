@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[1]
 RECO_ENV = REPO / "deploy" / "reco" / ".env"
 
 # compose profile：决定 docker compose 认得哪些 profile-gated 服务(同 recorder_restart.sh）
-_PROFILES = {"jp": "tokyo,tokyo-extra", "sg": "global"}
+_PROFILES = {"jp": "tokyo,tokyo-extra", "sg": "global,donor"}
 
 
 def _env(key: str, default: str | None = None) -> str | None:

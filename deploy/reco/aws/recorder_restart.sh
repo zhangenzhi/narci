@@ -55,7 +55,7 @@ fi
 
 case "$target" in
   jp) instance_id="$NARCI_JP_INSTANCE_ID"; region="$AWS_REGION_JP"; profiles="tokyo,tokyo-extra" ;;
-  sg) instance_id="$NARCI_SG_INSTANCE_ID"; region="$AWS_REGION_SG"; profiles="global" ;;
+  sg) instance_id="$NARCI_SG_INSTANCE_ID"; region="$AWS_REGION_SG"; profiles="global,donor" ;;
   *)  echo "usage: $0 <jp|sg> [--pull] [--service <name>] [--ps-only]" >&2; exit 1 ;;
 esac
 

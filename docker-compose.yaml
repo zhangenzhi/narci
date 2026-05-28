@@ -376,5 +376,46 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # =====================================================================
+  # donor: Binance Vision aggTrades → gdrive:narci_official
+  # 2026-05-28 从 Mac mini 迁来 aws-sg。每日跑一次(donor_loop.sh INTERVAL=86400)。
+  # 限 `donor` profile,默认不启;sg fleet 通过 COMPOSE_PROFILES=global,donor 拉起。
+  # =====================================================================
+  donor:
+    build: .
+    container_name: narci-donor
+    profiles: [donor]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mkdir -p /root/.config/rclone
+        cat > /root/.config/rclone/rclone.conf <<EOF
+        [gdrive]
+        type = drive
+        scope = drive
+        token = $${RCLONE_GDRIVE_TOKEN}
+        root_folder_id = $${RCLONE_GDRIVE_FOLDER_ID}
+        EOF
+        echo "[donor] rclone.conf written, starting loop (INTERVAL=$${INTERVAL}s)"
+        exec bash deploy/reco/donor/donor_loop.sh
+    environment:
+      - NARCI_DIR=/app
+      - DRIVE_REMOTE=${NARCI_DRIVE_REMOTE_OFFICIAL:-gdrive:narci_official}
+      - PYTHON=python3
+      - INTERVAL=${DONOR_INTERVAL:-86400}
+      - RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+      - RCLONE_GDRIVE_TOKEN=${RCLONE_GDRIVE_TOKEN:-}
+      - RCLONE_GDRIVE_FOLDER_ID=${RCLONE_GDRIVE_FOLDER_ID:-}
+      - AWS_REGION=${AWS_REGION:-ap-southeast-1}
+    volumes:
+      - narci-donor-data:/app/replay_buffer
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 volumes:
   narci-data:
+  narci-donor-data:
