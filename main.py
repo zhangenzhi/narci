@@ -1,4 +1,5 @@
 import argparse
+import glob
 import os
 import sys
 import re
@@ -92,8 +93,12 @@ def cmd_compact(symbol, target_date=None):
         per_dir_syms: dict[str, list[str]] = {}
         for raw_dir in raw_dirs:
             local = set()
-            for f in os.listdir(raw_dir):
-                m = re.match(r"([A-Za-z0-9_]+)_RAW_\d{8}_\d{6}\.parquet$", f)
+            # RAW 现按 {raw_dir}/{SYMBOL}/{YYYYMMDD}/ 分区(2026-05 起),必须递归扫;
+            # ** 含零层目录,旧扁平 (文件直接在 raw_dir 下) 同样命中。
+            for path in glob.glob(os.path.join(raw_dir, "**", "*_RAW_*.parquet"),
+                                  recursive=True):
+                m = re.match(r"([A-Za-z0-9_]+)_RAW_\d{8}_\d{6}\.parquet$",
+                             os.path.basename(path))
                 if m:
                     local.add(m.group(1).upper())
             if local:
@@ -117,8 +122,11 @@ def cmd_compact(symbol, target_date=None):
     # 单 symbol 模式：遍历所有匹配的 raw_dir，每个都跑一遍
     matched_dirs = []
     for d in raw_dirs:
-        files_in_dir = os.listdir(d)
-        if any(re.match(rf"{symbol}_RAW_", f, re.IGNORECASE) for f in files_in_dir):
+        # 递归扫(分区布局 RAW 在 {SYMBOL}/{YYYYMMDD}/ 子目录),basename 大小写不敏感,
+        # 兼容旧扁平 (** 含零层目录)。
+        if any(re.match(rf"{symbol}_RAW_", os.path.basename(p), re.IGNORECASE)
+               for p in glob.glob(os.path.join(d, "**", "*_RAW_*.parquet"),
+                                  recursive=True)):
             matched_dirs.append(d)
 
     if not matched_dirs:
@@ -140,8 +148,13 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
     from recorder.daily_compactor import DailyCompactor
     symbol = symbol.upper()
 
-    # 扫描指定交易对的 1min RAW 文件
-    files = os.listdir(raw_dir)
+    # 扫描指定交易对的 1min RAW 文件。RAW 现按 {raw_dir}/{SYMBOL}/{YYYYMMDD}/ 分区,
+    # 必须递归(** 含零层目录,兼容旧扁平)。保留 basename → 全路径映射,供下方
+    # 大小写 rename 在文件所在分区子目录内原地改名。
+    raw_paths = glob.glob(os.path.join(raw_dir, "**", "*_RAW_*.parquet"),
+                          recursive=True)
+    path_by_name = {os.path.basename(p): p for p in raw_paths}
+    files = list(path_by_name.keys())
     # 修复：加入 re.IGNORECASE，忽略大小写，兼容 recorder 生成的 ethusdt_RAW...
     date_pattern = re.compile(rf"{symbol}_RAW_(\d{{8}})_\d{{6}}\.parquet", re.IGNORECASE)
     
@@ -163,8 +176,11 @@ def _compact_one_dir(symbol, target_date, raw_dir, official_dir, cold_dir, retai
                 if (full_prefix != symbol.upper()
                         and full_prefix.upper() == symbol.upper()):
                     new_f = symbol.upper() + f[len(full_prefix):]
-                    os.rename(os.path.join(raw_dir, f),
-                              os.path.join(raw_dir, new_f))
+                    # 在文件自身所在目录原地改名(分区子目录或旧扁平 raw_dir)
+                    old_path = path_by_name[f]
+                    new_path = os.path.join(os.path.dirname(old_path), new_f)
+                    os.rename(old_path, new_path)
+                    path_by_name[new_f] = new_path
                     f = new_f
 
             d_str = match.group(1)

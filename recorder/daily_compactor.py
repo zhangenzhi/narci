@@ -278,8 +278,10 @@ class DailyCompactor:
             logger.warning("DAILY 文件不存在，跳过碎片清理")
             return
 
-        pattern = os.path.join(self.raw_dir, f"{self.symbol}_RAW_{self.date_str}_*.parquet")
-        fragments = [f for f in glob.glob(pattern) if "DAILY" not in f]
+        # 递归匹配,与 compact_small_files 的 ** glob 对齐:RAW 现按
+        # {raw_dir}/{SYMBOL}/{YYYYMMDD}/ 分区,旧扁平 (** 含零层目录) 同样命中。
+        pattern = os.path.join(self.raw_dir, "**", f"{self.symbol}_RAW_{self.date_str}_*.parquet")
+        fragments = [f for f in glob.glob(pattern, recursive=True) if "DAILY" not in f]
         if fragments:
             for f in fragments:
                 os.remove(f)
