@@ -46,7 +46,8 @@ def test_parse_cold_with_days_csv():
 
 
 def test_classify_cold_history_red_lag_parked_corrupted():
-    """每天的状态映射:落=1 / 真 gap=0 / lag(今/昨)=? / parked=p / corrupted=x。"""
+    """每天的状态映射:落=1 / 真 gap=0 / lag(今/昨)=? / parked=p / corrupted=x
+    / 上线前=-。"""
     rows = [{"exchange": "x", "market": "spot",
              "days": {"20260527", "20260525", "20260520"},
              "bad": {"20260524"}},
@@ -55,10 +56,30 @@ def test_classify_cold_history_red_lag_parked_corrupted():
     out = {(r["exchange"], r["market"]): r["history"]
            for r in fleet.classify_cold_history(
                rows, "20260528", parked_venues={("gmo", "spot")}, n_days=10)}
-    # 10 天 0519→0528,today=0528(offset 0 missing=lag)、昨日=0527 已落
-    assert out[("x", "spot")] == "01000x101?", out[("x", "spot")]
-    # gmo:有 0520 一天有 DAILY,其余皆 parked('p')
+    # 10 天 0519→0528,today=0528(offset 0 missing=lag)、昨日=0527 已落。
+    # 0519 早于该 venue 最早 DAILY(0520)→ '-' 上线前(非 gap),不再算红。
+    assert out[("x", "spot")] == "-1000x101?", out[("x", "spot")]
+    # gmo:有 0520 一天有 DAILY,其余皆 parked('p')(parked 优先于 '-')
     assert out[("gmo", "spot")] == "p1pppppppp", out[("gmo", "spot")]
+
+
+def test_classify_cold_history_new_venue_no_false_gaps():
+    """新接入 venue:上线前的窗口段是 '-'(非 gap),不被刷红 —— 修复 dashboard
+    把 bitbank/bitflyer 这类近期上线 venue 整窗算"缺 N 天"的虚高。"""
+    # venue 仅最近 3 天有 DAILY(0526/0527/0528),窗口 10 天。
+    rows = [{"exchange": "bitbank", "market": "spot",
+             "days": {"20260526", "20260527", "20260528"}, "bad": set()}]
+    out = fleet.classify_cold_history(rows, "20260528", n_days=10)
+    h = out[0]["history"]
+    # 0519→0525 = 上线前(7 个 '-'),0526/0527/0528 = 已落('1')
+    assert h == "-------111", h
+    assert h.count("0") == 0, "上线前不应产生真 gap(红)"
+    assert h.count("-") == 7
+    # 完全无 DAILY 的 venue:无 floor,保持红/lag(让真正全缺仍显红)
+    empty = fleet.classify_cold_history(
+        [{"exchange": "dead", "market": "spot", "days": set(), "bad": set()}],
+        "20260528", n_days=10)[0]["history"]
+    assert "0" in empty and empty.count("-") == 0, empty
 
 
 def test_cold_overall():

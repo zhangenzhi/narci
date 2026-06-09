@@ -232,8 +232,15 @@ def classify_cold_history(rows: list[dict], today_yyyymmdd: str,
                           n_days: int = 90) -> list[dict]:
     """每 venue 近 n_days 天 DAILY 落地 bitmap(oldest→newest,n_days 字符):
        '1' 已落 / '0' 缺(>=2 天前的真 gap)/ '?' lag(今/昨,compact 可能未跑)
-       / 'p' parked(venue 容器 exited,缺天豁免)/ 'x' corrupted(.corrupted 文件)。
-    """
+       / 'p' parked(venue 容器 exited,缺天豁免)/ 'x' corrupted(.corrupted 文件)
+       / '-' 上线前(早于该 venue 窗口内最早 DAILY 的天,非 gap)。
+
+    '-' floor 的意义:新接入 venue(如 bitbank/bitflyer 上线 ~2 周)若把"出生"前
+    的整段窗口都算成真 gap,会被整窗刷红、"缺 N 天"虚高,把真正的 lag/gap 信号
+    淹掉。days_set 来自 probe 的近 120 天扫描,min(days_set) 即窗口内最早落地 =
+    我们能观测到的"出生日";早于此一律 '-'(中性)。days_set 为空(venue 完全无
+    DAILY)→ 无 floor,保持全红/lag,让真正全缺的 venue 仍显红(classify_cold
+    另会标 status=missing)。"""
     import datetime as _dt
     parked_venues = parked_venues or set()
     today = _dt.datetime.strptime(today_yyyymmdd, "%Y%m%d").date()
@@ -242,6 +249,9 @@ def classify_cold_history(rows: list[dict], today_yyyymmdd: str,
         days_set = r.get("days", set())
         bad_set = r.get("bad", set())
         is_parked = (r["exchange"], r["market"]) in parked_venues
+        # 窗口内最早 DAILY = venue 出生日;早于此的缺天是"上线前",不算 gap。
+        # YYYYMMDD 零填充 → 字典序即时间序,可直接比较。
+        earliest = min(days_set) if days_set else None
         bits = []
         for i in range(n_days):
             offset = n_days - 1 - i              # i=0 → 最早一天, i=n-1 → 今天
@@ -252,6 +262,8 @@ def classify_cold_history(rows: list[dict], today_yyyymmdd: str,
                 bits.append("1")
             elif is_parked:
                 bits.append("p")
+            elif earliest is not None and day_str < earliest:
+                bits.append("-")                 # 上线前,非 gap(中性,不计入缺)
             elif offset <= 1:                    # 今天/昨天 missing 算 lag(yellow)
                 bits.append("?")
             else:

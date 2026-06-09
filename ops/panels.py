@@ -198,13 +198,14 @@ _COLD_HIST_CSS = """<style>
 .coldh-bar span.r{background:#cf222e}
 .coldh-bar span.x{background:#7a1620}
 .coldh-bar span.p{background:#5c636b}
+.coldh-bar span.b{background:#21262d}
 .coldh-scale{display:flex;gap:8px;margin-top:4px;font-family:monospace}
 .coldh-scale .pad{min-width:200px}
 .coldh-scale .marks span{display:inline-block;font-size:10px;opacity:.55}
 </style>"""
 _COLD_BIT_HTML = {"1": '<span class="g"></span>', "?": '<span class="y"></span>',
                   "0": '<span class="r"></span>', "x": '<span class="x"></span>',
-                  "p": '<span class="p"></span>'}
+                  "p": '<span class="p"></span>', "-": '<span class="b"></span>'}
 
 
 def _cold_history_bar(history: str) -> str:
@@ -230,7 +231,8 @@ def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None
         st.subheader(f"❄️ {icon} Cold-tier 落地 · 近 {N_DAYS} 天 · {word}")
         age = int(dt.datetime.now().timestamp() - cold_res.get("ts", 0))
         st.caption(f"每 venue 每日 DAILY 是否已落 lustre1 · 🟢 已落 · 🟡 今/昨 lag · "
-                   f"🔴 缺(真 gap)· ⬛ PARKED · 🟥 corrupted · 探于 {age}s 前 · ssh→HPC")
+                   f"🔴 缺(真 gap)· ▫️ 上线前(非 gap)· ⬛ PARKED · 🟥 corrupted · "
+                   f"探于 {age}s 前 · ssh→HPC")
         if any_red:
             reds = [f'{r["exchange"]}/{r["market"]}({r["history"].count("0")}天)'
                     for r in hist if "0" in r["history"]]
@@ -242,13 +244,14 @@ def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None
         for r in hist:
             h = r["history"]
             green = h.count("1"); yellow = h.count("?"); red = h.count("0")
-            corrupt = h.count("x"); parked = h.count("p")
+            corrupt = h.count("x"); parked = h.count("p"); pre = h.count("-")
             label = (f'<span style="opacity:.9">{r["exchange"]}/<b>{r["market"]}</b></span>'
                      f'<span style="opacity:.55"> &nbsp;{green}/{N_DAYS}')
             if red: label += f' · <span style="color:#cf222e">缺{red}</span>'
             if yellow: label += f' · <span style="color:#9a6700">lag{yellow}</span>'
             if parked: label += f' · 停{parked}'
             if corrupt: label += f' · <span style="color:#7a1620">坏{corrupt}</span>'
+            if pre: label += f' · <span style="opacity:.4">上线前{pre}</span>'
             label += "</span>"
             st.markdown(
                 f'<div class="coldh-row"><div class="coldh-label">{label}</div>'
