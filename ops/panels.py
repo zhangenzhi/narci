@@ -27,6 +27,7 @@ _OVERALL = {  # overall -> (色, 形状, 文案)
     "GREEN": ("#1a7f37", "✓", "运行正常"),
     "RED": ("#cf222e", "✕", "需要关注"),
     "AMBER": ("#9a6700", "!", "滞后"),
+    "DEGRADED": ("#bf8700", "!", "降级 · 在跑探针红"),
     "EMPTY": ("#5c636b", "·", "无数据"),
 }
 _COLD_ICON = {"ok": "✓", "lag": "!", "stale": "✕", "missing": "✕", "parked": "⏸"}
@@ -80,7 +81,8 @@ def render_summary(results: list[dict], stale_sec: int) -> None:
             _, summ = _digest(res, stale_sec)
             color, icon, word = _OVERALL.get(summ["overall"], ("#5c636b", "·", ""))
             sub = (f"{summ['n_up']} up · {summ['n_parked']} parked · "
-                   f"{summ['n_bad']} bad · {len(summ['stale_venues'])} stale")
+                   f"{summ['n_down']} 宕机 · {summ['n_degraded']} 降级 · "
+                   f"{len(summ['stale_venues'])} stale")
         cards.append(
             f"<div style='flex:1;min-width:200px;background:{color};border-radius:12px;"
             f"padding:14px 18px;color:#fff'>"
@@ -314,25 +316,32 @@ def render_fleet(res: dict, stale_sec: int) -> None:
         st.subheader(f"{icon} {name} · {word}")
 
         n_stale = len(summ["stale_venues"])
-        m = st.columns(5)
+        m = st.columns(6)
         m[0].metric("容器 up", summ["n_up"])
         m[1].metric("PARKED", summ["n_parked"])
-        m[2].metric("异常容器", summ["n_bad"],
-                    delta=None if not summ["n_bad"] else f"+{summ['n_bad']}", delta_color="inverse")
-        m[3].metric("陈旧 venue", n_stale,
+        m[2].metric("宕机/重启", summ["n_down"], help="state=restarting:崩溃重启循环,没在录",
+                    delta=None if not summ["n_down"] else f"+{summ['n_down']}", delta_color="inverse")
+        m[3].metric("降级 (probe 503)", summ["n_degraded"],
+                    help="state=unhealthy:容器 Up、在录,只是 /health 返 503(per_symbol_stale / trade_silent)",
+                    delta=None if not summ["n_degraded"] else f"+{summ['n_degraded']}", delta_color="inverse")
+        m[4].metric("陈旧 venue", n_stale,
                     delta=None if not n_stale else f"+{n_stale}", delta_color="inverse")
         oldest = max((f["age_sec"] for f in fresh
                       if f["status"] in ("fresh", "stale") and f["age_sec"] is not None), default=None)
-        m[4].metric("最旧活跃数据", "—" if oldest is None else f"{int(oldest)}s")
+        m[5].metric("最旧活跃数据", "—" if oldest is None else f"{int(oldest)}s")
 
-        # RED:横幅 + 自动展开 stale 明细(不必点击)
-        if summ["overall"] == "RED":
+        # RED / DEGRADED:横幅 + 自动展开 stale 明细(不必点击)。
+        # 横幅把"宕机(没在录)"和"降级(在跑·探针红)"分行,避免误读成崩溃。
+        if summ["overall"] in ("RED", "DEGRADED"):
             parts = []
-            if summ["bad_containers"]:
-                parts.append("容器异常:" + ", ".join(summ["bad_containers"]))
+            if summ["down_containers"]:
+                parts.append("宕机/重启循环:" + ", ".join(summ["down_containers"]))
+            if summ["degraded_containers"]:
+                parts.append("降级(在跑·/health 503):" + ", ".join(summ["degraded_containers"]))
             if summ["stale_venues"]:
                 parts.append("陈旧 venue:" + ", ".join(summ["stale_venues"]))
-            st.error("⚠️ " + " ｜ ".join(parts))
+            banner = "⚠️ " + " ｜ ".join(parts)
+            (st.error if summ["overall"] == "RED" else st.warning)(banner)
             stale_rows = [f for f in fresh if f["status"] == "stale"]
             if stale_rows:
                 st.markdown("**陈旧 venue 明细(自动展开)**")

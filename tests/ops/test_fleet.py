@@ -117,6 +117,40 @@ def test_tile_health():
     assert fleet.tile_health({"name": "narci-cloud-sync", "state": "up"}, []) == "ok"
 
 
+def test_summarize_splits_down_and_degraded():
+    """restarting=宕机(down)、unhealthy=降级(degraded) 分开统计;n_bad 仍是合计。"""
+    ps = fleet.parse_ps(
+        "narci-recorder-coincheck|Up 3 hours (unhealthy)|img\n"
+        "narci-event-publisher|Restarting (2) 5 seconds ago|img\n"
+        "narci-recorder-binance-spot|Up 3 hours (healthy)|img")
+    summ = fleet.summarize(ps, [])
+    assert summ["n_down"] == 1 and summ["down_containers"] == ["narci-event-publisher"]
+    assert summ["n_degraded"] == 1 and summ["degraded_containers"] == ["narci-recorder-coincheck"]
+    assert summ["n_bad"] == 2                                   # 合计,向后兼容
+    assert set(summ["bad_containers"]) == {"narci-event-publisher", "narci-recorder-coincheck"}
+    assert summ["n_up"] == 1                                    # unhealthy 不计入 up
+    assert summ["overall"] == "RED"                            # 有 restarting → RED
+
+
+def test_summarize_degraded_only_is_degraded_not_red():
+    """只有 unhealthy(在跑·探针红)、无 stale/无 restarting → DEGRADED 而非 RED。
+
+    这正是 coincheck "Up (unhealthy)" 被误读成"崩了"的场景:容器在录,只是
+    /health 503,应显"降级"不应显"需要关注(崩)"。"""
+    ps = fleet.parse_ps(
+        "narci-recorder-coincheck|Up 3 hours (unhealthy)|img\n"
+        "narci-recorder-binance-spot|Up 3 hours (healthy)|img")
+    # freshness 全新鲜(无 stale)
+    fresh = fleet.classify_freshness(
+        [{"exchange": "coincheck", "symbol": "btc_jpy", "last_shard_ts": 10**9 - 30}],
+        now=10**9)
+    summ = fleet.summarize(ps, fresh)
+    assert summ["overall"] == "DEGRADED", summ
+    assert summ["n_down"] == 0
+    assert summ["n_degraded"] == 1
+    assert summ["degraded_containers"] == ["narci-recorder-coincheck"]
+
+
 def test_summarize_green_all_healthy():
     ps = fleet.parse_ps(
         "narci-recorder-a|Up 1 hour (healthy)|img\nnarci-recorder-b|Up 1 hour (healthy)|img")

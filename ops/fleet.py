@@ -384,15 +384,41 @@ def cold_overall(classified: list[dict]) -> str:
 
 
 def summarize(ps: list[dict], freshness: list[dict]) -> dict:
-    """一句话总览：RED 触发 = 有 stale venue 或有 restarting/unhealthy 容器。"""
+    """一句话总览,把"崩了"和"还在跑只是探针红"分开。
+
+    容器异常分两档:
+      - down(宕机):state=restarting —— 崩溃重启循环,**没在录**。
+      - degraded(降级):state=unhealthy —— 容器 Up、进程在跑、在写数据,只是
+        Dockerfile HEALTHCHECK(curl :8079/health)持续 503(per_symbol_stale /
+        trade_silent 之类的二级检查),**仍在录,只是部分数据可能掉**。
+
+    overall:
+      - RED   触发 = 有 stale venue 或有 down(restarting)容器 —— 真的有东西没在录。
+      - DEGRADED = 仅有 degraded(unhealthy)容器、无 stale/down —— 在跑但探针红。
+      - GREEN / EMPTY 同前。
+
+    向后兼容:保留 n_bad / bad_containers(= down + degraded 合计),老读取不破。
+    """
     stale = [r for r in freshness if r["status"] == "stale"]
-    bad_ct = [c for c in ps if c["state"] in ("restarting", "unhealthy")]
+    down = [c for c in ps if c["state"] == "restarting"]
+    degraded = [c for c in ps if c["state"] == "unhealthy"]
     up = [c for c in ps if c["state"] in ("healthy", "up")]
     parked = [c for c in ps if c["state"] == "exited"]
-    overall = "RED" if (stale or bad_ct) else ("GREEN" if up else "EMPTY")
+    if stale or down:
+        overall = "RED"
+    elif degraded:
+        overall = "DEGRADED"
+    elif up:
+        overall = "GREEN"
+    else:
+        overall = "EMPTY"
     return {
         "overall": overall,
-        "n_up": len(up), "n_parked": len(parked), "n_bad": len(bad_ct),
+        "n_up": len(up), "n_parked": len(parked),
+        "n_down": len(down), "n_degraded": len(degraded),
+        "n_bad": len(down) + len(degraded),          # 合计,向后兼容
+        "down_containers": [c["name"] for c in down],
+        "degraded_containers": [c["name"] for c in degraded],
+        "bad_containers": [c["name"] for c in down + degraded],   # 向后兼容
         "stale_venues": [f"{r.get('exchange','?')}/{r.get('symbol','?')}" for r in stale],
-        "bad_containers": [c["name"] for c in bad_ct],
     }
