@@ -82,6 +82,32 @@ def test_classify_cold_history_new_venue_no_false_gaps():
     assert "0" in empty and empty.count("-") == 0, empty
 
 
+def test_classify_cold_history_established_venue_freeze_is_red():
+    """回归守卫(2026-06-09 cold-tier compact freeze 事故):一个长期正常落地的
+    venue 若近端整段停更(lustre compact 卡旧代码、盲于分区 RAW → 每天空转),
+    其"冻结"的尾段必须显示为连续真 gap('0' 红),既不能被当成 '-' 上线前,
+    也不能被 lag/parked 掩盖 —— 否则 dashboard 看不出来,这正是当时靠人眼发现的信号。
+
+    形状照搬事故:today=0609,DAILY 连续到 0528 后断;0529→0607 缺(红 10 天)、
+    0608/0609 lag(2 天)。见 reco/docs/INCIDENTS/2026-06-09-cold-tier-compact-freeze.md。
+    """
+    import datetime as dt
+    # 0521→0528 连续 8 天有 DAILY(健康段),之后冻结
+    healthy = {(dt.date(2026, 5, 21) + dt.timedelta(days=i)).strftime("%Y%m%d")
+               for i in range(8)}            # 20260521..20260528
+    rows = [{"exchange": "binance", "market": "spot", "days": healthy, "bad": set()}]
+    h = fleet.classify_cold_history(rows, "20260609", n_days=20)[0]["history"]
+    # 窗口 0521..0609(20 天):8 个 '1' + 10 个 '0'(冻结红)+ 2 个 '?'(今/昨 lag)
+    assert h == "1" * 8 + "0" * 10 + "?" * 2, h
+    assert h.count("0") == 10, "近端冻结必须是真 gap(红),不能被掩盖"
+    assert "-" not in h, "已有健康历史的 venue,冻结段不得被误判为'上线前'(-)"
+    # 总览必须 RED(latest=0528 落后 >=2 天 → stale → RED),保证告警链能触发
+    cls = fleet.classify_cold([{"exchange": "binance", "market": "spot",
+                                "latest_daily": "20260528", "n_daily": 8, "n_gaps": 0}],
+                              "20260609")
+    assert fleet.cold_overall(cls) == "RED"
+
+
 def test_cold_overall():
     rows = fleet.classify_cold(fleet.parse_cold(COLD_STDOUT), "20260527",
                                parked_venues={("gmo", "spot"), ("gmo", "leverage")})
