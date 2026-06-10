@@ -192,7 +192,10 @@ def _render_coverage(coverage: list, n_buckets: int, day: str) -> None:
 
 _COLD_HIST_CSS = """<style>
 .coldh-row{display:flex;align-items:center;gap:8px;margin:3px 0;font-family:monospace;font-size:11.5px}
-.coldh-label{min-width:200px}
+/* 固定宽度(非 min-width):缺/lag/上线前 等变长徽标移到 bar 之后,
+   否则长 label 会把各行的 bar 推到不同 x、进度条不对齐。 */
+.coldh-label{width:200px;flex:0 0 200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.coldh-badges{flex:0 0 auto;white-space:nowrap;opacity:.85}
 .coldh-bar{display:inline-block;background:rgba(255,255,255,.06);border-radius:2px;line-height:0;font-size:0;vertical-align:middle}
 .coldh-bar span{display:inline-block;width:8px;height:18px}
 .coldh-bar span.g{background:#1a7f37}
@@ -247,17 +250,19 @@ def render_cold(cold_res: dict, parked_venues: set, today_yyyymmdd: str) -> None
             h = r["history"]
             green = h.count("1"); yellow = h.count("?"); red = h.count("0")
             corrupt = h.count("x"); parked = h.count("p"); pre = h.count("-")
+            # label 只放定宽的 venue 名 + 已落比例(对齐 bar);变长徽标进 badges,排在 bar 之后
             label = (f'<span style="opacity:.9">{r["exchange"]}/<b>{r["market"]}</b></span>'
-                     f'<span style="opacity:.55"> &nbsp;{green}/{N_DAYS}')
-            if red: label += f' · <span style="color:#cf222e">缺{red}</span>'
-            if yellow: label += f' · <span style="color:#9a6700">lag{yellow}</span>'
-            if parked: label += f' · 停{parked}'
-            if corrupt: label += f' · <span style="color:#7a1620">坏{corrupt}</span>'
-            if pre: label += f' · <span style="opacity:.4">上线前{pre}</span>'
-            label += "</span>"
+                     f'<span style="opacity:.55"> &nbsp;{green}/{N_DAYS}</span>')
+            badges = ""
+            if red: badges += f' · <span style="color:#cf222e">缺{red}</span>'
+            if yellow: badges += f' · <span style="color:#9a6700">lag{yellow}</span>'
+            if parked: badges += f' · 停{parked}'
+            if corrupt: badges += f' · <span style="color:#7a1620">坏{corrupt}</span>'
+            if pre: badges += f' · <span style="opacity:.4">上线前{pre}</span>'
             st.markdown(
                 f'<div class="coldh-row"><div class="coldh-label">{label}</div>'
-                f'{_cold_history_bar(h)}</div>', unsafe_allow_html=True)
+                f'{_cold_history_bar(h)}<div class="coldh-badges">{badges}</div></div>',
+                unsafe_allow_html=True)
         # 时间刻度:每 30 天一标(N_DAYS 天 × 8px = 720px;240px / 标)
         cell_px = 8
         n_marks = 3
